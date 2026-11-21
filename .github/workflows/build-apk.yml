@@ -20,9 +20,9 @@ jobs:
           npm install --legacy-peer-deps
           npm run build
 
-      - name: Wrap with Capacitor Android
+      - name: Wrap with Capacitor Android & Generate App Icon
         run: |
-          npm install @capacitor/core @capacitor/cli @capacitor/android --legacy-peer-deps
+          npm install @capacitor/core @capacitor/cli @capacitor/android @capacitor/assets --legacy-peer-deps
           rm -f capacitor.config.ts capacitor.config.json
           cat << 'EOF' > capacitor.config.json
           {
@@ -33,6 +33,16 @@ jobs:
           EOF
           npx cap add android
           npx cap sync android
+          python3 -m pip install --break-system-packages -q pillow || pip install -q pillow
+          python3 -c '
+          from PIL import Image
+          icon = Image.open("assets/icon.png").convert("RGBA").resize((1024, 1024), Image.LANCZOS)
+          icon.save("assets/icon.png")
+          splash = Image.new("RGBA", (2732, 2732), (9, 10, 15, 255))
+          splash.paste(icon, (854, 854), icon)
+          splash.save("assets/splash.png")
+          '
+          npx capacitor-assets generate --android --iconBackgroundColor '#090A0F' --splashBackgroundColor '#090A0F'
 
       - name: Fix Kotlin Duplicate Class & Lock Portrait Orientation
         run: |
