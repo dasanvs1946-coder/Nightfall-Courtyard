@@ -9,7 +9,7 @@ interface TitleScreenProps {
   equippedGear: TacticalGearId;
   onEquipGear: (id: TacticalGearId) => void;
   onStartFromBeginning: () => void;
-  onContinueLastWave: () => void;
+  onResumeInterrupted: () => void;
 }
 
 export const TitleScreen: React.FC<TitleScreenProps> = ({
@@ -18,9 +18,10 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
   equippedGear,
   onEquipGear,
   onStartFromBeginning,
-  onContinueLastWave,
+  onResumeInterrupted,
 }) => {
-  const canContinue = savedProgress !== null && savedProgress.lastWave > 1;
+  const canResume =
+    savedProgress !== null && savedProgress.activeInterrupted !== false;
   const activeGearSpec = TACTICAL_GEAR_SPECS[equippedGear];
 
   return (
@@ -50,10 +51,10 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
       {/* Left-biased Title Lockup + Tactical Gear Selector + Start Choice CTA */}
       <div className="pointer-events-auto my-auto max-w-lg">
         {/* Bespoke inline SVG Tactical Crest & Title Lockup */}
-        <div className="mb-2.5 flex flex-wrap items-center gap-2.5">
+        <div className="mb-2 flex flex-wrap items-center gap-2.5">
           <svg
             viewBox="0 0 48 48"
-            className="h-10 w-10 shrink-0 text-amber-400 sm:h-11 sm:w-11"
+            className="h-9 w-9 shrink-0 text-amber-400 sm:h-11 sm:w-11"
             fill="none"
             aria-hidden="true"
           >
@@ -81,13 +82,13 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
           Nightfall Courtyard
         </h1>
 
-        <p className="hud-text-shadow mt-2.5 max-w-md text-xs leading-relaxed text-slate-300 sm:mt-3 sm:text-base">
+        <p className="hud-text-shadow mt-2 max-w-md text-xs leading-relaxed text-slate-300 sm:mt-3 sm:text-base">
           Hold the dark urban plaza against Acid Spitters, Shadow Stalkers, Riot Breachers, and Iron Wardens. Unlock 12 weapons and level upgrades up to Lv 50.
         </p>
 
         {/* Compact Tactical Gear Loadout Selector */}
         <div
-          className="mt-4 rounded-xl border border-slate-700/75 p-2.5 sm:mt-5"
+          className="mt-3.5 rounded-xl border border-slate-700/75 p-2.5 sm:mt-5"
           style={{ backgroundColor: 'rgba(10, 15, 24, 0.78)' }}
         >
           <div className="mb-1.5 flex items-center justify-between text-[10px] font-bold tracking-wider uppercase">
@@ -126,50 +127,55 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
           </div>
         </div>
 
-        <div className="mt-5 flex flex-wrap items-center gap-2.5 sm:mt-6 sm:gap-3">
-          {canContinue && (
+        {/* Mid-Round Exit / Disconnect Recovery Banner + Start CTA */}
+        <div className="mt-4 flex flex-col gap-2.5 sm:mt-5">
+          {canResume && (
             <button
               type="button"
-              data-testid="continue-last-wave"
+              data-testid="resume-interrupted-run"
               onClick={(e) => {
                 e.currentTarget.blur();
-                onContinueLastWave();
+                onResumeInterrupted();
               }}
-              className="min-h-[46px] cursor-pointer rounded-xl bg-amber-500 px-6 py-2.5 text-sm font-bold tracking-wide text-slate-950 uppercase shadow-lg transition-transform hover:bg-amber-400 active:scale-[0.98] sm:min-h-[48px] sm:px-7 sm:py-3 sm:text-base"
+              className="group w-full cursor-pointer rounded-xl border border-cyan-400/80 bg-cyan-950/75 px-4 py-3 text-left shadow-[0_0_24px_rgba(34,211,238,0.28)] transition-all hover:border-cyan-300 hover:bg-cyan-900/80 active:scale-[0.99]"
             >
-              Continue Wave {savedProgress.lastWave}
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-extrabold tracking-wide text-cyan-200 uppercase sm:text-sm">
+                  Active Run Interrupted (Wave {savedProgress.lastWave}) — Resume &amp; Revive
+                </span>
+              </div>
+              <div className="font-mono-tabular mt-1 text-[11px] text-slate-300">
+                Score {savedProgress.score} · {savedProgress.kills} Kills ·{' '}
+                {savedProgress.upgradePoints} UP ·{' '}
+                {savedProgress.hasUsedRevive ? 'Revive Used' : '1 Free Revive'}
+              </div>
             </button>
           )}
 
-          <button
-            type="button"
-            data-start="true"
-            data-testid="start-beginning"
-            onClick={(e) => {
-              e.currentTarget.blur();
-              onStartFromBeginning();
-            }}
-            className={
-              canContinue
-                ? 'min-h-[46px] cursor-pointer rounded-xl border border-slate-600/80 bg-slate-900/85 px-5 py-2.5 text-xs font-bold tracking-wide text-slate-100 uppercase shadow-lg transition-colors hover:border-slate-400 hover:bg-slate-800 active:scale-[0.98] sm:min-h-[48px] sm:px-6 sm:py-3 sm:text-sm'
-                : 'min-h-[46px] cursor-pointer rounded-xl bg-amber-500 px-7 py-2.5 text-sm font-bold tracking-wide text-slate-950 uppercase shadow-lg transition-transform hover:bg-amber-400 active:scale-[0.98] sm:min-h-[48px] sm:px-8 sm:py-3 sm:text-base'
-            }
-          >
-            {canContinue ? 'Start from Beginning' : 'Start Survival'}
-          </button>
-        </div>
-
-        {canContinue && (
-          <div className="font-mono-tabular hud-text-shadow mt-2 text-xs text-slate-300">
-            Last Run · Wave {savedProgress.lastWave} · Score {savedProgress.score} ·{' '}
-            {savedProgress.upgradePoints} UP
+          <div className="flex flex-wrap items-center gap-2.5">
+            <button
+              type="button"
+              data-start="true"
+              data-testid="start-beginning"
+              onClick={(e) => {
+                e.currentTarget.blur();
+                onStartFromBeginning();
+              }}
+              className={
+                canResume
+                  ? 'min-h-[44px] cursor-pointer rounded-xl border border-slate-600/80 bg-slate-900/85 px-5 py-2.5 text-xs font-bold tracking-wide text-slate-100 uppercase shadow-lg transition-colors hover:border-slate-400 hover:bg-slate-800 active:scale-[0.98] sm:min-h-[48px] sm:px-6 sm:py-3 sm:text-sm'
+                  : 'min-h-[46px] cursor-pointer rounded-xl bg-amber-500 px-7 py-2.5 text-sm font-bold tracking-wide text-slate-950 uppercase shadow-lg transition-transform hover:bg-amber-400 active:scale-[0.98] sm:min-h-[48px] sm:px-8 sm:py-3 sm:text-base'
+              }
+            >
+              New Run
+            </button>
           </div>
-        )}
+        </div>
       </div>
 
       {/* Single flat bottom control hint */}
       <div className="hud-text-shadow text-center text-[11px] font-medium tracking-wide text-slate-400 sm:text-left sm:text-xs">
-        Left Stick / WASD Move · Right Stick / Mouse Aim & Fire · Space Dash · G/E Tactical Gear · R Reload
+        Left Stick / WASD Move · Right Stick / Mouse Aim &amp; Fire · Space Dash · G/E Tactical Gear · R Reload
       </div>
     </div>
   );

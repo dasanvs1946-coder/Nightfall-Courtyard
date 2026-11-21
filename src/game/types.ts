@@ -1,4 +1,4 @@
-export type GamePhase = 'title' | 'playing' | 'paused' | 'gameover';
+export type GamePhase = 'title' | 'playing' | 'paused' | 'revive' | 'gameover';
 
 export type WeaponId =
   | 'pistol'
@@ -74,6 +74,10 @@ export interface SavedRunProgress {
   upgradeLevels: UpgradeLevels;
   activeWeapon: WeaponId;
   equippedGear?: TacticalGearId;
+  weapons?: WeaponRuntimeState[];
+  hasUsedRevive?: boolean;
+  mode?: 'survival';
+  activeInterrupted?: boolean;
 }
 
 export interface ObstacleBox {
@@ -169,5 +173,6 @@ export interface HudSnapshot {
   weather: WeatherKind;
   bloodSplatter: number; // 0..1 screen blood splatter intensity
   bloodSeed: number;
+  hasUsedRevive: boolean;
   minimap: MinimapSnapshot;
 }

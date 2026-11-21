@@ -1,7 +1,13 @@
-import { SavedRunProgress, TacticalGearId, UpgradeLevels, WeaponId } from './types';
+import {
+  SavedRunProgress,
+  TacticalGearId,
+  UpgradeLevels,
+  WeaponId,
+  WeaponRuntimeState,
+} from './types';
 import { createInitialUpgradeLevels, MAX_UPGRADE_LEVEL } from './upgrades';
 import { TACTICAL_GEAR_ORDER } from './tacticalGear';
-import { WEAPON_ORDER } from './weapons';
+import { createInitialWeapons, WEAPON_ORDER, WEAPON_SPECS } from './weapons';
 
 const HIGH_SCORE_KEY = 'nightfall_courtyard_high_score_v1';
 const RUN_PROGRESS_KEY = 'nightfall_courtyard_run_progress_v1';
@@ -54,6 +60,44 @@ function sanitizeUpgradeLevels(raw: unknown): UpgradeLevels {
   return base;
 }
 
+function sanitizeWeapons(raw: unknown): WeaponRuntimeState[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const base = createInitialWeapons();
+  const byId = new Map<WeaponId, Partial<WeaponRuntimeState>>();
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const candidate = item as Partial<WeaponRuntimeState>;
+    if (
+      typeof candidate.id === 'string' &&
+      (WEAPON_ORDER as string[]).includes(candidate.id)
+    ) {
+      byId.set(candidate.id as WeaponId, candidate);
+    }
+  }
+  if (byId.size === 0) return undefined;
+
+  return base.map((w) => {
+    const saved = byId.get(w.id);
+    if (!saved) return w;
+    const spec = WEAPON_SPECS[w.id];
+    const unlocked = w.id === 'pistol' ? true : Boolean(saved.unlocked);
+    const mag = Number.isFinite(Number(saved.mag))
+      ? Math.max(0, Math.min(999, Math.floor(Number(saved.mag))))
+      : w.mag;
+    const reserve = spec.infiniteReserve
+      ? 0
+      : Number.isFinite(Number(saved.reserve))
+        ? Math.max(0, Math.min(9999, Math.floor(Number(saved.reserve))))
+        : w.reserve;
+    return {
+      id: w.id,
+      unlocked,
+      mag,
+      reserve,
+    };
+  });
+}
+
 export function loadRunProgress(
   storage: StorageLike | null = getBrowserStorage(),
 ): SavedRunProgress | null {
@@ -77,6 +121,8 @@ export function loadRunProgress(
         ? (parsed.equippedGear as TacticalGearId)
         : 'mine';
 
+    const weapons = sanitizeWeapons(parsed.weapons);
+
     return {
       lastWave: Math.min(999, lastWave),
       score: Math.max(0, Math.round(Number(parsed.score) || 0)),
@@ -85,6 +131,10 @@ export function loadRunProgress(
       upgradeLevels: sanitizeUpgradeLevels(parsed.upgradeLevels),
       activeWeapon,
       equippedGear,
+      weapons,
+      hasUsedRevive: Boolean(parsed.hasUsedRevive),
+      mode: parsed.mode === 'survival' ? 'survival' : 'survival',
+      activeInterrupted: parsed.activeInterrupted !== false,
     };
   } catch {
     return null;
@@ -105,6 +155,10 @@ export function saveRunProgress(
       upgradeLevels: sanitizeUpgradeLevels(progress.upgradeLevels),
       activeWeapon: progress.activeWeapon,
       equippedGear: progress.equippedGear ?? 'mine',
+      weapons: sanitizeWeapons(progress.weapons),
+      hasUsedRevive: Boolean(progress.hasUsedRevive),
+      mode: progress.mode ?? 'survival',
+      activeInterrupted: progress.activeInterrupted ?? true,
     };
     storage.setItem(RUN_PROGRESS_KEY, JSON.stringify(clean));
   } catch {

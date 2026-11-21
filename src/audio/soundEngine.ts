@@ -607,6 +607,41 @@ export class SoundEngine {
     osc.stop(now + 0.48);
   }
 
+  public playRevive(): void {
+    const ctx = this.ready();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+
+    // Low shockwave thump
+    const bass = ctx.createOscillator();
+    bass.type = 'sine';
+    bass.frequency.setValueAtTime(140, now);
+    bass.frequency.exponentialRampToValueAtTime(38, now + 0.35);
+    const bassGain = ctx.createGain();
+    bassGain.gain.setValueAtTime(0.28, now);
+    bassGain.gain.exponentialRampToValueAtTime(0.001, now + 0.36);
+    bass.connect(bassGain);
+    bassGain.connect(ctx.destination);
+    bass.start(now);
+    bass.stop(now + 0.38);
+
+    // Ascending second-chance triad
+    const notes = [392.0, 523.25, 659.25, 783.99];
+    notes.forEach((freq, i) => {
+      const t = now + i * 0.06;
+      const osc = ctx.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, t);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.14, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.25);
+    });
+  }
+
   public playGameOver(): void {
     const ctx = this.ready();
     if (!ctx) return;

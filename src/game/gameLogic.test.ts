@@ -70,6 +70,13 @@ import {
   TACTICAL_GEAR_ORDER,
   TACTICAL_GEAR_SPECS,
 } from './tacticalGear';
+import {
+  computeReviveShockwavePush,
+  getReviveRestoreHp,
+  isAcidPoolClearedByRevive,
+  REVIVE_INVULN_SEC,
+  shouldFlashInvulnMesh,
+} from './revive';
 import { APP_VERSION } from './version';
 
 test('weapon progression has 12 distinct weapons unlocking across waves 1 to 20 with next/prev cycling', () => {
@@ -328,6 +335,11 @@ test('high score and run progress (including equipped tactical gear) persist cle
   assert.equal(saveHighScore(2400, mockStorage), 2400);
   assert.equal(loadHighScore(mockStorage), 2400);
 
+  const savedWeapons = createInitialWeapons();
+  savedWeapons[1].unlocked = true;
+  savedWeapons[1].mag = 22;
+  savedWeapons[1].reserve = 95;
+
   assert.equal(loadRunProgress(mockStorage), null);
   saveRunProgress(
     {
@@ -344,6 +356,10 @@ test('high score and run progress (including equipped tactical gear) persist cle
       },
       activeWeapon: 'dual',
       equippedGear: 'turret',
+      weapons: savedWeapons,
+      hasUsedRevive: true,
+      mode: 'survival',
+      activeInterrupted: true,
     },
     mockStorage,
   );
@@ -358,9 +374,43 @@ test('high score and run progress (including equipped tactical gear) persist cle
   assert.equal(loaded.upgradeLevels.vitality, 50);
   assert.equal(loaded.activeWeapon, 'dual');
   assert.equal(loaded.equippedGear, 'turret');
+  assert.equal(loaded.hasUsedRevive, true);
+  assert.equal(loaded.mode, 'survival');
+  assert.equal(loaded.activeInterrupted, true);
+  assert.equal(loaded.weapons?.[1].unlocked, true);
+  assert.equal(loaded.weapons?.[1].mag, 22);
+  assert.equal(loaded.weapons?.[1].reserve, 95);
 
   clearRunProgress(mockStorage);
   assert.equal(loadRunProgress(mockStorage), null);
+});
+
+test('free revive restores 75% HP, flashes 3s invulnerability, pushes zombies, and clears nearby acid pools', () => {
+  assert.equal(REVIVE_INVULN_SEC, 3.0);
+  assert.equal(getReviveRestoreHp(100), 75);
+  assert.equal(getReviveRestoreHp(220), 165);
+
+  // Brief grace stays visible; 3s revive shield toggles visibly
+  assert.equal(shouldFlashInvulnMesh(0.4), true);
+  const flashStates = new Set<boolean>();
+  for (let t = 0.6; t <= 2.9; t += 0.05) {
+    flashStates.add(shouldFlashInvulnMesh(t));
+  }
+  assert.equal(flashStates.has(true), true);
+  assert.equal(flashStates.has(false), true);
+
+  // Shockwave knocks back nearby zombies and leaves far zombies untouched
+  const near = computeReviveShockwavePush(0, 0, 2.5, 0, 0.5);
+  assert.equal(near.inRange, true);
+  assert.ok(near.dirX > 0.99);
+  assert.ok(near.pushForce > 9);
+
+  const far = computeReviveShockwavePush(0, 0, 14, 0, 0.5);
+  assert.equal(far.inRange, false);
+
+  // Acid pools within blast radius are cleared
+  assert.equal(isAcidPoolClearedByRevive(0, 0, 4, 4, 1.5), true);
+  assert.equal(isAcidPoolClearedByRevive(0, 0, 15, 0, 1.5), false);
 });
 
 test('tactical gear specs and cycling cover mine, turret, and flashbang with long cooldowns', () => {
@@ -373,8 +423,8 @@ test('tactical gear specs and cycling cover mine, turret, and flashbang with lon
   assert.equal(getNextTacticalGear('flashbang'), 'mine');
 });
 
-test('app version matches v1.1.0 release', () => {
-  assert.equal(APP_VERSION, 'v1.1.0');
+test('app version matches v1.2.0 release', () => {
+  assert.equal(APP_VERSION, 'v1.2.0');
 });
 
 test('dynamic weather cycles across states, escalates to storm on boss waves, and parses query overrides', () => {

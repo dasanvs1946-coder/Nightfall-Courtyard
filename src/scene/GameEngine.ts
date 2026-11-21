@@ -16,6 +16,14 @@ import {
   saveRunProgress,
 } from '../game/storage';
 import {
+  computeReviveShockwavePush,
+  getReviveRestoreHp,
+  isAcidPoolClearedByRevive,
+  REVIVE_INVULN_SEC,
+  REVIVE_SHOCKWAVE_RADIUS,
+  shouldFlashInvulnMesh,
+} from '../game/revive';
+import {
   CrateKind,
   FloatingDamage,
   GamePhase,
@@ -405,6 +413,8 @@ export class GameEngine {
   private dashDirX = 0;
   private dashDirZ = -1;
   private invulnTimer = 0;
+  private hasUsedRevive = false;
+  private readonly runMode: 'survival' = 'survival';
 
   // Tactical Gear State
   private equippedGear: TacticalGearId = loadRunProgress()?.equippedGear ?? 'mine';
@@ -1189,8 +1199,10 @@ export class GameEngine {
       if (code === 'Enter' || code === 'Space') {
         e.preventDefault();
         const saved = loadRunProgress();
+        const canResume = Boolean(saved && saved.activeInterrupted !== false);
         this.startNewGame({
-          fromBeginning: !saved || saved.lastWave <= 1,
+          fromBeginning: !canResume,
+          resumeInterrupted: canResume,
         });
       }
       return;
@@ -1553,6 +1565,10 @@ export class GameEngine {
       upgradeLevels: { ...this.upgradeLevels },
       activeWeapon: this.activeWeapon,
       equippedGear: this.equippedGear,
+      weapons: this.weapons.map((w) => ({ ...w })),
+      hasUsedRevive: this.hasUsedRevive,
+      mode: this.runMode,
+      activeInterrupted: true,
     });
     this.callbacks.onSavedProgressUpdate?.(loadRunProgress());
   }
@@ -1560,6 +1576,7 @@ export class GameEngine {
   public startNewGame(options?: {
     fromBeginning?: boolean;
     startWaveOverride?: number;
+    resumeInterrupted?: boolean;
   }): void {
     this.sound.unlock();
     this.clearEntities();
@@ -1567,6 +1584,7 @@ export class GameEngine {
     this.uiSimulationPaused = false;
 
     const fromBeginning = options?.fromBeginning ?? true;
+    const resumeInterrupted = options?.resumeInterrupted ?? !fromBeginning;
     const saved = !fromBeginning ? loadRunProgress() : null;
 
     if (saved) {
@@ -1576,6 +1594,7 @@ export class GameEngine {
       this.score = saved.score;
       this.kills = saved.kills;
       this.killsTowardNextUp = 0;
+      this.hasUsedRevive = Boolean(saved.hasUsedRevive);
       if (saved.equippedGear) {
         this.equippedGear = saved.equippedGear;
       }
@@ -1586,10 +1605,9 @@ export class GameEngine {
       this.upgradeLevels = createInitialUpgradeLevels();
       this.score = 0;
       this.kills = 0;
-      if (this.wave <= 1) {
-        clearRunProgress();
-        this.callbacks.onSavedProgressUpdate?.(null);
-      }
+      this.hasUsedRevive = false;
+      clearRunProgress();
+      this.callbacks.onSavedProgressUpdate?.(null);
     }
 
     this.playerX = 0;
@@ -1597,12 +1615,25 @@ export class GameEngine {
     this.playerAimAngle = 0;
     this.playerWalkPhase = 0;
     this.maxHp = getMaxHpForLevel(this.upgradeLevels);
-    this.hp = this.maxHp;
-    this.ghostHp = this.maxHp;
+    const isResumingInterrupted = Boolean(saved && resumeInterrupted);
+    this.hp = isResumingInterrupted
+      ? getReviveRestoreHp(this.maxHp)
+      : this.maxHp;
+    this.ghostHp = this.hp;
     this.isNewHighScore = false;
     this.damageTaken = 0;
 
     this.weapons = createInitialWeapons();
+    if (saved?.weapons) {
+      const savedById = new Map(saved.weapons.map((w) => [w.id, w]));
+      for (const w of this.weapons) {
+        const prev = savedById.get(w.id);
+        if (!prev) continue;
+        w.unlocked = w.id === 'pistol' ? true : prev.unlocked;
+        w.mag = Math.min(this.getWeaponMagSize(w.id), Math.max(0, prev.mag));
+        w.reserve = prev.reserve;
+      }
+    }
     unlockWeaponsForWave(this.weapons, this.wave, (id) =>
       this.getWeaponMagSize(id),
     );
@@ -1618,7 +1649,7 @@ export class GameEngine {
     this.dashTimer = 0;
     this.dashCooldownTimer = 0;
     this.gearCooldownTimer = 0;
-    this.invulnTimer = 0.5;
+    this.invulnTimer = isResumingInterrupted ? REVIVE_INVULN_SEC : 0.5;
     this.trauma = 0;
     this.hitstopTimer = 0;
 
@@ -1631,26 +1662,148 @@ export class GameEngine {
     );
     this.waveBanner = isBossWaveNumber(this.wave)
       ? `BOSS WAVE ${this.wave} · ${getBossTitle(this.wave)}`
-      : this.wave > 1
-        ? `RESUMED WAVE ${this.wave} · SURVIVE THE NIGHT`
-        : `WAVE ${this.wave} · SURVIVE THE NIGHT`;
+      : isResumingInterrupted
+        ? `RESUMED WAVE ${this.wave} · 75% HP`
+        : this.wave > 1
+          ? `RESUMED WAVE ${this.wave} · SURVIVE THE NIGHT`
+          : `WAVE ${this.wave} · SURVIVE THE NIGHT`;
     this.waveBannerTimer = 2.4;
-    this.pickupToast = null;
-    this.pickupToastTimer = 0;
+    this.pickupToast = isResumingInterrupted ? 'RUN RESTORED · 3S SHIELD' : null;
+    this.pickupToastTimer = isResumingInterrupted ? 2.2 : 0;
 
     this.playerRig.root.position.set(0, 0, 0);
     this.playerRig.root.rotation.y = 0;
-    this.playerRig.root.visible = true;
+    this.playerRig.root.visible = shouldFlashInvulnMesh(this.invulnTimer);
 
     const portrait = this.viewportW < 700;
     this.camPos.set(0, portrait ? 23.5 : 19.5, portrait ? 12.2 : 11.2);
     this.camLook.set(0, 0.5, 0);
 
     this.setPhase('playing');
-    if (this.wave > 1 || saved) {
-      this.persistCurrentProgress();
-    }
+    this.persistCurrentProgress();
     this.emitHudSnapshot(true);
+  }
+
+  public triggerRevive(): void {
+    if (this.phase !== 'revive' || this.hasUsedRevive) return;
+    this.sound.unlock();
+    this.hasUsedRevive = true;
+    this.hp = getReviveRestoreHp(this.maxHp);
+    this.ghostHp = this.hp;
+    this.isReloading = false;
+    this.reloadTimer = 0;
+
+    const activeState = this.getActiveWeaponState();
+    activeState.mag = this.getWeaponMagSize(activeState.id);
+
+    this.invulnTimer = REVIVE_INVULN_SEC;
+    this.playerRig.root.visible = shouldFlashInvulnMesh(this.invulnTimer);
+    this.bloodSplatter = 0;
+
+    this.sound.playRevive();
+    this.trauma = Math.min(1.0, this.trauma + 0.55);
+    this.spawnFlashRing(
+      this.playerX,
+      this.playerZ,
+      REVIVE_SHOCKWAVE_RADIUS,
+      0x38bdf8,
+      0.46,
+    );
+    this.spawnBurstParticles(
+      this.playerX,
+      0.9,
+      this.playerZ,
+      28,
+      0x38bdf8,
+      9.5,
+    );
+
+    for (let i = 0; i < this.zombies.length; i++) {
+      const z = this.zombies[i];
+      if (z.dying) continue;
+      const push = computeReviveShockwavePush(
+        this.playerX,
+        this.playerZ,
+        z.x,
+        z.z,
+        z.radius,
+      );
+      if (!push.inRange) continue;
+      const resist =
+        z.kind === 'boss' ? 0.35 : z.kind === 'breacher' ? 0.65 : 1.0;
+      z.knockVx += push.dirX * push.pushForce * resist;
+      z.knockVz += push.dirZ * push.pushForce * resist;
+      z.stunTimer = Math.max(z.stunTimer, z.kind === 'boss' ? 0.9 : 1.5);
+      z.isWindingUp = false;
+      if (z.rig.telegraphRing) z.rig.telegraphRing.visible = false;
+      if (z.rig.telegraphLine) z.rig.telegraphLine.visible = false;
+    }
+
+    for (let i = this.acidPuddles.length - 1; i >= 0; i--) {
+      const puddle = this.acidPuddles[i];
+      if (
+        isAcidPoolClearedByRevive(
+          this.playerX,
+          this.playerZ,
+          puddle.x,
+          puddle.z,
+          1.85,
+        )
+      ) {
+        this.scene.remove(puddle.mesh);
+        this.acidPuddles.splice(i, 1);
+      }
+    }
+    for (let i = this.acidProjectiles.length - 1; i >= 0; i--) {
+      const ap = this.acidProjectiles[i];
+      if (
+        Math.hypot(
+          ap.mesh.position.x - this.playerX,
+          ap.mesh.position.z - this.playerZ,
+        ) <= REVIVE_SHOCKWAVE_RADIUS
+      ) {
+        this.scene.remove(ap.mesh);
+        this.acidProjectiles.splice(i, 1);
+      }
+    }
+    for (let i = this.bossProjectiles.length - 1; i >= 0; i--) {
+      const bp = this.bossProjectiles[i];
+      if (
+        Math.hypot(bp.x - this.playerX, bp.z - this.playerZ) <=
+        REVIVE_SHOCKWAVE_RADIUS
+      ) {
+        this.scene.remove(bp.mesh);
+        this.bossProjectiles.splice(i, 1);
+      }
+    }
+
+    this.pickupToast = 'SECOND CHANCE · 75% HP';
+    this.pickupToastTimer = 2.0;
+    this.clearHeldInputs();
+    this.persistCurrentProgress();
+    this.setPhase('playing');
+    this.emitHudSnapshot(true);
+  }
+
+  public confirmEndRun(): void {
+    if (this.phase !== 'revive') return;
+    this.finalizeGameOver();
+    this.emitHudSnapshot(true);
+  }
+
+  private finalizeGameOver(): void {
+    this.uiSimulationPaused = false;
+    const prevBest = this.highScore;
+    this.highScore = saveHighScore(this.score);
+    if (this.highScore > prevBest && this.score >= this.highScore) {
+      this.isNewHighScore = true;
+    }
+    clearRunProgress();
+    this.callbacks.onSavedProgressUpdate?.(null);
+    this.sound.playGameOver();
+    this.clearHeldInputs();
+    this.playerRig.root.visible = true;
+    this.setPhase('gameover');
   }
 
   public pauseGame(): void {
@@ -1671,7 +1824,11 @@ export class GameEngine {
 
   public returnToTitle(): void {
     this.uiSimulationPaused = false;
-    if (this.wave > 1) {
+    if (
+      this.phase === 'playing' ||
+      this.phase === 'paused' ||
+      this.phase === 'revive'
+    ) {
       this.persistCurrentProgress();
     }
     this.clearEntities();
@@ -1964,6 +2121,8 @@ export class GameEngine {
     this.playerRig.bodyGroup.position.z = this.recoilOffset;
     this.playerRig.root.position.set(this.playerX, 0, this.playerZ);
     this.playerRig.root.rotation.y = this.playerAimAngle;
+    this.playerRig.root.visible =
+      this.invulnTimer > 0 ? shouldFlashInvulnMesh(this.invulnTimer) : true;
 
     // Update visible red laser sight
     this.updateLaserSight();
@@ -3208,11 +3367,15 @@ export class GameEngine {
     this.spawnBloodDecal(this.playerX, this.playerZ, 0.72);
 
     if (this.hp <= 0) {
-      this.highScore = saveHighScore(this.score);
-      this.persistCurrentProgress();
-      this.sound.playGameOver();
-      this.clearHeldInputs();
-      this.setPhase('gameover');
+      if (!this.hasUsedRevive) {
+        this.uiSimulationPaused = false;
+        this.clearHeldInputs();
+        this.playerRig.root.visible = true;
+        this.setPhase('revive');
+        this.emitHudSnapshot(true);
+        return;
+      }
+      this.finalizeGameOver();
     }
     this.emitHudSnapshot(true);
   }
@@ -3927,6 +4090,7 @@ export class GameEngine {
       weather: this.weatherKind,
       bloodSplatter: Math.round(this.bloodSplatter * 20) / 20,
       bloodSeed: this.bloodSeed,
+      hasUsedRevive: this.hasUsedRevive,
       minimap: {
         playerX: this.playerX,
         playerZ: this.playerZ,

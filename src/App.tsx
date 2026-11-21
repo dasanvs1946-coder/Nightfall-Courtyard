@@ -46,6 +46,7 @@ function createDefaultHudSnapshot(): HudSnapshot {
     weather: 'clear',
     bloodSplatter: 0,
     bloodSeed: 1,
+    hasUsedRevive: false,
     minimap: {
       playerX: 0,
       playerZ: 0,
@@ -163,9 +164,12 @@ export default function App() {
             setUpgradesOpen(false);
             engineRef.current?.startNewGame({ fromBeginning: true });
           }}
-          onContinueLastWave={() => {
+          onResumeInterrupted={() => {
             setUpgradesOpen(false);
-            engineRef.current?.startNewGame({ fromBeginning: false });
+            engineRef.current?.startNewGame({
+              fromBeginning: false,
+              resumeInterrupted: true,
+            });
           }}
         />
       )}
@@ -201,10 +205,8 @@ export default function App() {
         <StatusModal
           hud={hud}
           onResume={() => engineRef.current?.resumeGame()}
-          onContinueLastWave={() => {
-            setUpgradesOpen(false);
-            engineRef.current?.startNewGame({ fromBeginning: false });
-          }}
+          onRevive={() => engineRef.current?.triggerRevive()}
+          onEndRun={() => engineRef.current?.confirmEndRun()}
           onRestartFromBeginning={() => {
             setUpgradesOpen(false);
             engineRef.current?.startNewGame({ fromBeginning: true });
