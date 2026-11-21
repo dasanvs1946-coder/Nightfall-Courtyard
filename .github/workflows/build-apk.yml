@@ -23,7 +23,14 @@ jobs:
       - name: Wrap with Capacitor Android
         run: |
           npm install @capacitor/core @capacitor/cli @capacitor/android --legacy-peer-deps
-          npx cap init "Nightfall Courtyard" "com.drgroup.nightfall" --web-dir=dist
+          rm -f capacitor.config.ts capacitor.config.json
+          cat << 'EOF' > capacitor.config.json
+          {
+            "appId": "com.drgroup.nightfall",
+            "appName": "Nightfall Courtyard",
+            "webDir": "dist"
+          }
+          EOF
           npx cap add android
           npx cap sync android
 
