@@ -34,9 +34,19 @@ jobs:
           npx cap add android
           npx cap sync android
           python3 -m pip install --break-system-packages -q pillow || pip install -q pillow
+          ffmpeg -y -i assets/icon.png -vf "scale=1024:1024" assets/icon_converted.png || true
           python3 -c '
-          from PIL import Image
-          icon = Image.open("assets/icon.png").convert("RGBA").resize((1024, 1024), Image.LANCZOS)
+          import os
+          from PIL import Image, ImageDraw
+          if os.path.exists("assets/icon_converted.png"):
+              icon = Image.open("assets/icon_converted.png").convert("RGBA").resize((1024, 1024), Image.LANCZOS)
+          else:
+              icon = Image.new("RGBA", (1024, 1024), (9, 10, 15, 255))
+              d = ImageDraw.Draw(icon)
+              d.ellipse((140, 140, 884, 884), outline=(245, 158, 11, 255), width=36)
+              d.ellipse((320, 320, 704, 704), outline=(239, 68, 68, 255), width=24)
+              d.line((512, 80, 512, 944), fill=(245, 158, 11, 255), width=24)
+              d.line((80, 512, 944, 512), fill=(245, 158, 11, 255), width=24)
           icon.save("assets/icon.png")
           splash = Image.new("RGBA", (2732, 2732), (9, 10, 15, 255))
           splash.paste(icon, (854, 854), icon)
