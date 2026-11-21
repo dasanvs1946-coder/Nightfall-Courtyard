@@ -1,0 +1,191 @@
+import React from 'react';
+import {
+  ChevronUp,
+  Crosshair,
+  HeartPulse,
+  Layers,
+  ShieldAlert,
+  Wrench,
+  Zap,
+} from 'lucide-react';
+import { UpgradeId, UpgradeLevels } from '../game/types';
+import {
+  canPurchaseUpgrade,
+  getUpgradeCost,
+  UPGRADE_ORDER,
+  UPGRADE_SPECS,
+} from '../game/upgrades';
+
+interface UpgradeTabProps {
+  open: boolean;
+  upgradePoints: number;
+  killsTowardNextUp: number;
+  killsPerUp: number;
+  upgradeLevels: UpgradeLevels;
+  onToggle: () => void;
+  onBuyUpgrade: (id: UpgradeId) => void;
+}
+
+const UPGRADE_ICONS: Record<UpgradeId, React.ReactNode> = {
+  damage: <Crosshair className="h-4 w-4 text-amber-400" />,
+  handling: <Zap className="h-4 w-4 text-sky-400" />,
+  capacity: <Layers className="h-4 w-4 text-indigo-400" />,
+  vitality: <HeartPulse className="h-4 w-4 text-emerald-400" />,
+  mobility: <ShieldAlert className="h-4 w-4 text-cyan-400" />,
+};
+
+export const UpgradeTab: React.FC<UpgradeTabProps> = ({
+  open,
+  upgradePoints,
+  killsTowardNextUp,
+  killsPerUp,
+  upgradeLevels,
+  onToggle,
+  onBuyUpgrade,
+}) => {
+  const hasPoints = upgradePoints > 0;
+
+  return (
+    <div className="pointer-events-auto relative mt-1.5 flex flex-col items-start">
+      {/* Compact Small Upgrades Tab Button */}
+      <button
+        type="button"
+        tabIndex={-1}
+        data-testid="upgrade-tab-toggle"
+        aria-expanded={open}
+        onPointerDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          onToggle();
+          e.currentTarget.blur();
+        }}
+        className={`flex min-h-[38px] cursor-pointer items-center gap-2 rounded-xl border px-2.5 py-1.5 text-left transition-colors ${
+          open
+            ? 'border-amber-400/80 text-white'
+            : hasPoints
+              ? 'border-amber-500/75 text-amber-200 hover:border-amber-400'
+              : 'border-slate-700/70 text-slate-300 hover:border-slate-500'
+        }`}
+        style={{ backgroundColor: 'rgba(10, 15, 24, 0.88)' }}
+      >
+        {open ? (
+          <ChevronUp className="h-3.5 w-3.5 text-amber-400" />
+        ) : (
+          <Wrench className="h-3.5 w-3.5 text-amber-400" />
+        )}
+        <span className="font-display text-xs font-bold tracking-wider uppercase">
+          Upgrades
+        </span>
+        <span
+          data-testid="upgrade-points-badge"
+          className={`font-mono-tabular whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] font-bold ${
+            hasPoints
+              ? 'bg-amber-500 text-slate-950'
+              : 'bg-slate-800 text-slate-400'
+          }`}
+        >
+          {upgradePoints} UP
+        </span>
+        <span className="font-mono-tabular hidden text-[10px] text-slate-400 sm:inline">
+          {killsTowardNextUp}/{killsPerUp}
+        </span>
+      </button>
+
+      {/* Collapsible Compact Upgrade Drawer (absolute so top-right HUD stays anchored) */}
+      {open && (
+        <div
+          data-testid="upgrade-drawer"
+          onPointerDown={(e) => e.stopPropagation()}
+          className="absolute top-full left-0 z-40 mt-1.5 w-[min(324px,calc(100vw-1.5rem))] rounded-xl border border-slate-700/85 p-2.5 shadow-2xl"
+          style={{ backgroundColor: 'rgba(10, 15, 24, 0.95)' }}
+        >
+          <div className="mb-2 flex items-center justify-between border-b border-slate-800 pb-1.5">
+            <div>
+              <div className="font-display text-sm font-extrabold tracking-wide text-white uppercase">
+                Field Upgrades
+              </div>
+              <div className="text-[10px] text-slate-400">
+                +1 UP / {killsPerUp} kills · +2 Wave · +3 Boss
+              </div>
+            </div>
+            <div className="font-mono-tabular text-xs font-bold text-amber-400">
+              {upgradePoints} UP
+            </div>
+          </div>
+
+          <div className="flex max-h-[48dvh] flex-col gap-1.5 overflow-y-auto pr-0.5">
+            {UPGRADE_ORDER.map((id) => {
+              const spec = UPGRADE_SPECS[id];
+              const level = upgradeLevels[id];
+              const isMaxed = level >= spec.maxLevel;
+              const cost = getUpgradeCost(level);
+              const affordable = canPurchaseUpgrade(
+                upgradeLevels,
+                upgradePoints,
+                id,
+              );
+
+              return (
+                <div
+                  key={id}
+                  className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-900/75 px-2 py-1.5"
+                >
+                  <div className="flex min-w-0 flex-1 items-center gap-2">
+                    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-800">
+                      {UPGRADE_ICONS[id]}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-1.5">
+                        <span className="truncate text-xs font-bold text-slate-100">
+                          {spec.name}
+                        </span>
+                        <span className="font-mono-tabular shrink-0 text-[10px] font-semibold text-slate-300">
+                          Lv {level}/{spec.maxLevel}
+                        </span>
+                      </div>
+                      <div className="truncate text-[10px] text-slate-400">
+                        {spec.effectSummary}
+                      </div>
+                      <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+                        <div
+                          className={`h-full transition-[width] duration-150 ${
+                            isMaxed ? 'bg-emerald-400' : 'bg-amber-400'
+                          }`}
+                          style={{
+                            width: `${Math.min(
+                              100,
+                              Math.round((level / spec.maxLevel) * 100),
+                            )}%`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    data-testid={`buy-upgrade-${id}`}
+                    disabled={!affordable}
+                    onClick={(e) => {
+                      onBuyUpgrade(id);
+                      e.currentTarget.blur();
+                    }}
+                    className={`font-mono-tabular min-h-[34px] shrink-0 cursor-pointer rounded-lg px-2.5 py-1 text-[11px] font-bold uppercase transition-colors ${
+                      isMaxed
+                        ? 'bg-slate-800 text-emerald-400'
+                        : affordable
+                          ? 'bg-amber-500 text-slate-950 hover:bg-amber-400'
+                          : 'bg-slate-800/80 text-slate-500'
+                    }`}
+                  >
+                    {isMaxed ? 'MAX' : `${cost} UP`}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
