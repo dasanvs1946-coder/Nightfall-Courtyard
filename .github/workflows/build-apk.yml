@@ -34,9 +34,9 @@ jobs:
           npx cap add android
           npx cap sync android
 
-      - name: Fix Kotlin Duplicate Class & Lock Landscape
+      - name: Fix Kotlin Duplicate Class & Lock Portrait Orientation
         run: |
-          sed -i 's/android:exported="true"/android:exported="true" android:screenOrientation="landscape"/' android/app/src/main/AndroidManifest.xml
+          sed -i 's/android:exported="true"/android:exported="true" android:screenOrientation="portrait"/' android/app/src/main/AndroidManifest.xml
           cat << 'EOF' >> android/app/build.gradle
 
           dependencies {
