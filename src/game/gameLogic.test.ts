@@ -22,8 +22,12 @@ import {
 } from './collision';
 import {
   buildWavePlan,
+  computeZombieHitDamage,
+  getBossCycleHpMultiplier,
+  getBossRangedCooldown,
   getBossTitle,
   isBossWaveNumber,
+  isPointInFlashlightCone,
   rollCrateDrop,
   ZOMBIE_SPECS,
 } from './waves';
@@ -36,6 +40,7 @@ import {
   StorageLike,
 } from './storage';
 import {
+  BOSS_KILL_UP_BONUS,
   canPurchaseUpgrade,
   createInitialUpgradeLevels,
   getDamageMultiplier,
@@ -47,8 +52,11 @@ import {
   getMoveSpeedMultiplier,
   getReloadDurationMultiplier,
   getUpgradeCost,
+  KILLS_PER_UPGRADE_POINT,
   MAX_UPGRADE_LEVEL,
   purchaseUpgrade,
+  WAVE_CLEAR_UP_BOSS,
+  WAVE_CLEAR_UP_REGULAR,
 } from './upgrades';
 import {
   getNextWeatherKind,
@@ -57,6 +65,12 @@ import {
   WEATHER_PRESETS,
 } from './weather';
 import { getMinimapObstacles, worldToMinimap } from './minimap';
+import {
+  getNextTacticalGear,
+  TACTICAL_GEAR_ORDER,
+  TACTICAL_GEAR_SPECS,
+} from './tacticalGear';
+import { APP_VERSION } from './version';
 
 test('weapon progression has 12 distinct weapons unlocking across waves 1 to 20 with next/prev cycling', () => {
   assert.equal(WEAPON_ORDER.length, 12);
@@ -151,28 +165,49 @@ test('raycast stops at cover obstacles and detects zombie circle hits', () => {
   assert.ok(circleHit !== null && Math.abs(circleHit - 4.5) < 1e-5);
 });
 
-test('wave plans scale zombie count, +2.5% HP and +0.5% damage per round, moderate runner speed, and spawn bosses only on multiples of 5', () => {
+test('v1.1.0 waves introduce 6 regular archetypes and flatten post-Wave 14 scaling so Waves 15-50 stay fair', () => {
   const w1 = buildWavePlan(1, () => 0.5);
   const w2 = buildWavePlan(2, () => 0.5);
   const w3 = buildWavePlan(3, () => 0.15);
   const w4 = buildWavePlan(4, () => 0.5);
   const w5 = buildWavePlan(5, () => 0.5);
   const w6 = buildWavePlan(6, () => 0.5);
+  const w7 = buildWavePlan(7, () => 0.5);
   const w10 = buildWavePlan(10, () => 0.5);
+  const w14 = buildWavePlan(14, () => 0.5);
+  const w25 = buildWavePlan(25, () => 0.5);
+  const w50 = buildWavePlan(50, () => 0.5);
 
-  assert.ok(w3.queue.length > w1.queue.length);
+  // Early rounds keep +2.5% HP / +0.5% damage ramp, mid-game ramps gently, post-14 flattens cleanly
   assert.ok(Math.abs(w1.hpMultiplier - 1) < 1e-9);
   assert.ok(Math.abs(w2.hpMultiplier - 1.025) < 1e-9);
   assert.ok(Math.abs(w3.hpMultiplier - Math.pow(1.025, 2)) < 1e-9);
   assert.ok(Math.abs(w1.damageMultiplier - 1) < 1e-9);
   assert.ok(Math.abs(w2.damageMultiplier - 1.005) < 1e-9);
-  assert.ok(Math.abs(w3.damageMultiplier - Math.pow(1.005, 2)) < 1e-9);
+  assert.ok(w6.hpMultiplier > Math.pow(1.025, 5));
+  assert.ok(w14.hpMultiplier < 2.0);
+  assert.ok(w25.hpMultiplier > w14.hpMultiplier && w25.hpMultiplier < 3.0);
+  assert.ok(w50.hpMultiplier > w25.hpMultiplier && w50.hpMultiplier < 5.2);
+  assert.ok(w25.damageMultiplier < 1.45);
+  assert.ok(w50.damageMultiplier < 1.75);
+  assert.ok(w50.speedMultiplier <= 1.35);
+  assert.ok(w25.queue.length >= 45);
+  assert.ok(w50.spawnInterval >= 0.35 && w50.spawnInterval <= 0.45);
 
-  assert.ok(w3.speedMultiplier > w1.speedMultiplier);
+  // New regular enemy archetypes debut on Waves 4, 7, and 10
+  assert.equal(w4.queue.includes('spitter'), true);
+  assert.equal(w7.queue.includes('stalker'), true);
+  assert.equal(w10.queue.includes('breacher'), true);
+
   assert.ok(ZOMBIE_SPECS.runner.speed > ZOMBIE_SPECS.walker.speed);
   assert.ok(ZOMBIE_SPECS.runner.speed < 5.0);
-  assert.ok(ZOMBIE_SPECS.brute.maxHp > ZOMBIE_SPECS.walker.maxHp);
-  assert.ok(ZOMBIE_SPECS.boss.maxHp > ZOMBIE_SPECS.brute.maxHp);
+  assert.ok(ZOMBIE_SPECS.stalker.speed > ZOMBIE_SPECS.walker.speed);
+  assert.ok(ZOMBIE_SPECS.breacher.maxHp > ZOMBIE_SPECS.brute.maxHp);
+  assert.ok(ZOMBIE_SPECS.boss.maxHp >= 1500);
+
+  // Boss cycle scaling & faster ranged barrage recovery
+  assert.ok(getBossCycleHpMultiplier(10) > getBossCycleHpMultiplier(5));
+  assert.ok(getBossRangedCooldown(25) < getBossRangedCooldown(5));
 
   assert.equal(isBossWaveNumber(1), false);
   assert.equal(isBossWaveNumber(4), false);
@@ -192,16 +227,55 @@ test('wave plans scale zombie count, +2.5% HP and +0.5% damage per round, modera
   assert.equal(drop, 'health');
 });
 
-test('upgrades scale smoothly up to Level 50 and respect max cap and tiered costs', () => {
+test('Riot Breacher front shield reduces frontal bullet damage by 65%, while flanking or bypass deals full damage', () => {
+  // Breacher facing south (+Z: x=0, z=1)
+  // Shot fired north (-Z: x=0, z=-1) hits front shield -> 35% of 100 = 35
+  const frontal = computeZombieHitDamage(100, 'breacher', 0, -1, 0, 1, false);
+  assert.equal(frontal.blockedByArmor, true);
+  assert.equal(frontal.finalDamage, 35);
+
+  // Shot from flank (+X: x=1, z=0) -> full 100 damage
+  const flank = computeZombieHitDamage(100, 'breacher', 1, 0, 0, 1, false);
+  assert.equal(flank.blockedByArmor, false);
+  assert.equal(flank.finalDamage, 100);
+
+  // Shot from behind (+Z: x=0, z=1) -> full 100 damage
+  const rear = computeZombieHitDamage(100, 'breacher', 0, 1, 0, 1, false);
+  assert.equal(rear.blockedByArmor, false);
+  assert.equal(rear.finalDamage, 100);
+
+  // Explosive / armor-bypass hit front -> full 100 damage
+  const bypass = computeZombieHitDamage(100, 'breacher', 0, -1, 0, 1, true);
+  assert.equal(bypass.blockedByArmor, false);
+  assert.equal(bypass.finalDamage, 100);
+});
+
+test('Flashlight cone check accurately reveals Shadow Stalkers inside beam and hides those outside', () => {
+  // Player at (0,0) aiming straight north (angle = 0 -> fwd = (0, -1))
+  assert.equal(isPointInFlashlightCone(0, 0, 0, 0, -7), true);
+  assert.equal(isPointInFlashlightCone(0, 0, 0, 1.5, -7), true);
+  // Behind player -> false
+  assert.equal(isPointInFlashlightCone(0, 0, 0, 0, 6), false);
+  // Out of flashlight range -> false
+  assert.equal(isPointInFlashlightCone(0, 0, 0, 0, -18), false);
+});
+
+test('tighter UP economy and steeper upgrade costs scale cleanly up to Level 50', () => {
   assert.equal(MAX_UPGRADE_LEVEL, 50);
+  assert.equal(KILLS_PER_UPGRADE_POINT, 8);
+  assert.equal(WAVE_CLEAR_UP_REGULAR, 1);
+  assert.equal(WAVE_CLEAR_UP_BOSS, 2);
+  assert.equal(BOSS_KILL_UP_BONUS, 2);
+
   const levels = createInitialUpgradeLevels();
   let points = 12;
 
   assert.equal(getUpgradeCost(0), 1);
-  assert.equal(getUpgradeCost(4), 1);
-  assert.equal(getUpgradeCost(5), 2);
-  assert.equal(getUpgradeCost(25), 6);
-  assert.equal(getUpgradeCost(49), 10);
+  assert.equal(getUpgradeCost(2), 1);
+  assert.equal(getUpgradeCost(3), 2);
+  assert.equal(getUpgradeCost(12), 6);
+  assert.equal(getUpgradeCost(25), 11);
+  assert.equal(getUpgradeCost(49), 21);
 
   for (let i = 0; i < 6; i++) {
     const res = purchaseUpgrade(levels, points, 'damage');
@@ -209,7 +283,7 @@ test('upgrades scale smoothly up to Level 50 and respect max cap and tiered cost
     points = res.nextPoints;
   }
   assert.equal(levels.damage, 6);
-  assert.equal(points, 5); // 5 purchases @ 1 UP + 1 purchase @ 2 UP = 7 UP spent
+  assert.equal(points, 3); // 3 * 1 UP + 3 * 2 UP = 9 UP spent
   assert.ok(Math.abs(getDamageMultiplier(levels) - 1.48) < 1e-9);
 
   // Vitality, handling, mobility, and capacity scaling
@@ -225,17 +299,17 @@ test('upgrades scale smoothly up to Level 50 and respect max cap and tiered cost
   assert.ok(getDashCooldownMultiplier(levels) < 0.9);
   assert.equal(getEffectiveMagSize('pistol', levels), Math.round(12 * 1.5));
 
-  // Level 49 -> 50 succeeds, then 50+ caps
+  // Level 49 -> 50 costs 21 UP, then 50+ caps
   levels.damage = 49;
-  assert.equal(canPurchaseUpgrade(levels, 9, 'damage'), false);
-  assert.equal(canPurchaseUpgrade(levels, 10, 'damage'), true);
-  const maxRes = purchaseUpgrade(levels, 15, 'damage');
+  assert.equal(canPurchaseUpgrade(levels, 20, 'damage'), false);
+  assert.equal(canPurchaseUpgrade(levels, 21, 'damage'), true);
+  const maxRes = purchaseUpgrade(levels, 25, 'damage');
   assert.equal(maxRes.purchased, true);
   assert.equal(maxRes.newLevel, 50);
   assert.equal(canPurchaseUpgrade(levels, 999, 'damage'), false);
 });
 
-test('high score and run progress persist and support continue or reset from beginning', () => {
+test('high score and run progress (including equipped tactical gear) persist cleanly', () => {
   const map = new Map<string, string>();
   const mockStorage: StorageLike = {
     getItem: (k) => map.get(k) ?? null,
@@ -269,6 +343,7 @@ test('high score and run progress persist and support continue or reset from beg
         capacity: 9,
       },
       activeWeapon: 'dual',
+      equippedGear: 'turret',
     },
     mockStorage,
   );
@@ -282,9 +357,24 @@ test('high score and run progress persist and support continue or reset from beg
   assert.equal(loaded.upgradeLevels.damage, 18);
   assert.equal(loaded.upgradeLevels.vitality, 50);
   assert.equal(loaded.activeWeapon, 'dual');
+  assert.equal(loaded.equippedGear, 'turret');
 
   clearRunProgress(mockStorage);
   assert.equal(loadRunProgress(mockStorage), null);
+});
+
+test('tactical gear specs and cycling cover mine, turret, and flashbang with long cooldowns', () => {
+  assert.deepEqual(TACTICAL_GEAR_ORDER, ['mine', 'turret', 'flashbang']);
+  assert.ok(TACTICAL_GEAR_SPECS.mine.cooldownSec >= 12);
+  assert.ok(TACTICAL_GEAR_SPECS.turret.cooldownSec >= 15);
+  assert.ok(TACTICAL_GEAR_SPECS.flashbang.cooldownSec >= 12);
+  assert.equal(getNextTacticalGear('mine'), 'turret');
+  assert.equal(getNextTacticalGear('turret'), 'flashbang');
+  assert.equal(getNextTacticalGear('flashbang'), 'mine');
+});
+
+test('app version matches v1.1.0 release', () => {
+  assert.equal(APP_VERSION, 'v1.1.0');
 });
 
 test('dynamic weather cycles across states, escalates to storm on boss waves, and parses query overrides', () => {
@@ -324,3 +414,4 @@ test('minimap projects world coordinates, clamps out-of-bounds points, and inclu
   assert.ok(shapes.some((s) => s.kind === 'lamp'));
   assert.ok(shapes.some((s) => s.kind === 'car'));
 });
+

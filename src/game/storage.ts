@@ -1,5 +1,6 @@
-import { SavedRunProgress, UpgradeLevels, WeaponId } from './types';
+import { SavedRunProgress, TacticalGearId, UpgradeLevels, WeaponId } from './types';
 import { createInitialUpgradeLevels, MAX_UPGRADE_LEVEL } from './upgrades';
+import { TACTICAL_GEAR_ORDER } from './tacticalGear';
 import { WEAPON_ORDER } from './weapons';
 
 const HIGH_SCORE_KEY = 'nightfall_courtyard_high_score_v1';
@@ -70,6 +71,12 @@ export function loadRunProgress(
         ? (parsed.activeWeapon as WeaponId)
         : 'pistol';
 
+    const equippedGear =
+      typeof parsed.equippedGear === 'string' &&
+      (TACTICAL_GEAR_ORDER as string[]).includes(parsed.equippedGear)
+        ? (parsed.equippedGear as TacticalGearId)
+        : 'mine';
+
     return {
       lastWave: Math.min(999, lastWave),
       score: Math.max(0, Math.round(Number(parsed.score) || 0)),
@@ -77,6 +84,7 @@ export function loadRunProgress(
       upgradePoints: Math.max(0, Math.floor(Number(parsed.upgradePoints) || 0)),
       upgradeLevels: sanitizeUpgradeLevels(parsed.upgradeLevels),
       activeWeapon,
+      equippedGear,
     };
   } catch {
     return null;
@@ -96,6 +104,7 @@ export function saveRunProgress(
       upgradePoints: Math.max(0, Math.floor(progress.upgradePoints)),
       upgradeLevels: sanitizeUpgradeLevels(progress.upgradeLevels),
       activeWeapon: progress.activeWeapon,
+      equippedGear: progress.equippedGear ?? 'mine',
     };
     storage.setItem(RUN_PROGRESS_KEY, JSON.stringify(clean));
   } catch {

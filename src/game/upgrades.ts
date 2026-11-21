@@ -1,7 +1,10 @@
 import { UpgradeId, UpgradeLevels, WeaponId } from './types';
 import { WEAPON_SPECS } from './weapons';
 
-export const KILLS_PER_UPGRADE_POINT = 5;
+export const KILLS_PER_UPGRADE_POINT = 8; // Reduced ~40% UP gain rate per kill vs 5 kills
+export const WAVE_CLEAR_UP_REGULAR = 1; // Tighter wave completion UP (-40%+ economy)
+export const WAVE_CLEAR_UP_BOSS = 2;
+export const BOSS_KILL_UP_BONUS = 2;
 export const MAX_UPGRADE_LEVEL = 50;
 
 export interface UpgradeSpec {
@@ -69,7 +72,8 @@ export function createInitialUpgradeLevels(): UpgradeLevels {
 }
 
 export function getUpgradeCost(currentLevel: number): number {
-  return 1 + Math.floor(Math.max(0, currentLevel) / 5);
+  const lv = Math.max(0, currentLevel);
+  return 1 + Math.floor(lv / 3) + Math.floor(lv / 12);
 }
 
 export function canPurchaseUpgrade(

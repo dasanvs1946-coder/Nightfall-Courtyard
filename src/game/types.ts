@@ -14,7 +14,16 @@ export type WeaponId =
   | 'flamethrower'
   | 'railgun';
 
-export type ZombieKind = 'walker' | 'runner' | 'brute' | 'boss';
+export type ZombieKind =
+  | 'walker'
+  | 'runner'
+  | 'brute'
+  | 'spitter'
+  | 'stalker'
+  | 'breacher'
+  | 'boss';
+
+export type TacticalGearId = 'mine' | 'turret' | 'flashbang';
 
 export type CrateKind = 'health' | 'ammo' | 'rapidfire';
 
@@ -64,6 +73,7 @@ export interface SavedRunProgress {
   upgradePoints: number;
   upgradeLevels: UpgradeLevels;
   activeWeapon: WeaponId;
+  equippedGear?: TacticalGearId;
 }
 
 export interface ObstacleBox {
@@ -85,6 +95,7 @@ export interface FloatingDamage {
   y: number; // screen px
   amount: number;
   isCrit: boolean;
+  blockedByArmor?: boolean;
   age: number;
   duration: number;
 }
@@ -102,6 +113,7 @@ export interface MinimapEnemy {
   x: number;
   z: number;
   kind: ZombieKind;
+  revealed?: boolean;
 }
 
 export interface MinimapPickup {
@@ -110,12 +122,19 @@ export interface MinimapPickup {
   kind: CrateKind;
 }
 
+export interface MinimapHazard {
+  x: number;
+  z: number;
+  kind: 'acid' | 'mine' | 'turret';
+}
+
 export interface MinimapSnapshot {
   playerX: number;
   playerZ: number;
   playerAimAngle: number;
   enemies: MinimapEnemy[];
   pickups: MinimapPickup[];
+  hazards?: MinimapHazard[];
 }
 
 export interface HudSnapshot {
@@ -132,6 +151,9 @@ export interface HudSnapshot {
   isReloading: boolean;
   reloadProgress: number; // 0..1
   dashCooldownProgress: number; // 1 = ready, 0..1 recharging
+  equippedGear: TacticalGearId;
+  gearCooldownProgress: number; // 1 = ready, 0..1 recharging
+  gearCooldownRemaining: number; // seconds
   rapidFireRemaining: number; // seconds
   muted: boolean;
   waveBanner: string | null;

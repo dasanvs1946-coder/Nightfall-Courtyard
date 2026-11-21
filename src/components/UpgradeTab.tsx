@@ -8,12 +8,15 @@ import {
   Wrench,
   Zap,
 } from 'lucide-react';
-import { UpgradeId, UpgradeLevels } from '../game/types';
+import { TACTICAL_GEAR_ORDER, TACTICAL_GEAR_SPECS } from '../game/tacticalGear';
+import { TacticalGearId, UpgradeId, UpgradeLevels } from '../game/types';
 import {
   canPurchaseUpgrade,
   getUpgradeCost,
   UPGRADE_ORDER,
   UPGRADE_SPECS,
+  WAVE_CLEAR_UP_BOSS,
+  WAVE_CLEAR_UP_REGULAR,
 } from '../game/upgrades';
 
 interface UpgradeTabProps {
@@ -22,8 +25,10 @@ interface UpgradeTabProps {
   killsTowardNextUp: number;
   killsPerUp: number;
   upgradeLevels: UpgradeLevels;
+  equippedGear: TacticalGearId;
   onToggle: () => void;
   onBuyUpgrade: (id: UpgradeId) => void;
+  onEquipGear: (id: TacticalGearId) => void;
 }
 
 const UPGRADE_ICONS: Record<UpgradeId, React.ReactNode> = {
@@ -40,8 +45,10 @@ export const UpgradeTab: React.FC<UpgradeTabProps> = ({
   killsTowardNextUp,
   killsPerUp,
   upgradeLevels,
+  equippedGear,
   onToggle,
   onBuyUpgrade,
+  onEquipGear,
 }) => {
   const hasPoints = upgradePoints > 0;
 
@@ -90,7 +97,7 @@ export const UpgradeTab: React.FC<UpgradeTabProps> = ({
         </span>
       </button>
 
-      {/* Collapsible Compact Upgrade Drawer (absolute so top-right HUD stays anchored) */}
+      {/* Collapsible Compact Upgrade Drawer */}
       {open && (
         <div
           data-testid="upgrade-drawer"
@@ -104,7 +111,7 @@ export const UpgradeTab: React.FC<UpgradeTabProps> = ({
                 Field Upgrades
               </div>
               <div className="text-[10px] text-slate-400">
-                +1 UP / {killsPerUp} kills · +2 Wave · +3 Boss
+                +1 UP / {killsPerUp} kills · +{WAVE_CLEAR_UP_REGULAR} Wave · +{WAVE_CLEAR_UP_BOSS} Boss
               </div>
             </div>
             <div className="font-mono-tabular text-xs font-bold text-amber-400">
@@ -112,7 +119,42 @@ export const UpgradeTab: React.FC<UpgradeTabProps> = ({
             </div>
           </div>
 
-          <div className="flex max-h-[48dvh] flex-col gap-1.5 overflow-y-auto pr-0.5">
+          {/* Compact Mid-Run Tactical Gear Switcher */}
+          <div className="mb-2 rounded-lg border border-slate-800 bg-slate-900/70 p-1.5">
+            <div className="mb-1 flex items-center justify-between text-[10px] font-bold tracking-wider uppercase">
+              <span className="text-slate-400">Tactical Gear</span>
+              <span className="font-mono-tabular text-cyan-300">
+                {TACTICAL_GEAR_SPECS[equippedGear].cooldownSec}s CD
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-1">
+              {TACTICAL_GEAR_ORDER.map((gearId) => {
+                const gear = TACTICAL_GEAR_SPECS[gearId];
+                const active = gearId === equippedGear;
+                return (
+                  <button
+                    key={gearId}
+                    type="button"
+                    tabIndex={-1}
+                    data-testid={`equip-gear-${gearId}`}
+                    onClick={(e) => {
+                      onEquipGear(gearId);
+                      e.currentTarget.blur();
+                    }}
+                    className={`min-h-[30px] cursor-pointer rounded border px-1.5 py-1 text-[10px] font-bold tracking-wide uppercase transition-colors ${
+                      active
+                        ? 'border-cyan-400 bg-cyan-500/20 text-cyan-200'
+                        : 'border-slate-700/70 bg-slate-950/60 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {gear.shortLabel}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="flex max-h-[42dvh] flex-col gap-1.5 overflow-y-auto pr-0.5">
             {UPGRADE_ORDER.map((id) => {
               const spec = UPGRADE_SPECS[id];
               const level = upgradeLevels[id];
@@ -189,3 +231,4 @@ export const UpgradeTab: React.FC<UpgradeTabProps> = ({
     </div>
   );
 };
+

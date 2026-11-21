@@ -1,4 +1,4 @@
-import { CrateKind, WeaponId } from '../game/types';
+import { CrateKind, TacticalGearId, WeaponId } from '../game/types';
 
 export class SoundEngine {
   private ctx: AudioContext | null = null;
@@ -438,6 +438,173 @@ export class SoundEngine {
     rGain.connect(ctx.destination);
     rumble.start(now);
     rumble.stop(now + 0.92);
+  }
+
+  public playAcidSpit(): void {
+    const ctx = this.ready();
+    if (!ctx || !this.noiseBuffer) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(520, now);
+    osc.frequency.exponentialRampToValueAtTime(210, now + 0.18);
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(920, now);
+    filter.Q.setValueAtTime(3.2, now);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.14, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.19);
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.2);
+  }
+
+  public playAcidSplat(): void {
+    const ctx = this.ready();
+    if (!ctx || !this.noiseBuffer) return;
+    const now = ctx.currentTime;
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.noiseBuffer;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(1400, now);
+    filter.frequency.exponentialRampToValueAtTime(420, now + 0.22);
+    filter.Q.setValueAtTime(2.0, now);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.14, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.23);
+    noise.connect(filter);
+    filter.connect(gain);
+    gain.connect(ctx.destination);
+    noise.start(now);
+    noise.stop(now + 0.24);
+  }
+
+  public playStalkerLunge(): void {
+    const ctx = this.ready();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(320, now);
+    osc.frequency.exponentialRampToValueAtTime(940, now + 0.14);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.11, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.17);
+  }
+
+  public playArmorClang(): void {
+    const ctx = this.ready();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    [1380, 2060].forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      osc.type = i === 0 ? 'triangle' : 'sine';
+      osc.frequency.setValueAtTime(freq * (0.95 + Math.random() * 0.1), now);
+      osc.frequency.exponentialRampToValueAtTime(freq * 0.65, now + 0.08);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.09, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.085);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now);
+      osc.stop(now + 0.09);
+    });
+  }
+
+  public playGearDeploy(gear: TacticalGearId): void {
+    const ctx = this.ready();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const notes =
+      gear === 'mine'
+        ? [620, 880]
+        : gear === 'turret'
+          ? [440, 660, 880]
+          : [780, 1040];
+    notes.forEach((freq, idx) => {
+      const t = now + idx * 0.05;
+      const osc = ctx.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, t);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.12, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.095);
+    });
+  }
+
+  public playGearExplosion(): void {
+    const ctx = this.ready();
+    if (!ctx || !this.noiseBuffer) return;
+    const now = ctx.currentTime;
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.noiseBuffer;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(640, now);
+    filter.frequency.exponentialRampToValueAtTime(95, now + 0.42);
+    const nGain = ctx.createGain();
+    nGain.gain.setValueAtTime(0.36, now);
+    nGain.gain.exponentialRampToValueAtTime(0.001, now + 0.44);
+    noise.connect(filter);
+    filter.connect(nGain);
+    nGain.connect(ctx.destination);
+    noise.start(now);
+    noise.stop(now + 0.45);
+
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(115, now);
+    osc.frequency.exponentialRampToValueAtTime(32, now + 0.35);
+    const oGain = ctx.createGain();
+    oGain.gain.setValueAtTime(0.3, now);
+    oGain.gain.exponentialRampToValueAtTime(0.001, now + 0.36);
+    osc.connect(oGain);
+    oGain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.38);
+  }
+
+  public playFlashbang(): void {
+    const ctx = this.ready();
+    if (!ctx || !this.noiseBuffer) return;
+    const now = ctx.currentTime;
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.noiseBuffer;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'highpass';
+    filter.frequency.setValueAtTime(1200, now);
+    const nGain = ctx.createGain();
+    nGain.gain.setValueAtTime(0.3, now);
+    nGain.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
+    noise.connect(filter);
+    filter.connect(nGain);
+    nGain.connect(ctx.destination);
+    noise.start(now);
+    noise.stop(now + 0.26);
+
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(2450, now);
+    osc.frequency.exponentialRampToValueAtTime(1800, now + 0.45);
+    const oGain = ctx.createGain();
+    oGain.gain.setValueAtTime(0.09, now);
+    oGain.gain.exponentialRampToValueAtTime(0.001, now + 0.46);
+    osc.connect(oGain);
+    oGain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.48);
   }
 
   public playGameOver(): void {

@@ -1,0 +1,75 @@
+{
+  "entities": {
+    "LeaderboardEntry": {
+      "title": "LeaderboardEntry",
+      "description": "Public personal-best survival run record for a verified player on the Nightfall Courtyard global leaderboard.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Authenticated Firebase UID matching the document ID."
+        },
+        "playerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 24,
+          "pattern": "^[a-zA-Z0-9 _\\-\\.]+$",
+          "description": "Sanitized public survivor callsign (zero PII)."
+        },
+        "score": {
+          "type": "integer",
+          "description": "Best run score achieved (non-negative integer, <= 100000000)."
+        },
+        "wave": {
+          "type": "integer",
+          "description": "Highest wave reached in the recorded run (1..999)."
+        },
+        "kills": {
+          "type": "integer",
+          "description": "Total infected eliminated in the recorded run (0..1000000)."
+        },
+        "equippedGear": {
+          "type": "string",
+          "enum": ["mine", "turret", "flashbang"],
+          "description": "Tactical gear equipped during the run."
+        },
+        "isPublic": {
+          "type": "boolean",
+          "description": "Always true; enables rule-enforced public leaderboard list queries."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when player first joined the leaderboard."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the latest personal best update."
+        }
+      },
+      "required": [
+        "uid",
+        "playerName",
+        "score",
+        "wave",
+        "kills",
+        "equippedGear",
+        "isPublic",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/leaderboard/{entryId}": {
+      "schema": {
+        "$ref": "#/entities/LeaderboardEntry"
+      },
+      "description": "Global personal-best high score entries keyed by the verified player UID."
+    }
+  }
+}

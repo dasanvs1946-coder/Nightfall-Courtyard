@@ -13,6 +13,7 @@ import { parseWeatherParam } from './game/weather';
 import { GameEngine } from './scene/GameEngine';
 
 function createDefaultHudSnapshot(): HudSnapshot {
+  const saved = loadRunProgress();
   return {
     phase: 'title',
     hp: 100,
@@ -27,6 +28,9 @@ function createDefaultHudSnapshot(): HudSnapshot {
     isReloading: false,
     reloadProgress: 0,
     dashCooldownProgress: 1,
+    equippedGear: saved?.equippedGear ?? 'mine',
+    gearCooldownProgress: 1,
+    gearCooldownRemaining: 0,
     rapidFireRemaining: 0,
     muted: false,
     waveBanner: null,
@@ -48,6 +52,7 @@ function createDefaultHudSnapshot(): HudSnapshot {
       playerAimAngle: 0,
       enemies: [],
       pickups: [],
+      hazards: [],
     },
   };
 }
@@ -152,6 +157,8 @@ export default function App() {
         <TitleScreen
           highScore={hud.highScore}
           savedProgress={savedProgress}
+          equippedGear={hud.equippedGear}
+          onEquipGear={(id) => engineRef.current?.equipGear(id)}
           onStartFromBeginning={() => {
             setUpgradesOpen(false);
             engineRef.current?.startNewGame({ fromBeginning: true });
@@ -175,6 +182,8 @@ export default function App() {
           onDash={() => engineRef.current?.triggerDash()}
           onReload={() => engineRef.current?.triggerReload()}
           onSwitchWeapon={() => engineRef.current?.switchWeapon()}
+          onTriggerGear={() => engineRef.current?.triggerGear()}
+          onEquipGear={(id) => engineRef.current?.equipGear(id)}
           onPrevWeapon={() => engineRef.current?.prevWeapon()}
           onNextWeapon={() => engineRef.current?.switchWeapon()}
           onSelectWeapon={(id) => engineRef.current?.selectWeapon(id)}

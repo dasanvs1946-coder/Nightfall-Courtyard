@@ -11,7 +11,13 @@ import {
   Volume2,
   VolumeX,
 } from 'lucide-react';
-import { FloatingDamage, HudSnapshot, UpgradeId, WeaponId } from '../game/types';
+import {
+  FloatingDamage,
+  HudSnapshot,
+  TacticalGearId,
+  UpgradeId,
+  WeaponId,
+} from '../game/types';
 import { WEAPON_SPECS } from '../game/weapons';
 import { WEATHER_PRESETS } from '../game/weather';
 import { ActionControls } from './ActionControls';
@@ -28,6 +34,8 @@ interface HudOverlayProps {
   onDash: () => void;
   onReload: () => void;
   onSwitchWeapon: () => void;
+  onTriggerGear: () => void;
+  onEquipGear: (id: TacticalGearId) => void;
   onPrevWeapon: () => void;
   onNextWeapon: () => void;
   onSelectWeapon: (id: WeaponId) => void;
@@ -46,6 +54,8 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
   onDash,
   onReload,
   onSwitchWeapon,
+  onTriggerGear,
+  onEquipGear,
   onPrevWeapon,
   onNextWeapon,
   onSelectWeapon,
@@ -137,7 +147,11 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
             <div
               key={d.id}
               className={`font-mono-tabular hud-text-shadow absolute -translate-x-1/2 -translate-y-1/2 font-bold ${
-                d.isCrit ? 'text-base text-amber-300' : 'text-sm text-white'
+                d.blockedByArmor
+                  ? 'text-xs text-sky-300'
+                  : d.isCrit
+                    ? 'text-base text-amber-300'
+                    : 'text-sm text-white'
               }`}
               style={{
                 left: d.x,
@@ -228,8 +242,10 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
             killsTowardNextUp={hud.killsTowardNextUp}
             killsPerUp={hud.killsPerUp}
             upgradeLevels={hud.upgradeLevels}
+            equippedGear={hud.equippedGear}
             onToggle={onToggleUpgrades}
             onBuyUpgrade={onBuyUpgrade}
+            onEquipGear={onEquipGear}
           />
         </div>
 
@@ -432,11 +448,15 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
             weapons={hud.weapons}
             upgradeLevels={hud.upgradeLevels}
             dashCooldownProgress={hud.dashCooldownProgress}
+            equippedGear={hud.equippedGear}
+            gearCooldownProgress={hud.gearCooldownProgress}
+            gearCooldownRemaining={hud.gearCooldownRemaining}
             isReloading={hud.isReloading}
             reloadProgress={hud.reloadProgress}
             onDash={onDash}
             onReload={onReload}
             onSwitchWeapon={onSwitchWeapon}
+            onTriggerGear={onTriggerGear}
           />
           <VirtualThumbstick
             side="right"

@@ -83,6 +83,50 @@ export const Minimap: React.FC<MinimapProps> = ({ minimap }) => {
             );
           })}
 
+          {/* Ground Hazards & Deployed Tactical Gear */}
+          {(minimap.hazards ?? []).map((hz, idx) => {
+            const pos = worldToMinimap(hz.x, hz.z, MAP_SIZE);
+            if (hz.kind === 'acid') {
+              return (
+                <circle
+                  key={`hz-${idx}`}
+                  cx={pos.x}
+                  cy={pos.y}
+                  r={4.2}
+                  fill="rgba(132, 204, 22, 0.34)"
+                  stroke="#a3e635"
+                  strokeWidth="0.5"
+                />
+              );
+            }
+            if (hz.kind === 'mine') {
+              return (
+                <circle
+                  key={`hz-${idx}`}
+                  cx={pos.x}
+                  cy={pos.y}
+                  r={1.9}
+                  fill="#f59e0b"
+                  stroke="#fef3c7"
+                  strokeWidth="0.5"
+                />
+              );
+            }
+            return (
+              <rect
+                key={`hz-${idx}`}
+                x={pos.x - 1.8}
+                y={pos.y - 1.8}
+                width="3.6"
+                height="3.6"
+                rx="0.6"
+                fill="#38bdf8"
+                stroke="#e0f2fe"
+                strokeWidth="0.5"
+              />
+            );
+          })}
+
           {/* Supply crates */}
           {minimap.pickups.map((p, idx) => {
             const pos = worldToMinimap(p.x, p.z, MAP_SIZE);
@@ -123,7 +167,7 @@ export const Minimap: React.FC<MinimapProps> = ({ minimap }) => {
                 </g>
               );
             }
-            if (enemy.kind === 'brute') {
+            if (enemy.kind === 'breacher') {
               return (
                 <rect
                   key={`e-${idx}`}
@@ -131,8 +175,51 @@ export const Minimap: React.FC<MinimapProps> = ({ minimap }) => {
                   y={pos.y - 2.3}
                   width="4.6"
                   height="4.6"
+                  rx="0.7"
+                  fill="#0284c7"
+                  stroke="#e2e8f0"
+                  strokeWidth="0.8"
+                />
+              );
+            }
+            if (enemy.kind === 'brute') {
+              return (
+                <rect
+                  key={`e-${idx}`}
+                  x={pos.x - 2.2}
+                  y={pos.y - 2.2}
+                  width="4.4"
+                  height="4.4"
                   rx="0.8"
                   fill="#fb923c"
+                />
+              );
+            }
+            if (enemy.kind === 'spitter') {
+              return (
+                <rect
+                  key={`e-${idx}`}
+                  x={pos.x - 2.0}
+                  y={pos.y - 2.0}
+                  width="4.0"
+                  height="4.0"
+                  rx="0.4"
+                  fill="#a3e635"
+                  stroke="#fef08a"
+                  strokeWidth="0.55"
+                  transform={`rotate(45 ${pos.x} ${pos.y})`}
+                />
+              );
+            }
+            if (enemy.kind === 'stalker') {
+              return (
+                <circle
+                  key={`e-${idx}`}
+                  cx={pos.x}
+                  cy={pos.y}
+                  r={enemy.revealed ? 2.2 : 1.7}
+                  fill="#c084fc"
+                  opacity={enemy.revealed ? 0.95 : 0.4}
                 />
               );
             }

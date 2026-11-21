@@ -20,7 +20,9 @@ import {
   FloatingDamage,
   GamePhase,
   HudSnapshot,
+  MinimapHazard,
   SavedRunProgress,
+  TacticalGearId,
   UpgradeId,
   UpgradeLevels,
   WeaponId,
@@ -29,6 +31,11 @@ import {
   ZombieKind,
 } from '../game/types';
 import {
+  TACTICAL_GEAR_SPECS,
+  getNextTacticalGear,
+} from '../game/tacticalGear';
+import {
+  BOSS_KILL_UP_BONUS,
   createInitialUpgradeLevels,
   getDamageMultiplier,
   getDamageTakenMultiplier,
@@ -41,11 +48,17 @@ import {
   KILLS_PER_UPGRADE_POINT,
   purchaseUpgrade,
   UPGRADE_SPECS,
+  WAVE_CLEAR_UP_BOSS,
+  WAVE_CLEAR_UP_REGULAR,
 } from '../game/upgrades';
 import {
   buildWavePlan,
+  computeZombieHitDamage,
+  getBossCycleHpMultiplier,
+  getBossRangedCooldown,
   getBossTitle,
   isBossWaveNumber,
+  isPointInFlashlightCone,
   rollCrateDrop,
   WavePlan,
   ZOMBIE_SPECS,
@@ -65,16 +78,22 @@ import {
   WEAPON_SPECS,
 } from '../game/weapons';
 import {
+  buildAcidPuddleMesh,
   buildCarMesh,
   buildCornerBrazier,
   buildCrateCluster,
+  buildDeployableTurretRig,
   buildDumpster,
   buildJerseyBarrier,
   buildPickupCrate,
   buildPlayerRig,
+  buildProximityMineMesh,
   buildStreetLamp,
   buildZombieRig,
+  DeployableTurretRig,
+  disposeSharedModelGeometries,
   PlayerRig,
+  ProximityMineRig,
   StreetLampRig,
   ZombieRig,
 } from './models';
@@ -106,6 +125,7 @@ interface ActiveZombie {
   vz: number;
   knockVx: number;
   knockVz: number;
+  facingYaw: number;
   hp: number;
   maxHp: number;
   speed: number;
@@ -123,6 +143,11 @@ interface ActiveZombie {
   isWindingUp: boolean;
   cooldownTimer: number;
   rangedCooldown: number;
+  stunTimer: number;
+  revealTimer: number;
+  lungeTimer: number;
+  acidTargetX: number;
+  acidTargetZ: number;
   dying: boolean;
   deathTimer: number;
   walkPhase: number;
@@ -136,6 +161,54 @@ interface BossProjectile {
   vz: number;
   damage: number;
   life: number;
+}
+
+interface AcidProjectile {
+  mesh: THREE.Mesh;
+  startX: number;
+  startZ: number;
+  targetX: number;
+  targetZ: number;
+  elapsed: number;
+  duration: number;
+  damage: number;
+}
+
+interface AcidPuddle {
+  mesh: THREE.Group;
+  mat: THREE.MeshBasicMaterial;
+  ringMat: THREE.MeshBasicMaterial;
+  x: number;
+  z: number;
+  age: number;
+  duration: number;
+  tickTimer: number;
+  damage: number;
+}
+
+interface ActiveMine {
+  rig: ProximityMineRig;
+  x: number;
+  z: number;
+  armTimer: number;
+  life: number;
+}
+
+interface ActiveTurret {
+  rig: DeployableTurretRig;
+  x: number;
+  z: number;
+  life: number;
+  fireTimer: number;
+  flashTimer: number;
+}
+
+interface FlashRing {
+  mesh: THREE.Mesh;
+  mat: THREE.MeshBasicMaterial;
+  age: number;
+  duration: number;
+  maxRadius: number;
 }
 
 interface ActivePickup {
@@ -199,6 +272,7 @@ interface FloatingDamageInternal {
   wz: number;
   amount: number;
   isCrit: boolean;
+  blockedByArmor?: boolean;
   age: number;
   duration: number;
 }
@@ -210,9 +284,9 @@ export interface EngineCallbacks {
 }
 
 const MAX_TRACERS = 28;
-const MAX_PARTICLES = 220;
-const MAX_DECALS = 64;
-const MAX_RAIN_DROPS = 240;
+const MAX_PARTICLES = 180;
+const MAX_DECALS = 56;
+const MAX_RAIN_DROPS = 180;
 const ZOMBIE_LIGHT_POOL_SIZE = 5;
 const PLAYER_RADIUS = 0.48;
 const PLAYER_SPEED = 6.8;
@@ -225,6 +299,7 @@ const _vec3A = new THREE.Vector3();
 const _vec3B = new THREE.Vector3();
 const _mat4 = new THREE.Matrix4();
 const _quat = new THREE.Quaternion();
+const _euler = new THREE.Euler();
 const _scale = new THREE.Vector3();
 const _color = new THREE.Color();
 const _aimPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.94);
@@ -290,6 +365,7 @@ export class GameEngine {
     glitchTimer: number;
   }> = [];
   private zombieLights: THREE.PointLight[] = [];
+  private zombieLightCandidates: Array<{ z: ActiveZombie; score: number }> = [];
 
   private frameId = 0;
   private disposed = false;
@@ -304,6 +380,8 @@ export class GameEngine {
   private playerZ = 0;
   private playerAimAngle = 0; // 0 = -Z (north)
   private playerWalkPhase = 0;
+  private cachedMuzzleX = 0;
+  private cachedMuzzleZ = -1;
   private hp = 100;
   private maxHp = 100;
   private ghostHp = 100;
@@ -328,6 +406,14 @@ export class GameEngine {
   private dashDirZ = -1;
   private invulnTimer = 0;
 
+  // Tactical Gear State
+  private equippedGear: TacticalGearId = loadRunProgress()?.equippedGear ?? 'mine';
+  private gearCooldownTimer = 0;
+  private activeMines: ActiveMine[] = [];
+  private activeTurrets: ActiveTurret[] = [];
+  private flashRings: FlashRing[] = [];
+  private flashRingGeo = new THREE.RingGeometry(0.82, 1.0, 32);
+
   // Wave & Entities
   private wave = 1;
   private wavePlan: WavePlan = buildWavePlan(1);
@@ -344,6 +430,10 @@ export class GameEngine {
   private bossProjectiles: BossProjectile[] = [];
   private bossProjGeo = new THREE.SphereGeometry(0.24, 10, 8);
   private bossProjMat = new THREE.MeshBasicMaterial({ color: 0xf43f5e });
+  private acidProjectiles: AcidProjectile[] = [];
+  private acidProjGeo = new THREE.SphereGeometry(0.22, 8, 6);
+  private acidProjMat = new THREE.MeshBasicMaterial({ color: 0xa3e635 });
+  private acidPuddles: AcidPuddle[] = [];
   private floatingDamages: FloatingDamageInternal[] = [];
 
   // Dynamic Weather & Blood Splatter State
@@ -448,7 +538,13 @@ export class GameEngine {
     if (this.weatherOverride) {
       this.applyWeatherImmediate(this.weatherOverride);
     }
-    this.disposables.push(this.bossProjGeo, this.bossProjMat);
+    this.disposables.push(
+      this.bossProjGeo,
+      this.bossProjMat,
+      this.acidProjGeo,
+      this.acidProjMat,
+      this.flashRingGeo,
+    );
 
     if (!this.isSoftwareGl) {
       this.renderer.compile(this.scene, this.camera);
@@ -1144,6 +1240,8 @@ export class GameEngine {
       this.triggerDash();
     } else if (code === 'KeyR') {
       this.triggerReload();
+    } else if (code === 'KeyG' || code === 'KeyE') {
+      this.triggerGear();
     } else if (code === 'KeyQ') {
       this.switchWeapon();
     } else if (code === 'BracketLeft') {
@@ -1238,6 +1336,118 @@ export class GameEngine {
     this.isReloading = true;
     this.reloadTimer = this.getEffectiveReloadDuration(state.id);
     this.sound.playReloadStart();
+    this.emitHudSnapshot(true);
+  }
+
+  public equipGear(id: TacticalGearId): void {
+    if (this.equippedGear === id) return;
+    this.equippedGear = id;
+    if (this.phase === 'playing' || this.phase === 'paused') {
+      this.pickupToast = `GEAR · ${TACTICAL_GEAR_SPECS[id].name.toUpperCase()}`;
+      this.pickupToastTimer = 1.6;
+      this.persistCurrentProgress();
+    }
+    this.emitHudSnapshot(true);
+  }
+
+  public cycleGear(): void {
+    this.equipGear(getNextTacticalGear(this.equippedGear));
+  }
+
+  public triggerGear(): void {
+    if (this.phase !== 'playing' || this.uiSimulationPaused) return;
+    if (this.gearCooldownTimer > 0) return;
+
+    const gearId = this.equippedGear;
+    const spec = TACTICAL_GEAR_SPECS[gearId];
+    this.gearCooldownTimer = spec.cooldownSec;
+
+    const fwdX = -Math.sin(this.playerAimAngle);
+    const fwdZ = -Math.cos(this.playerAimAngle);
+
+    if (gearId === 'mine') {
+      const pos = resolveArenaCollisions(
+        this.playerX + fwdX * 1.15,
+        this.playerZ + fwdZ * 1.15,
+        0.4,
+      );
+      if (this.activeMines.length >= spec.maxActive) {
+        const oldest = this.activeMines.shift();
+        if (oldest) this.scene.remove(oldest.rig.root);
+      }
+      const rig = buildProximityMineMesh(this.shadowTex);
+      rig.root.position.set(pos.x, 0, pos.z);
+      this.scene.add(rig.root);
+      this.activeMines.push({
+        rig,
+        x: pos.x,
+        z: pos.z,
+        armTimer: spec.armDelaySec ?? 0.45,
+        life: 45,
+      });
+      this.sound.playGearDeploy('mine');
+      this.pickupToast = 'PROXIMITY MINE ARMED';
+      this.pickupToastTimer = 1.4;
+      this.spawnBurstParticles(pos.x, 0.2, pos.z, 8, 0xf59e0b, 3.2);
+    } else if (gearId === 'turret') {
+      const pos = resolveArenaCollisions(
+        this.playerX + fwdX * 1.3,
+        this.playerZ + fwdZ * 1.3,
+        0.55,
+      );
+      if (this.activeTurrets.length >= spec.maxActive) {
+        const oldest = this.activeTurrets.shift();
+        if (oldest) this.scene.remove(oldest.rig.root);
+      }
+      const rig = buildDeployableTurretRig(this.shadowTex);
+      rig.root.position.set(pos.x, 0, pos.z);
+      rig.headGroup.rotation.y = this.playerAimAngle;
+      this.scene.add(rig.root);
+      this.activeTurrets.push({
+        rig,
+        x: pos.x,
+        z: pos.z,
+        life: spec.durationSec ?? 14,
+        fireTimer: 0.25,
+        flashTimer: 0,
+      });
+      this.sound.playGearDeploy('turret');
+      this.pickupToast = 'SENTRY TURRET DEPLOYED';
+      this.pickupToastTimer = 1.6;
+      this.spawnBurstParticles(pos.x, 0.5, pos.z, 10, 0x38bdf8, 4.0);
+    } else {
+      // Flashbang blast around player
+      const blastR = spec.blastRadius;
+      const dmg = Math.round(spec.damage * getDamageMultiplier(this.upgradeLevels));
+      this.sound.playFlashbang();
+      this.trauma = Math.min(0.95, this.trauma + 0.42);
+      this.spawnFlashRing(this.playerX, this.playerZ, blastR, 0xe0f2fe, 0.34);
+      this.spawnBurstParticles(this.playerX, 0.9, this.playerZ, 24, 0xf8fafc, 8.2);
+
+      for (let i = this.zombies.length - 1; i >= 0; i--) {
+        const z = this.zombies[i];
+        if (z.dying) continue;
+        const dx = z.x - this.playerX;
+        const dz = z.z - this.playerZ;
+        const dist = Math.hypot(dx, dz) || 0.001;
+        if (dist <= blastR + z.radius) {
+          z.stunTimer = Math.max(
+            z.stunTimer,
+            z.kind === 'boss'
+              ? (spec.bossStunDurationSec ?? 1.8)
+              : (spec.stunDurationSec ?? 4.0),
+          );
+          z.revealTimer = Math.max(z.revealTimer, 4.5);
+          z.isWindingUp = false;
+          if (z.rig.telegraphRing) z.rig.telegraphRing.visible = false;
+          if (z.rig.telegraphLine) z.rig.telegraphLine.visible = false;
+          this.damageZombie(z, dmg, false, dx / dist, dz / dist, 7.5, true);
+        }
+      }
+      this.pickupToast = 'FLASHBANG · ENEMIES STUNNED';
+      this.pickupToastTimer = 1.6;
+    }
+
     this.emitHudSnapshot(true);
   }
 
@@ -1342,6 +1552,7 @@ export class GameEngine {
       upgradePoints: this.upgradePoints,
       upgradeLevels: { ...this.upgradeLevels },
       activeWeapon: this.activeWeapon,
+      equippedGear: this.equippedGear,
     });
     this.callbacks.onSavedProgressUpdate?.(loadRunProgress());
   }
@@ -1365,6 +1576,9 @@ export class GameEngine {
       this.score = saved.score;
       this.kills = saved.kills;
       this.killsTowardNextUp = 0;
+      if (saved.equippedGear) {
+        this.equippedGear = saved.equippedGear;
+      }
     } else {
       this.wave = options?.startWaveOverride ?? this.initialWave;
       this.upgradePoints = 1;
@@ -1403,6 +1617,7 @@ export class GameEngine {
     this.rapidFireRemaining = 0;
     this.dashTimer = 0;
     this.dashCooldownTimer = 0;
+    this.gearCooldownTimer = 0;
     this.invulnTimer = 0.5;
     this.trauma = 0;
     this.hitstopTimer = 0;
@@ -1496,6 +1711,26 @@ export class GameEngine {
       this.scene.remove(proj.mesh);
     }
     this.bossProjectiles = [];
+    for (const ap of this.acidProjectiles) {
+      this.scene.remove(ap.mesh);
+    }
+    this.acidProjectiles = [];
+    for (const puddle of this.acidPuddles) {
+      this.scene.remove(puddle.mesh);
+    }
+    this.acidPuddles = [];
+    for (const mine of this.activeMines) {
+      this.scene.remove(mine.rig.root);
+    }
+    this.activeMines = [];
+    for (const turret of this.activeTurrets) {
+      this.scene.remove(turret.rig.root);
+    }
+    this.activeTurrets = [];
+    for (const ring of this.flashRings) {
+      this.scene.remove(ring.mesh);
+    }
+    this.flashRings = [];
     for (const d of this.decals) {
       d.active = false;
       d.mesh.visible = false;
@@ -1612,6 +1847,9 @@ export class GameEngine {
     if (this.fireCooldown > 0) this.fireCooldown = Math.max(0, this.fireCooldown - dt);
     if (this.dashCooldownTimer > 0) {
       this.dashCooldownTimer = Math.max(0, this.dashCooldownTimer - dt);
+    }
+    if (this.gearCooldownTimer > 0) {
+      this.gearCooldownTimer = Math.max(0, this.gearCooldownTimer - dt);
     }
     if (this.invulnTimer > 0) this.invulnTimer = Math.max(0, this.invulnTimer - dt);
     if (this.rapidFireRemaining > 0) {
@@ -1741,8 +1979,12 @@ export class GameEngine {
     // Update Zombies
     this.updateZombies(dt);
 
-    // Update Boss Plasma Projectiles
+    // Update Tactical Gear (Mines, Turrets, Flashbang rings)
+    this.updateTacticalGear(dt);
+
+    // Update Boss Plasma Projectiles & Acid Spitter Hazards
     this.updateBossProjectiles(dt);
+    this.updateAcidHazards(dt);
 
     // Update Pickups
     this.updatePickups(dt);
@@ -1793,6 +2035,8 @@ export class GameEngine {
   private updateLaserSight(): void {
     this.playerRig.root.updateMatrixWorld(true);
     this.playerRig.muzzlePoint.getWorldPosition(_vec3A);
+    this.cachedMuzzleX = _vec3A.x;
+    this.cachedMuzzleZ = _vec3A.z;
     const dirX = -Math.sin(this.playerAimAngle);
     const dirZ = -Math.cos(this.playerAimAngle);
     const maxRange = WEAPON_SPECS[this.activeWeapon].range;
@@ -1872,12 +2116,13 @@ export class GameEngine {
 
     this.sound.playShoot(state.id);
 
-    this.playerRig.root.updateMatrixWorld(true);
-    this.playerRig.muzzlePoint.getWorldPosition(_vec3A);
-    this.spawnShellCasing(_vec3A.x, _vec3A.z, this.playerAimAngle);
+    const muzzleX = this.cachedMuzzleX;
+    const muzzleZ = this.cachedMuzzleZ;
+    this.spawnShellCasing(muzzleX, muzzleZ, this.playerAimAngle);
 
     const damageMult = getDamageMultiplier(this.upgradeLevels);
     const pierceLimit = spec.pierceCount ?? 1;
+    const armorBypass = state.id === 'railgun';
     let killedAny = false;
     for (let p = 0; p < spec.pellets; p++) {
       const spread = (Math.random() * 2 - 1) * spec.spreadRad;
@@ -1886,8 +2131,8 @@ export class GameEngine {
       const dirZ = -Math.cos(angle);
 
       const wallDist = raycastObstaclesAndWalls(
-        _vec3A.x,
-        _vec3A.z,
+        muzzleX,
+        muzzleZ,
         dirX,
         dirZ,
         spec.range,
@@ -1898,8 +2143,8 @@ export class GameEngine {
         const z = this.zombies[i];
         if (z.dying) continue;
         const d = raycastCircleDistance(
-          _vec3A.x,
-          _vec3A.z,
+          muzzleX,
+          muzzleZ,
           dirX,
           dirZ,
           wallDist,
@@ -1921,12 +2166,12 @@ export class GameEngine {
             ? targets[targets.length - 1].dist
             : wallDist;
 
-      const endX = _vec3A.x + dirX * tracerDist;
-      const endZ = _vec3A.z + dirZ * tracerDist;
+      const endX = muzzleX + dirX * tracerDist;
+      const endZ = muzzleZ + dirZ * tracerDist;
       this.spawnTracer(
-        _vec3A.x,
+        muzzleX,
         0.94,
-        _vec3A.z,
+        muzzleZ,
         angle,
         tracerDist,
         spec.tracerColor,
@@ -1934,8 +2179,8 @@ export class GameEngine {
 
       if (targets.length > 0) {
         for (const hit of targets) {
-          const hitX = _vec3A.x + dirX * hit.dist;
-          const hitZ = _vec3A.z + dirZ * hit.dist;
+          const hitX = muzzleX + dirX * hit.dist;
+          const hitZ = muzzleZ + dirZ * hit.dist;
           const isCrit = Math.random() < 0.16;
           const dmg = Math.round(spec.damage * damageMult * (isCrit ? 1.5 : 1));
           const killed = this.damageZombie(
@@ -1945,6 +2190,7 @@ export class GameEngine {
             dirX,
             dirZ,
             spec.knockback,
+            armorBypass,
           );
           if (killed) killedAny = true;
           this.spawnDirectionalBloodBurst(
@@ -2004,20 +2250,52 @@ export class GameEngine {
     dirX: number,
     dirZ: number,
     knockback: number,
+    armorBypass = false,
   ): boolean {
-    z.hp -= amount;
+    const facingX = -Math.sin(z.facingYaw);
+    const facingZ = -Math.cos(z.facingYaw);
+    const { finalDamage, blockedByArmor } = computeZombieHitDamage(
+      amount,
+      z.kind,
+      dirX,
+      dirZ,
+      facingX,
+      facingZ,
+      armorBypass,
+    );
+
+    z.hp -= finalDamage;
     z.hitFlashTimer = 0.065;
-    const kbForce = knockback * (1 - z.knockbackResist);
+    z.revealTimer = Math.max(z.revealTimer, 0.85);
+    const kbForce = knockback * (1 - z.knockbackResist) * (blockedByArmor ? 0.45 : 1);
     z.knockVx += dirX * kbForce;
     z.knockVz += dirZ * kbForce;
+
+    if (blockedByArmor) {
+      this.sound.playArmorClang();
+      this.spawnBurstParticles(
+        z.x + facingX * 0.68,
+        1.05,
+        z.z + facingZ * 0.68,
+        6,
+        0x7dd3fc,
+        5.0,
+      );
+    }
 
     this.floatingDamages.push({
       id: this.nextEntityId++,
       wx: z.x + (Math.random() - 0.5) * 0.4,
-      wy: z.kind === 'boss' ? 2.8 : z.kind === 'brute' ? 2.1 : 1.55,
+      wy:
+        z.kind === 'boss'
+          ? 2.8
+          : z.kind === 'brute' || z.kind === 'breacher'
+            ? 2.1
+            : 1.55,
       wz: z.z,
-      amount,
-      isCrit,
+      amount: finalDamage,
+      isCrit: isCrit && !blockedByArmor,
+      blockedByArmor,
       age: 0,
       duration: 0.65,
     });
@@ -2029,6 +2307,9 @@ export class GameEngine {
       if (z.rig.telegraphRing) {
         z.rig.telegraphRing.visible = false;
       }
+      if (z.rig.telegraphLine) {
+        z.rig.telegraphLine.visible = false;
+      }
       this.kills += 1;
       this.killsTowardNextUp += 1;
       if (this.killsTowardNextUp >= KILLS_PER_UPGRADE_POINT) {
@@ -2037,14 +2318,23 @@ export class GameEngine {
       }
 
       if (z.kind === 'boss') {
-        this.upgradePoints += 3;
+        this.upgradePoints += BOSS_KILL_UP_BONUS;
         this.trauma = Math.min(1.0, this.trauma + 0.7);
         this.hitstopTimer = 0.06;
-        this.pickupToast = 'BOSS DEFEATED · +3 UP';
+        this.pickupToast = `BOSS DEFEATED · +${BOSS_KILL_UP_BONUS} UP`;
         this.pickupToastTimer = 2.6;
         this.spawnDirectionalBloodBurst(z.x, 1.2, z.z, dirX, dirZ, 28, 8.6, true);
       } else {
-        this.spawnDirectionalBloodBurst(z.x, 0.9, z.z, dirX, dirZ, 16, 6.8, true);
+        this.spawnDirectionalBloodBurst(
+          z.x,
+          0.9,
+          z.z,
+          dirX,
+          dirZ,
+          16,
+          6.8,
+          true,
+        );
       }
 
       this.score += z.scoreValue;
@@ -2056,7 +2346,11 @@ export class GameEngine {
       this.spawnBloodDecal(
         z.x,
         z.z,
-        z.kind === 'boss' ? 2.5 : z.kind === 'brute' ? 1.65 : 1.15,
+        z.kind === 'boss'
+          ? 2.5
+          : z.kind === 'brute' || z.kind === 'breacher'
+            ? 1.65
+            : 1.15,
       );
 
       // Crate drop roll
@@ -2071,7 +2365,11 @@ export class GameEngine {
     z.rig.hpBarGroup.visible = true;
     z.rig.hpBarFill.scale.x = Math.max(0.04, z.hp / z.maxHp);
 
-    this.sound.playHit(z.kind === 'brute' || z.kind === 'boss');
+    if (!blockedByArmor) {
+      this.sound.playHit(
+        z.kind === 'brute' || z.kind === 'boss' || z.kind === 'breacher',
+      );
+    }
     return false;
   }
 
@@ -2092,7 +2390,10 @@ export class GameEngine {
   }
 
   private updateWaveSpawning(dt: number): void {
-    const aliveCount = this.zombies.filter((z) => !z.dying).length;
+    let aliveCount = 0;
+    for (let i = 0; i < this.zombies.length; i++) {
+      if (!this.zombies[i].dying) aliveCount++;
+    }
 
     if (this.wavePlan.queue.length > 0) {
       this.spawnTimer -= dt;
@@ -2109,7 +2410,9 @@ export class GameEngine {
       if (this.wavePauseTimer <= 0) {
         this.wavePauseTimer = 2.1;
         this.sound.playWaveClear();
-        const waveUp = isBossWaveNumber(this.wave) ? 4 : 2;
+        const waveUp = isBossWaveNumber(this.wave)
+          ? WAVE_CLEAR_UP_BOSS
+          : WAVE_CLEAR_UP_REGULAR;
         this.upgradePoints += waveUp;
 
         const nextWave = this.wave + 1;
@@ -2175,10 +2478,14 @@ export class GameEngine {
     }
 
     const pos = resolveArenaCollisions(sx, sz, spec.radius);
+    const initialYaw = Math.atan2(-(this.playerX - pos.x), -(this.playerZ - pos.z));
     rig.root.position.set(pos.x, 0, pos.z);
+    rig.root.rotation.y = initialYaw;
     this.scene.add(rig.root);
 
-    const hp = Math.round(spec.maxHp * this.wavePlan.hpMultiplier);
+    const bossCycleScale =
+      kind === 'boss' ? getBossCycleHpMultiplier(this.wave) : 1;
+    const hp = Math.round(spec.maxHp * this.wavePlan.hpMultiplier * bossCycleScale);
     this.zombies.push({
       id: this.nextEntityId++,
       kind,
@@ -2189,6 +2496,7 @@ export class GameEngine {
       vz: 0,
       knockVx: 0,
       knockVz: 0,
+      facingYaw: initialYaw,
       hp,
       maxHp: hp,
       speed: spec.speed * this.wavePlan.speedMultiplier,
@@ -2205,7 +2513,12 @@ export class GameEngine {
       windupTimer: 0,
       isWindingUp: false,
       cooldownTimer: 0,
-      rangedCooldown: kind === 'boss' ? 2.2 : 0,
+      rangedCooldown: kind === 'boss' ? getBossRangedCooldown(this.wave) : 0,
+      stunTimer: 0,
+      revealTimer: 0,
+      lungeTimer: 0,
+      acidTargetX: pos.x,
+      acidTargetZ: pos.z,
       dying: false,
       deathTimer: 0,
       walkPhase: Math.random() * Math.PI * 2,
@@ -2221,7 +2534,7 @@ export class GameEngine {
   }
 
   private updateZombies(dt: number): void {
-    // Attack token pool: cap concurrent active windup attackers at 4
+    // Attack token pool: cap concurrent active windup attackers at 5
     let activeAttackers = 0;
     for (let i = 0; i < this.zombies.length; i++) {
       if (this.zombies[i].isWindingUp) activeAttackers++;
@@ -2230,13 +2543,23 @@ export class GameEngine {
     for (let i = this.zombies.length - 1; i >= 0; i--) {
       const z = this.zombies[i];
 
-      // Hit flash decay
+      if (z.stunTimer > 0) z.stunTimer = Math.max(0, z.stunTimer - dt);
+      if (z.revealTimer > 0) z.revealTimer = Math.max(0, z.revealTimer - dt);
+      if (z.lungeTimer > 0) z.lungeTimer = Math.max(0, z.lungeTimer - dt);
+
+      // Hit flash or stun dizzy tint
       if (z.hitFlashTimer > 0) {
         z.hitFlashTimer -= dt;
         const flashOn = z.hitFlashTimer > 0;
         for (const mat of z.rig.hitFlashMaterials) {
           mat.emissive.setHex(flashOn ? 0xffffff : 0x000000);
           mat.emissiveIntensity = flashOn ? 0.85 : 0;
+        }
+      } else if (z.stunTimer > 0) {
+        const pulse = 0.28 + 0.18 * Math.sin(this.lastTimestamp * 0.018);
+        for (const mat of z.rig.hitFlashMaterials) {
+          mat.emissive.setHex(0x7dd3fc);
+          mat.emissiveIntensity = pulse;
         }
       }
 
@@ -2263,22 +2586,82 @@ export class GameEngine {
       const toPlayerX = dx / dist;
       const toPlayerZ = dz / dist;
 
+      // Shadow Stalker stealth reveal inside player's flashlight cone
+      if (z.kind === 'stalker' && z.rig.stalkerMaterials) {
+        const inCone =
+          z.revealTimer > 0 ||
+          z.stunTimer > 0 ||
+          isPointInFlashlightCone(
+            this.playerX,
+            this.playerZ,
+            this.playerAimAngle,
+            z.x,
+            z.z,
+          );
+        const targetBodyAlpha = inCone ? 0.96 : 0.16;
+        const targetEyeAlpha = inCone ? 1.0 : 0.42;
+        const mats = z.rig.stalkerMaterials;
+        for (let m = 0; m < mats.length; m++) {
+          const mat = mats[m];
+          const target = m === mats.length - 1 ? targetEyeAlpha : targetBodyAlpha;
+          mat.opacity += (target - mat.opacity) * Math.min(1, dt * 10);
+        }
+      }
+
+      // Stunned enemies hold position & decay knockback cleanly
+      if (z.stunTimer > 0) {
+        z.x += z.knockVx * dt;
+        z.z += z.knockVz * dt;
+        z.knockVx *= Math.exp(-9.5 * dt);
+        z.knockVz *= Math.exp(-9.5 * dt);
+        const res = resolveArenaCollisions(z.x, z.z, z.radius);
+        z.x = res.x;
+        z.z = res.z;
+        z.rig.root.position.set(z.x, 0, z.z);
+        continue;
+      }
+
       // Movement policy per zombie archetype
       let desiredX = toPlayerX;
       let desiredZ = toPlayerZ;
+      let moveSpeedMult = 1.0;
 
       if (z.kind === 'walker') {
-        // Gentle lateral weave so walkers fan out
         const perpX = -toPlayerZ;
         const perpZ = toPlayerX;
         const weave = Math.sin(z.walkPhase * 0.45 + z.weaveSeed) * 0.32;
         desiredX += perpX * weave;
         desiredZ += perpZ * weave;
       } else if (z.kind === 'runner' && dist > 4.2) {
-        // Runners flank at an angle until closing in for the lunge
         const angle = Math.atan2(toPlayerZ, toPlayerX) + z.flankSide * 0.48;
         desiredX = Math.cos(angle);
         desiredZ = Math.sin(angle);
+      } else if (z.kind === 'spitter') {
+        // Acid Spitters maintain mid-range distance (7.5..11.5m), kiting if crowded
+        if (dist < 5.6) {
+          desiredX = -toPlayerX;
+          desiredZ = -toPlayerZ;
+          moveSpeedMult = 0.72;
+        } else if (dist < 9.5) {
+          const perpX = -toPlayerZ * z.flankSide;
+          const perpZ = toPlayerX * z.flankSide;
+          desiredX = perpX;
+          desiredZ = perpZ;
+          moveSpeedMult = 0.65;
+        }
+      } else if (z.kind === 'stalker') {
+        if (dist > 5.0) {
+          // Ambush curve toward flanks
+          const angle = Math.atan2(toPlayerZ, toPlayerX) + z.flankSide * 0.58;
+          desiredX = Math.cos(angle);
+          desiredZ = Math.sin(angle);
+        } else if (z.lungeTimer <= 0 && z.cooldownTimer <= 0 && dist > 1.8) {
+          z.lungeTimer = 0.45;
+          this.sound.playStalkerLunge();
+        }
+        if (z.lungeTimer > 0) {
+          moveSpeedMult = 1.62;
+        }
       }
 
       const dLen = Math.hypot(desiredX, desiredZ) || 1;
@@ -2288,40 +2671,88 @@ export class GameEngine {
       // Boss ranged plasma barrage when player kites at mid-range
       if (z.kind === 'boss' && !z.isWindingUp) {
         z.rangedCooldown -= dt;
-        if (z.rangedCooldown <= 0 && dist > 3.6 && dist < 17) {
+        if (z.rangedCooldown <= 0 && dist > 3.6 && dist < 17.5) {
           this.fireBossBarrage(z.x, z.z, Math.atan2(toPlayerZ, toPlayerX));
-          z.rangedCooldown = 3.1;
+          z.rangedCooldown = getBossRangedCooldown(this.wave);
         }
       }
 
-      // Attack windup & telegraph check
+      // Attack windup & telegraph check (melee or Acid Spitter ranged glob)
       if (z.isWindingUp) {
         z.windupTimer -= dt;
-        if (z.rig.telegraphRing) {
-          const prog = 1 - Math.max(0, z.windupTimer / z.attackWindup);
-          z.rig.telegraphRing.visible = true;
-          z.rig.telegraphRing.scale.setScalar(0.65 + prog * 0.42);
-          (z.rig.telegraphRing.material as THREE.MeshBasicMaterial).opacity =
-            0.35 + prog * 0.5;
+        const prog = 1 - Math.max(0, z.windupTimer / z.attackWindup);
+        if (z.kind === 'spitter') {
+          const spitDx = z.acidTargetX - z.x;
+          const spitDz = z.acidTargetZ - z.z;
+          const spitDist = Math.max(1.2, Math.hypot(spitDx, spitDz));
+          if (z.rig.telegraphRing) {
+            z.rig.telegraphRing.visible = true;
+            z.rig.telegraphRing.position.set(0, 0.045, -spitDist);
+            z.rig.telegraphRing.scale.setScalar(0.65 + prog * 0.48);
+            (z.rig.telegraphRing.material as THREE.MeshBasicMaterial).opacity =
+              0.38 + prog * 0.52;
+          }
+          if (z.rig.telegraphLine) {
+            z.rig.telegraphLine.visible = true;
+            z.rig.telegraphLine.scale.set(1, 1, spitDist);
+            (z.rig.telegraphLine.material as THREE.MeshBasicMaterial).opacity =
+              0.42 + prog * 0.45;
+          }
+          if (z.windupTimer <= 0) {
+            z.isWindingUp = false;
+            z.cooldownTimer = z.attackCooldown;
+            if (z.rig.telegraphRing) z.rig.telegraphRing.visible = false;
+            if (z.rig.telegraphLine) z.rig.telegraphLine.visible = false;
+            this.spawnAcidProjectile(
+              z.x,
+              z.z,
+              z.acidTargetX,
+              z.acidTargetZ,
+              z.damage,
+            );
+          }
+        } else {
+          if (z.rig.telegraphRing) {
+            z.rig.telegraphRing.visible = true;
+            z.rig.telegraphRing.position.set(0, 0.045, 0);
+            z.rig.telegraphRing.scale.setScalar(0.65 + prog * 0.42);
+            (z.rig.telegraphRing.material as THREE.MeshBasicMaterial).opacity =
+              0.35 + prog * 0.5;
+          }
+          if (z.windupTimer <= 0) {
+            z.isWindingUp = false;
+            z.cooldownTimer = z.attackCooldown;
+            if (z.rig.telegraphRing) z.rig.telegraphRing.visible = false;
+            const slamRadius =
+              z.kind === 'boss'
+                ? z.attackRange + 0.5
+                : z.attackRange + PLAYER_RADIUS + 0.35;
+            if (dist <= slamRadius) {
+              this.damagePlayer(z.damage, toPlayerX, toPlayerZ);
+            }
+            if (z.kind === 'boss') {
+              this.trauma = Math.min(1.0, this.trauma + 0.35);
+              this.spawnBurstParticles(z.x, 0.25, z.z, 14, 0xf43f5e, 6.2);
+            }
+          }
         }
-        if (z.windupTimer <= 0) {
-          z.isWindingUp = false;
-          z.cooldownTimer = z.attackCooldown;
-          if (z.rig.telegraphRing) z.rig.telegraphRing.visible = false;
-          // Active strike hit check
-          const slamRadius = z.kind === 'boss' ? z.attackRange + 0.5 : z.attackRange + PLAYER_RADIUS + 0.35;
-          if (dist <= slamRadius) {
-            this.damagePlayer(z.damage, toPlayerX, toPlayerZ);
-          }
-          if (z.kind === 'boss') {
-            this.trauma = Math.min(1.0, this.trauma + 0.35);
-            this.spawnBurstParticles(z.x, 0.25, z.z, 14, 0xf43f5e, 6.2);
-          }
+      } else if (z.kind === 'spitter') {
+        if (
+          dist >= 3.2 &&
+          dist <= z.attackRange &&
+          z.cooldownTimer <= 0 &&
+          activeAttackers < 5
+        ) {
+          z.isWindingUp = true;
+          z.windupTimer = z.attackWindup;
+          z.acidTargetX = this.playerX;
+          z.acidTargetZ = this.playerZ;
+          activeAttackers++;
         }
       } else if (
         dist <= z.attackRange + PLAYER_RADIUS * 0.6 &&
         z.cooldownTimer <= 0 &&
-        activeAttackers < 4
+        activeAttackers < 5
       ) {
         z.isWindingUp = true;
         z.windupTimer = z.attackWindup;
@@ -2350,7 +2781,7 @@ export class GameEngine {
         }
       }
 
-      const speedFactor = z.isWindingUp ? 0.15 : 1.0;
+      const speedFactor = z.isWindingUp ? 0.12 : moveSpeedMult;
       z.x += (desiredX * z.speed * speedFactor + sepX + z.knockVx) * dt;
       z.z += (desiredZ * z.speed * speedFactor + sepZ + z.knockVz) * dt;
 
@@ -2362,12 +2793,27 @@ export class GameEngine {
       z.x = resolved.x;
       z.z = resolved.z;
 
+      // Facing yaw (Riot Breachers pivot slower so flanking & dashing behind is rewarded)
+      const desiredYaw =
+        z.kind === 'spitter' && z.isWindingUp
+          ? Math.atan2(-(z.acidTargetX - z.x), -(z.acidTargetZ - z.z))
+          : Math.atan2(-toPlayerX, -toPlayerZ);
+      if (z.kind === 'breacher') {
+        let diff = desiredYaw - z.facingYaw;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        const maxTurn = 2.4 * dt;
+        z.facingYaw += Math.max(-maxTurn, Math.min(maxTurn, diff));
+      } else {
+        z.facingYaw = desiredYaw;
+      }
+
       // Update mesh transform & gait
       z.walkPhase += dt * z.speed * 2.2;
       z.rig.root.position.set(z.x, 0, z.z);
-      z.rig.root.rotation.y = Math.atan2(-toPlayerX, -toPlayerZ);
+      z.rig.root.rotation.y = z.facingYaw;
       if (z.rig.hpBarGroup.visible) {
-        z.rig.hpBarGroup.rotation.set(-0.85, -z.rig.root.rotation.y, 0, 'YXZ');
+        z.rig.hpBarGroup.rotation.set(-0.85, -z.facingYaw, 0, 'YXZ');
       }
       const bob = Math.abs(Math.sin(z.walkPhase)) * 0.08;
       z.rig.bodyGroup.position.y = bob;
@@ -2376,10 +2822,297 @@ export class GameEngine {
     }
   }
 
+  private spawnAcidProjectile(
+    sx: number,
+    sz: number,
+    tx: number,
+    tz: number,
+    damage: number,
+  ): void {
+    this.sound.playAcidSpit();
+    const mesh = new THREE.Mesh(this.acidProjGeo, this.acidProjMat);
+    mesh.position.set(sx, 1.0, sz);
+    this.scene.add(mesh);
+    const dist = Math.hypot(tx - sx, tz - sz);
+    const duration = Math.max(0.32, Math.min(0.68, dist / 14));
+    this.acidProjectiles.push({
+      mesh,
+      startX: sx,
+      startZ: sz,
+      targetX: tx,
+      targetZ: tz,
+      elapsed: 0,
+      duration,
+      damage,
+    });
+  }
+
+  private spawnAcidPuddle(x: number, z: number, damage: number): void {
+    const pos = resolveArenaCollisions(x, z, 0.8);
+    if (this.acidPuddles.length >= 10) {
+      const oldest = this.acidPuddles.shift();
+      if (oldest) this.scene.remove(oldest.mesh);
+    }
+    const { mesh, mat, ringMat } = buildAcidPuddleMesh();
+    mesh.position.set(pos.x, 0, pos.z);
+    this.scene.add(mesh);
+    this.acidPuddles.push({
+      mesh,
+      mat,
+      ringMat,
+      x: pos.x,
+      z: pos.z,
+      age: 0,
+      duration: 5.5,
+      tickTimer: 0,
+      damage,
+    });
+    this.sound.playAcidSplat();
+    this.spawnBurstParticles(pos.x, 0.2, pos.z, 10, 0x84cc16, 4.4);
+  }
+
+  private updateAcidHazards(dt: number): void {
+    // Acid arcing globs
+    for (let i = this.acidProjectiles.length - 1; i >= 0; i--) {
+      const p = this.acidProjectiles[i];
+      p.elapsed += dt;
+      const t = Math.min(1, p.elapsed / p.duration);
+      const cx = p.startX + (p.targetX - p.startX) * t;
+      const cz = p.startZ + (p.targetZ - p.startZ) * t;
+      const cy = 0.95 * (1 - t) + Math.sin(t * Math.PI) * 2.2;
+      p.mesh.position.set(cx, Math.max(0.15, cy), cz);
+
+      if (t >= 1) {
+        this.scene.remove(p.mesh);
+        this.acidProjectiles.splice(i, 1);
+        this.spawnAcidPuddle(cx, cz, p.damage);
+        if (Math.hypot(this.playerX - cx, this.playerZ - cz) <= 1.35) {
+          const dx = this.playerX - cx;
+          const dz = this.playerZ - cz;
+          const len = Math.hypot(dx, dz) || 1;
+          this.damagePlayer(p.damage * 0.75, dx / len, dz / len);
+        }
+      }
+    }
+
+    // Active acid puddles on courtyard floor
+    for (let i = this.acidPuddles.length - 1; i >= 0; i--) {
+      const puddle = this.acidPuddles[i];
+      puddle.age += dt;
+      if (puddle.age >= puddle.duration) {
+        this.scene.remove(puddle.mesh);
+        this.acidPuddles.splice(i, 1);
+        continue;
+      }
+      const fade =
+        puddle.age > puddle.duration - 1.1
+          ? Math.max(0, (puddle.duration - puddle.age) / 1.1)
+          : 1;
+      const pulse = 0.92 + 0.08 * Math.sin(puddle.age * 7);
+      puddle.mat.opacity = 0.62 * fade * pulse;
+      puddle.ringMat.opacity = 0.75 * fade;
+
+      puddle.tickTimer = Math.max(0, puddle.tickTimer - dt);
+      const distToPlayer = Math.hypot(
+        this.playerX - puddle.x,
+        this.playerZ - puddle.z,
+      );
+      if (
+        distToPlayer <= 1.85 &&
+        puddle.tickTimer <= 0 &&
+        this.invulnTimer <= 0
+      ) {
+        puddle.tickTimer = 0.48;
+        const dx = this.playerX - puddle.x;
+        const dz = this.playerZ - puddle.z;
+        const len = Math.hypot(dx, dz) || 1;
+        this.damagePlayer(puddle.damage * 0.68, dx / len, dz / len);
+      }
+    }
+  }
+
+  private spawnFlashRing(
+    x: number,
+    z: number,
+    maxRadius: number,
+    colorHex: number,
+    duration = 0.32,
+  ): void {
+    const mat = new THREE.MeshBasicMaterial({
+      color: colorHex,
+      transparent: true,
+      opacity: 0.9,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const mesh = new THREE.Mesh(this.flashRingGeo, mat);
+    mesh.rotation.x = -Math.PI / 2;
+    mesh.position.set(x, 0.08, z);
+    mesh.scale.setScalar(0.5);
+    this.scene.add(mesh);
+    this.flashRings.push({ mesh, mat, age: 0, duration, maxRadius });
+  }
+
+  private updateTacticalGear(dt: number): void {
+    const mineSpec = TACTICAL_GEAR_SPECS.mine;
+    const turretSpec = TACTICAL_GEAR_SPECS.turret;
+
+    // Proximity Mines
+    for (let i = this.activeMines.length - 1; i >= 0; i--) {
+      const m = this.activeMines[i];
+      m.life -= dt;
+      if (m.armTimer > 0) m.armTimer -= dt;
+      const armed = m.armTimer <= 0;
+      const blink = armed ? (Math.sin(this.lastTimestamp * 0.015) > 0 ? 2.5 : 0.4) : 0.3;
+      m.rig.ledMat.emissiveIntensity = blink;
+      m.rig.ringMesh.visible = armed;
+
+      let triggered = m.life <= 0;
+      if (armed && !triggered) {
+        const trigR = mineSpec.triggerRadius ?? 1.85;
+        for (let j = 0; j < this.zombies.length; j++) {
+          const z = this.zombies[j];
+          if (z.dying) continue;
+          const d = Math.hypot(z.x - m.x, z.z - m.z);
+          if (d <= trigR + z.radius * 0.6) {
+            triggered = true;
+            break;
+          }
+        }
+      }
+
+      if (triggered) {
+        this.scene.remove(m.rig.root);
+        this.activeMines.splice(i, 1);
+        if (m.life > 0) {
+          // Detonate high-damage shrapnel blast (bypasses front armor!)
+          this.sound.playGearExplosion();
+          this.trauma = Math.min(1.0, this.trauma + 0.58);
+          this.spawnFlashRing(m.x, m.z, mineSpec.blastRadius, 0xf97316, 0.3);
+          this.spawnBurstParticles(m.x, 0.45, m.z, 26, 0xfbbf24, 9.0);
+          const dmg = Math.round(
+            mineSpec.damage * getDamageMultiplier(this.upgradeLevels),
+          );
+          for (let j = this.zombies.length - 1; j >= 0; j--) {
+            const z = this.zombies[j];
+            if (z.dying) continue;
+            const dx = z.x - m.x;
+            const dz = z.z - m.z;
+            const dist = Math.hypot(dx, dz) || 0.001;
+            if (dist <= mineSpec.blastRadius + z.radius) {
+              const falloff = Math.max(0.55, 1 - (dist / (mineSpec.blastRadius + 1)) * 0.45);
+              this.damageZombie(
+                z,
+                Math.round(dmg * falloff),
+                true,
+                dx / dist,
+                dz / dist,
+                10,
+                true,
+              );
+            }
+          }
+        }
+      }
+    }
+
+    // Deployable Sentry Turrets
+    const turretRange = turretSpec.range ?? 13.5;
+    const turretDmgMult = getDamageMultiplier(this.upgradeLevels);
+    for (let i = this.activeTurrets.length - 1; i >= 0; i--) {
+      const t = this.activeTurrets[i];
+      t.life -= dt;
+      if (t.flashTimer > 0) {
+        t.flashTimer -= dt;
+        if (t.flashTimer <= 0) t.rig.muzzleFlash.visible = false;
+      }
+      if (t.life <= 0) {
+        this.scene.remove(t.rig.root);
+        this.activeTurrets.splice(i, 1);
+        this.spawnBurstParticles(t.x, 0.5, t.z, 8, 0x38bdf8, 3.8);
+        continue;
+      }
+
+      if (t.life < 2.2) {
+        t.rig.ringMat.opacity = 0.15 + 0.2 * Math.abs(Math.sin(t.life * 8));
+      }
+
+      t.fireTimer -= dt;
+      let bestTarget: ActiveZombie | null = null;
+      let bestDistSq = turretRange * turretRange;
+      for (let j = 0; j < this.zombies.length; j++) {
+        const z = this.zombies[j];
+        if (z.dying) continue;
+        const dx = z.x - t.x;
+        const dz = z.z - t.z;
+        const dSq = dx * dx + dz * dz;
+        if (dSq < bestDistSq) {
+          const d = Math.sqrt(dSq) || 1;
+          const wallDist = raycastObstaclesAndWalls(t.x, t.z, dx / d, dz / d, d);
+          if (wallDist >= d - z.radius * 0.5) {
+            bestDistSq = dSq;
+            bestTarget = z;
+          }
+        }
+      }
+
+      if (bestTarget) {
+        const dx = bestTarget.x - t.x;
+        const dz = bestTarget.z - t.z;
+        const targetYaw = Math.atan2(-dx, -dz);
+        t.rig.headGroup.rotation.y = targetYaw;
+
+        if (t.fireTimer <= 0) {
+          t.fireTimer = turretSpec.fireIntervalSec ?? 0.22;
+          t.flashTimer = 0.045;
+          t.rig.muzzleFlash.visible = true;
+          t.rig.muzzleFlash.rotation.z = Math.random() * Math.PI;
+          const dist = Math.sqrt(bestDistSq) || 1;
+          const dirX = dx / dist;
+          const dirZ = dz / dist;
+          const mx = t.x + dirX * 0.72;
+          const mz = t.z + dirZ * 0.72;
+          this.spawnTracer(mx, 0.74, mz, targetYaw, dist, 0x38bdf8);
+          this.sound.playShoot('smg');
+          const dmg = Math.round(turretSpec.damage * turretDmgMult);
+          this.damageZombie(bestTarget, dmg, false, dirX, dirZ, 2.2, false);
+          this.spawnDirectionalBloodBurst(
+            bestTarget.x,
+            0.85,
+            bestTarget.z,
+            dirX,
+            dirZ,
+            4,
+            4.5,
+            true,
+          );
+        }
+      } else {
+        t.rig.headGroup.rotation.y += dt * 0.85;
+      }
+    }
+
+    // Expanding shockwave / flash rings
+    for (let i = this.flashRings.length - 1; i >= 0; i--) {
+      const r = this.flashRings[i];
+      r.age += dt;
+      if (r.age >= r.duration) {
+        this.scene.remove(r.mesh);
+        r.mat.dispose();
+        this.flashRings.splice(i, 1);
+        continue;
+      }
+      const p = r.age / r.duration;
+      r.mesh.scale.setScalar(0.5 + p * r.maxRadius);
+      r.mat.opacity = 0.85 * (1 - p);
+    }
+  }
+
   private fireBossBarrage(bx: number, bz: number, baseAngle: number): void {
     this.sound.playBossBarrage();
-    const projSpeed = 11.2;
-    const offsets = [-0.24, 0, 0.24];
+    const projSpeed = 12.2;
+    const offsets = [-0.26, 0, 0.26];
     for (const off of offsets) {
       const a = baseAngle + off;
       const vx = Math.cos(a) * projSpeed;
@@ -2393,7 +3126,7 @@ export class GameEngine {
         z: bz,
         vx,
         vz,
-        damage: 18 * this.wavePlan.damageMultiplier,
+        damage: 20 * this.wavePlan.damageMultiplier,
         life: 2.2,
       });
     }
@@ -2806,7 +3539,7 @@ export class GameEngine {
       this.rainMesh.visible = true;
       const tiltX = Math.atan2(this.weatherWindZ, 19);
       const tiltZ = -Math.atan2(this.weatherWindX, 19);
-      _quat.setFromEuler(new THREE.Euler(tiltX, 0, tiltZ));
+      _quat.setFromEuler(_euler.set(tiltX, 0, tiltZ));
       for (let i = 0; i < MAX_RAIN_DROPS; i++) {
         if (i >= activeDrops) {
           _mat4.makeScale(0, 0, 0);
@@ -2922,7 +3655,7 @@ export class GameEngine {
 
     // Dynamic PointLight pool following highest-priority/nearest living zombies
     if (this.zombieLights.length > 0) {
-      const candidates: Array<{ z: ActiveZombie; score: number }> = [];
+      this.zombieLightCandidates.length = 0;
       for (let i = 0; i < this.zombies.length; i++) {
         const z = this.zombies[i];
         if (z.dying) continue;
@@ -2930,20 +3663,20 @@ export class GameEngine {
         const dz = z.z - this.playerZ;
         const distSq = dx * dx + dz * dz;
         const score = z.kind === 'boss' ? -10000 + distSq : distSq;
-        candidates.push({ z, score });
+        this.zombieLightCandidates.push({ z, score });
       }
-      candidates.sort((a, b) => a.score - b.score);
+      this.zombieLightCandidates.sort((a, b) => a.score - b.score);
 
       for (let i = 0; i < this.zombieLights.length; i++) {
         const zLight = this.zombieLights[i];
-        if (i >= candidates.length) {
+        if (i >= this.zombieLightCandidates.length) {
           zLight.intensity = 0;
           continue;
         }
-        const z = candidates[i].z;
+        const z = this.zombieLightCandidates[i].z;
         const pulse = 0.88 + 0.12 * Math.sin(timeSec * 5.2 + z.weaveSeed);
         const yHeight =
-          z.kind === 'boss' ? 1.85 : z.kind === 'brute' ? 1.35 : 1.05;
+          z.kind === 'boss' ? 1.85 : z.kind === 'brute' || z.kind === 'breacher' ? 1.35 : 1.05;
         zLight.position.set(z.x, yHeight, z.z);
         if (z.kind === 'boss') {
           zLight.color.setHex(0xf43f5e);
@@ -2957,6 +3690,18 @@ export class GameEngine {
           zLight.color.setHex(0xff7b00);
           zLight.distance = 6.8;
           zLight.intensity = 4.8 * pulse;
+        } else if (z.kind === 'spitter') {
+          zLight.color.setHex(0x84cc16);
+          zLight.distance = 6.0;
+          zLight.intensity = 4.4 * pulse;
+        } else if (z.kind === 'stalker') {
+          zLight.color.setHex(0xa855f7);
+          zLight.distance = 4.8;
+          zLight.intensity = (z.revealTimer > 0 ? 3.8 : 1.5) * pulse;
+        } else if (z.kind === 'breacher') {
+          zLight.color.setHex(0x38bdf8);
+          zLight.distance = 6.4;
+          zLight.intensity = 4.2 * pulse;
         } else {
           zLight.color.setHex(0xa3e635);
           zLight.distance = 5.2;
@@ -3081,6 +3826,7 @@ export class GameEngine {
           y: (-_vec3B.y * 0.5 + 0.5) * this.viewportH,
           amount: f.amount,
           isCrit: f.isCrit,
+          blockedByArmor: f.blockedByArmor,
           age: f.age,
           duration: f.duration,
         });
@@ -3101,10 +3847,46 @@ export class GameEngine {
       this.dashCooldownTimer > 0
         ? 1 - Math.min(1, this.dashCooldownTimer / dashCd)
         : 1;
-    const zombiesRemaining =
-      this.wavePlan.queue.length +
-      this.zombies.filter((z) => !z.dying).length;
-    const boss = this.zombies.find((z) => z.kind === 'boss' && !z.dying);
+    const gearCd = TACTICAL_GEAR_SPECS[this.equippedGear].cooldownSec;
+    const gearCooldownProgress =
+      this.gearCooldownTimer > 0
+        ? 1 - Math.min(1, this.gearCooldownTimer / gearCd)
+        : 1;
+    const gearCooldownRemaining = Math.max(0, this.gearCooldownTimer);
+
+    const aliveEnemies: Array<{
+      x: number;
+      z: number;
+      kind: ZombieKind;
+      revealed?: boolean;
+    }> = [];
+    let boss: ActiveZombie | undefined;
+    for (let i = 0; i < this.zombies.length; i++) {
+      const z = this.zombies[i];
+      if (z.dying) continue;
+      if (z.kind === 'boss') boss = z;
+      aliveEnemies.push({
+        x: z.x,
+        z: z.z,
+        kind: z.kind,
+        revealed: z.kind === 'stalker' ? z.revealTimer > 0 : true,
+      });
+    }
+    const zombiesRemaining = this.wavePlan.queue.length + aliveEnemies.length;
+
+    const hazards: MinimapHazard[] = [];
+    for (let i = 0; i < this.acidPuddles.length; i++) {
+      const p = this.acidPuddles[i];
+      hazards.push({ x: p.x, z: p.z, kind: 'acid' });
+    }
+    for (let i = 0; i < this.activeMines.length; i++) {
+      const m = this.activeMines[i];
+      hazards.push({ x: m.x, z: m.z, kind: 'mine' });
+    }
+    for (let i = 0; i < this.activeTurrets.length; i++) {
+      const t = this.activeTurrets[i];
+      hazards.push({ x: t.x, z: t.z, kind: 'turret' });
+    }
 
     this.callbacks.onHudUpdate({
       phase: this.phase,
@@ -3120,6 +3902,9 @@ export class GameEngine {
       isReloading: this.isReloading,
       reloadProgress,
       dashCooldownProgress,
+      equippedGear: this.equippedGear,
+      gearCooldownProgress,
+      gearCooldownRemaining,
       rapidFireRemaining: this.rapidFireRemaining,
       muted: this.sound.isMuted(),
       waveBanner: this.waveBanner,
@@ -3146,10 +3931,9 @@ export class GameEngine {
         playerX: this.playerX,
         playerZ: this.playerZ,
         playerAimAngle: this.playerAimAngle,
-        enemies: this.zombies
-          .filter((z) => !z.dying)
-          .map((z) => ({ x: z.x, z: z.z, kind: z.kind })),
+        enemies: aliveEnemies,
         pickups: this.pickups.map((p) => ({ x: p.x, z: p.z, kind: p.kind })),
+        hazards,
       },
     });
   }
@@ -3162,10 +3946,17 @@ export class GameEngine {
     for (const d of this.disposables) {
       d.dispose();
     }
+    this.flashRingGeo.dispose();
+    this.acidProjGeo.dispose();
+    this.acidProjMat.dispose();
+    this.bossProjGeo.dispose();
+    this.bossProjMat.dispose();
     this.scene.traverse((obj) => {
       if ((obj as THREE.Mesh).isMesh) {
         const m = obj as THREE.Mesh;
-        m.geometry?.dispose();
+        if (m.geometry && !m.geometry.userData?.shared) {
+          m.geometry.dispose();
+        }
         if (Array.isArray(m.material)) {
           m.material.forEach((mat) => mat.dispose());
         } else {
@@ -3173,6 +3964,7 @@ export class GameEngine {
         }
       }
     });
+    disposeSharedModelGeometries();
     this.renderer.dispose();
     if (this.renderer.domElement.parentNode === this.container) {
       this.container.removeChild(this.renderer.domElement);
