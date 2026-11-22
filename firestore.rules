@@ -18,12 +18,16 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function isVerifiedUser() {
-      return isSignedIn() && request.auth.token.email_verified == true;
-    }
-
     function isValidId(id) {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidCallsign(callsign) {
+      return callsign is string
+        && callsign.size() >= 3
+        && callsign.size() <= 15
+        && callsign.matches('^[A-Za-z0-9 ]{3,15}$')
+        && !callsign.matches('^ +$');
     }
 
     function isValidDateKey(dateKey) {
@@ -83,13 +87,10 @@ service cloud.firestore {
         && data.uid.size() <= 128
         && data.uid.matches('^[a-zA-Z0-9_\\-]+$')
         && data.uid == request.auth.uid
-        && data.callsign is string
-        && data.callsign.size() >= 3
-        && data.callsign.size() <= 12
-        && data.callsign.matches('^[A-Za-z0-9_]{3,12}$')
+        && isValidCallsign(data.callsign)
         && data.wave is int
         && data.wave >= 1
-        && data.wave <= 999
+        && data.wave <= 200
         && data.kills is int
         && data.kills >= 0
         && data.kills <= 1000000
@@ -145,10 +146,7 @@ service cloud.firestore {
         && data.uid.size() <= 128
         && data.uid.matches('^[a-zA-Z0-9_\\-]+$')
         && data.uid == request.auth.uid
-        && data.callsign is string
-        && data.callsign.size() >= 3
-        && data.callsign.size() <= 12
-        && data.callsign.matches('^[A-Za-z0-9_]{3,12}$')
+        && isValidCallsign(data.callsign)
         && data.dateKey is string
         && data.dateKey == dateKey
         && data.mutator is string
@@ -156,7 +154,7 @@ service cloud.firestore {
         && data.mutator.size() <= 48
         && data.wave is int
         && data.wave >= 1
-        && data.wave <= 999
+        && data.wave <= 200
         && data.kills is int
         && data.kills >= 0
         && data.kills <= 1000000
@@ -182,50 +180,72 @@ service cloud.firestore {
     }
 
     // Global Top 20 personal-best high score leaderboard (zero PII stored)
-    match /leaderboard/{entryId} {
-      allow get: if isValidId(entryId) && (resource == null || existing().isPublic == true);
+    match /leaderboard/{playerId} {
+      allow get: if isValidId(playerId) && (resource == null || existing().isPublic == true);
       allow list: if resource == null || existing().score >= 0;
 
-      allow create: if isVerifiedUser()
-        && isValidId(entryId)
-        && entryId == request.auth.uid
+      allow create: if isSignedIn()
+        && isValidId(playerId)
+        && playerId == request.auth.uid
         && isValidLeaderboardEntry(incoming())
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
 
-      allow update: if isVerifiedUser()
-        && isValidId(entryId)
-        && entryId == request.auth.uid
+      allow update: if isSignedIn()
+        && isValidId(playerId)
+        && playerId == request.auth.uid
         && isValidLeaderboardEntry(incoming())
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'callsign',
+          'wave',
+          'kills',
+          'score',
+          'mode',
+          'arena',
+          'skinId',
+          'platform',
+          'updatedAt'
+        ])
         && incoming().uid == existing().uid
         && incoming().isPublic == existing().isPublic
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && incoming().score >= existing().score;
 
-      allow delete: if isVerifiedUser()
-        && isValidId(entryId)
-        && entryId == request.auth.uid;
+      allow delete: if isSignedIn()
+        && isValidId(playerId)
+        && playerId == request.auth.uid;
     }
 
     // Daily Seeded Challenge leaderboard partitioned by UTC YYYY-MM-DD
-    match /daily_leaderboard/{dateKey}/entries/{entryId} {
-      allow get: if isValidDateKey(dateKey) && isValidId(entryId) && (resource == null || existing().isPublic == true);
+    match /daily_leaderboard/{dateKey}/entries/{playerId} {
+      allow get: if isValidDateKey(dateKey) && isValidId(playerId) && (resource == null || existing().isPublic == true);
       allow list: if isValidDateKey(dateKey) && (resource == null || existing().score >= 0);
 
-      allow create: if isVerifiedUser()
+      allow create: if isSignedIn()
         && isValidDateKey(dateKey)
-        && isValidId(entryId)
-        && entryId == request.auth.uid
+        && isValidId(playerId)
+        && playerId == request.auth.uid
         && isValidDailyLeaderboardEntry(incoming(), dateKey)
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
 
-      allow update: if isVerifiedUser()
+      allow update: if isSignedIn()
         && isValidDateKey(dateKey)
-        && isValidId(entryId)
-        && entryId == request.auth.uid
+        && isValidId(playerId)
+        && playerId == request.auth.uid
         && isValidDailyLeaderboardEntry(incoming(), dateKey)
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'callsign',
+          'mutator',
+          'wave',
+          'kills',
+          'score',
+          'arena',
+          'skinId',
+          'platform',
+          'updatedAt'
+        ])
         && incoming().uid == existing().uid
         && incoming().dateKey == existing().dateKey
         && incoming().isPublic == existing().isPublic
@@ -233,10 +253,10 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && incoming().score >= existing().score;
 
-      allow delete: if isVerifiedUser()
+      allow delete: if isSignedIn()
         && isValidDateKey(dateKey)
-        && isValidId(entryId)
-        && entryId == request.auth.uid;
+        && isValidId(playerId)
+        && playerId == request.auth.uid;
     }
   }
 }

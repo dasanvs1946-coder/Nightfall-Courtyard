@@ -2,7 +2,7 @@
   "entities": {
     "LeaderboardEntry": {
       "title": "LeaderboardEntry",
-      "description": "Public personal-best survival run record for a verified player on the Nightfall Courtyard global Top 20 leaderboard.",
+      "description": "Public personal-best survival run record for a signed-in player (including anonymous Firebase Auth) on the Nightfall Courtyard global Top 20 leaderboard.",
       "type": "object",
       "properties": {
         "uid": {
@@ -15,13 +15,13 @@
         "callsign": {
           "type": "string",
           "minLength": 3,
-          "maxLength": 12,
-          "pattern": "^[A-Za-z0-9_]{3,12}$",
-          "description": "Public survivor callsign (3-12 alphanumeric/underscore characters, zero PII)."
+          "maxLength": 15,
+          "pattern": "^[A-Za-z0-9 ]{3,15}$",
+          "description": "Public player name (3-15 letters, numbers, or spaces, zero PII)."
         },
         "wave": {
           "type": "integer",
-          "description": "Highest wave reached in the recorded run (1..999)."
+          "description": "Highest wave reached in the recorded run (1..200)."
         },
         "kills": {
           "type": "integer",
@@ -103,9 +103,9 @@
         "callsign": {
           "type": "string",
           "minLength": 3,
-          "maxLength": 12,
-          "pattern": "^[A-Za-z0-9_]{3,12}$",
-          "description": "Public survivor callsign."
+          "maxLength": 15,
+          "pattern": "^[A-Za-z0-9 ]{3,15}$",
+          "description": "Public player name (3-15 letters, numbers, or spaces)."
         },
         "dateKey": {
           "type": "string",
@@ -122,7 +122,7 @@
         },
         "wave": {
           "type": "integer",
-          "description": "Wave reached in the Daily Run (1..999)."
+          "description": "Wave reached in the Daily Run (1..200)."
         },
         "kills": {
           "type": "integer",
@@ -198,7 +198,7 @@
       "properties": {
         "latestVersion": {
           "type": "string",
-          "description": "Semantic version string (e.g. '2.0.0' or 'v2.0.0')."
+          "description": "Semantic version string (e.g. '2.0.1' or 'v2.0.1')."
         },
         "downloadUrl": {
           "type": "string",
@@ -214,17 +214,17 @@
     }
   },
   "firestore": {
-    "/leaderboard/{entryId}": {
+    "/leaderboard/{playerId}": {
       "schema": {
         "$ref": "#/entities/LeaderboardEntry"
       },
-      "description": "Global Top 20 personal-best high score entries keyed by verified player UID."
+      "description": "Global Top 20 personal-best high score entries keyed by authenticated player UID (including anonymous auth)."
     },
-    "/daily_leaderboard/{dateKey}/entries/{entryId}": {
+    "/daily_leaderboard/{dateKey}/entries/{playerId}": {
       "schema": {
         "$ref": "#/entities/DailyLeaderboardEntry"
       },
-      "description": "Daily Seeded Challenge leaderboard entries keyed by UTC date and verified player UID."
+      "description": "Daily Seeded Challenge leaderboard entries keyed by UTC date and authenticated player UID."
     },
     "/config/{configId}": {
       "schema": {

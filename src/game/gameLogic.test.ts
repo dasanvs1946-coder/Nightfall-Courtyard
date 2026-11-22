@@ -470,8 +470,8 @@ test('tactical gear specs and cycling cover mine, turret, and flashbang with lon
   assert.equal(getNextTacticalGear('flashbang'), 'mine');
 });
 
-test('app version matches 2.0.0 release', () => {
-  assert.equal(APP_VERSION, '2.0.0');
+test('app version matches 2.0.1 release', () => {
+  assert.equal(APP_VERSION, '2.0.1');
 });
 
 test('dynamic weather cycles across states, escalates to storm on boss waves, and parses query overrides', () => {
@@ -715,10 +715,13 @@ test('dedicated tactical gadgets, 3 arenas, 5 modes, 9-enemy bestiary, daily see
   const d2 = getDailyChallengeConfig('2026-11-22');
   assert.deepEqual(d1, d2);
 
-  // Callsign sanitization & validation
-  assert.equal(sanitizeCallsign('ghost_99!@#'), 'ghost_99');
-  assert.equal(isValidCallsign('GHOST_99'), true);
+  // Callsign / Player Name sanitization & validation (3-15 chars, letters/numbers/spaces)
+  assert.equal(sanitizeCallsign('ghost_99!@#'), 'ghost 99');
+  assert.equal(sanitizeCallsign('Night Wolf 777799'), 'Night Wolf 7777');
+  assert.equal(isValidCallsign('NIGHT WOLF 7'), true);
+  assert.equal(isValidCallsign('   '), false);
   assert.equal(isValidCallsign('AB'), false);
+  assert.equal(isValidCallsign('1234567890123456'), false);
 
   // v2.0.0 run snapshot persistence
   const map = new Map<string, string>();

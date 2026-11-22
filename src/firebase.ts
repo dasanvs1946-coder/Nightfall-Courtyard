@@ -1,10 +1,8 @@
 import { initializeApp } from 'firebase/app';
 import {
   getAuth,
-  GoogleAuthProvider,
   onAuthStateChanged,
-  signInWithPopup,
-  signOut,
+  signInAnonymously,
   User,
 } from 'firebase/auth';
 import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
@@ -13,15 +11,34 @@ import firebaseConfig from '../firebase-applet-config.json';
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
-const googleProvider = new GoogleAuthProvider();
 
-export async function signInWithGoogle(): Promise<User | null> {
-  const cred = await signInWithPopup(auth, googleProvider);
-  return cred.user;
+export interface AnonymousAuthResult {
+  user: User | null;
+  errorCode: string | null;
 }
 
-export async function signOutFirebase(): Promise<void> {
-  await signOut(auth);
+let pendingAnonSignIn: Promise<AnonymousAuthResult> | null = null;
+
+export async function ensureAnonymousAuth(): Promise<AnonymousAuthResult> {
+  if (auth.currentUser) {
+    return { user: auth.currentUser, errorCode: null };
+  }
+  if (pendingAnonSignIn) {
+    return pendingAnonSignIn;
+  }
+  pendingAnonSignIn = signInAnonymously(auth)
+    .then((cred) => ({ user: cred.user, errorCode: null }))
+    .catch((err: unknown) => {
+      const code =
+        typeof err === 'object' && err !== null && 'code' in err
+          ? String((err as { code?: unknown }).code ?? 'auth/unknown')
+          : 'auth/unknown';
+      return { user: null, errorCode: code };
+    })
+    .finally(() => {
+      pendingAnonSignIn = null;
+    });
+  return pendingAnonSignIn;
 }
 
 export function subscribeToAuthState(

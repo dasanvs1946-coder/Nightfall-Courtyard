@@ -9,9 +9,16 @@ import {
   query,
   serverTimestamp,
   setDoc,
+  updateDoc,
   where,
 } from 'firebase/firestore';
-import { auth, db, handleFirestoreError, OperationType } from '../firebase';
+import {
+  auth,
+  db,
+  ensureAnonymousAuth,
+  handleFirestoreError,
+  OperationType,
+} from '../firebase';
 import { SKIN_ORDER } from '../game/career';
 import { ARENA_ORDER, GAME_MODE_ORDER } from '../game/arenas';
 import { getDailyChallengeConfig, getUtcDateKey } from '../game/dailyChallenge';
@@ -46,8 +53,8 @@ function clampInt(val: number, min: number, max: number): number {
 }
 
 function normalizeCallsign(raw: string): string {
-  const clean = sanitizeCallsign(raw);
-  return isValidCallsign(clean) ? clean : 'SURVIVOR_01';
+  const clean = sanitizeCallsign(raw).trim();
+  return isValidCallsign(clean) ? clean : 'SURVIVOR 01';
 }
 
 function normalizeMode(raw: string): GameModeId {
@@ -142,13 +149,17 @@ export interface SubmitRunParams {
 export interface SubmitRunResult {
   submittedGlobal: boolean;
   submittedDaily: boolean;
-  reason?: 'unauthenticated' | 'not_verified' | 'not_personal_best';
+  reason?: 'unauthenticated' | 'not_personal_best';
 }
 
 export async function submitLeaderboardRun(
   params: SubmitRunParams,
 ): Promise<SubmitRunResult> {
-  const user = auth.currentUser;
+  let user = auth.currentUser;
+  if (!user) {
+    const res = await ensureAnonymousAuth();
+    user = res.user;
+  }
   if (!user) {
     return {
       submittedGlobal: false,
@@ -156,17 +167,10 @@ export async function submitLeaderboardRun(
       reason: 'unauthenticated',
     };
   }
-  if (!user.emailVerified) {
-    return {
-      submittedGlobal: false,
-      submittedDaily: false,
-      reason: 'not_verified',
-    };
-  }
 
   const uid = user.uid;
   const callsign = normalizeCallsign(params.callsign);
-  const wave = clampInt(params.wave, 1, 999);
+  const wave = clampInt(params.wave, 1, 200);
   const kills = clampInt(params.kills, 0, 1000000);
   const score = clampInt(params.score, 0, 100000000);
   const mode = normalizeMode(params.mode);
@@ -284,3 +288,50 @@ export async function submitLeaderboardRun(
     reason: !submittedGlobal && !submittedDaily ? 'not_personal_best' : undefined,
   };
 }
+
+export async function updateLeaderboardCallsign(
+  rawCallsign: string,
+): Promise<boolean> {
+  let user = auth.currentUser;
+  if (!user) {
+    const res = await ensureAnonymousAuth();
+    user = res.user;
+  }
+  if (!user) return false;
+
+  const callsign = normalizeCallsign(rawCallsign);
+  const uid = user.uid;
+  let updatedAny = false;
+
+  const globalRef = doc(db, 'leaderboard', uid);
+  try {
+    const snap = await getDoc(globalRef);
+    if (snap.exists() && snap.data().callsign !== callsign) {
+      await updateDoc(globalRef, {
+        callsign,
+        updatedAt: serverTimestamp(),
+      });
+      updatedAny = true;
+    }
+  } catch {
+    // Non-fatal if offline or no record exists yet
+  }
+
+  const dateKey = getUtcDateKey();
+  const dailyRef = doc(db, 'daily_leaderboard', dateKey, 'entries', uid);
+  try {
+    const dailySnap = await getDoc(dailyRef);
+    if (dailySnap.exists() && dailySnap.data().callsign !== callsign) {
+      await updateDoc(dailyRef, {
+        callsign,
+        updatedAt: serverTimestamp(),
+      });
+      updatedAny = true;
+    }
+  } catch {
+    // Non-fatal if offline or no daily record exists yet
+  }
+
+  return updatedAny;
+}
+

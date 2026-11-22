@@ -38,6 +38,7 @@ interface TitleScreenProps {
   arena: ArenaId;
   mode: GameModeId;
   callsign: string;
+  isOnline: boolean;
   career: CareerStats;
   androidUpdate: RemoteAppConfig | null;
   onChangeCallsign: (raw: string) => void;
@@ -71,6 +72,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
   arena,
   mode,
   callsign,
+  isOnline,
   career,
   androidUpdate,
   onChangeCallsign,
@@ -286,37 +288,50 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
             className="mt-2.5 flex flex-col gap-2.5 rounded-xl border border-slate-700/80 p-3"
             style={{ backgroundColor: 'rgba(10, 15, 24, 0.88)' }}
           >
-            {/* Player Callsign Input */}
+            {/* Player Name Input + Online Status */}
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <label
-                htmlFor="callsign-input"
-                className="text-[10px] font-extrabold tracking-wider text-slate-400 uppercase"
-              >
-                Survivor Callsign (3-12)
-              </label>
+              <div className="flex items-center gap-2">
+                <label
+                  htmlFor="callsign-input"
+                  className="text-[10px] font-extrabold tracking-wider text-slate-400 uppercase"
+                >
+                  Player Name (3-15)
+                </label>
+                {isOnline && (
+                  <span
+                    data-testid="title-online-status"
+                    className="inline-flex items-center gap-1 rounded-md border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-extrabold tracking-wider text-emerald-400 uppercase"
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                    <span>Online</span>
+                  </span>
+                )}
+              </div>
               <div className="flex items-center gap-2">
                 <input
                   id="callsign-input"
                   data-testid="callsign-input"
                   type="text"
-                  maxLength={12}
+                  maxLength={15}
                   value={callsignDraft}
                   onChange={(e) => {
-                    const sanitized = sanitizeCallsign(e.target.value.toUpperCase());
+                    const sanitized = sanitizeCallsign(e.target.value);
                     setCallsignDraft(sanitized);
                     if (isValidCallsign(sanitized)) {
-                      onChangeCallsign(sanitized);
+                      onChangeCallsign(sanitized.trim());
                     }
                   }}
                   onBlur={() => {
-                    if (!isValidCallsign(callsignDraft)) {
+                    const trimmed = callsignDraft.trim();
+                    if (!isValidCallsign(trimmed)) {
                       setCallsignDraft(callsign);
                     } else {
-                      onChangeCallsign(callsignDraft);
+                      setCallsignDraft(trimmed);
+                      onChangeCallsign(trimmed);
                     }
                   }}
-                  className="font-mono-tabular h-8 w-36 rounded-lg border border-slate-700 bg-slate-950 px-2.5 text-xs font-bold tracking-wider text-amber-300 uppercase focus:border-amber-400 focus:outline-none"
-                  placeholder="SURVIVOR_01"
+                  className="font-mono-tabular h-8 w-40 rounded-lg border border-slate-700 bg-slate-950 px-2.5 text-xs font-bold tracking-wide text-amber-300 focus:border-amber-400 focus:outline-none"
+                  placeholder="SURVIVOR 01"
                 />
                 {!callsignValid && (
                   <span className="text-[10px] font-bold text-rose-400">

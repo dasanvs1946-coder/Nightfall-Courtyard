@@ -34,33 +34,47 @@ export interface StorageLike {
 }
 
 export function sanitizeCallsign(raw: string): string {
-  const cleaned = raw.replace(/[^A-Za-z0-9_]/g, '').slice(0, 12);
-  return cleaned;
+  return raw
+    .replace(/_/g, ' ')
+    .replace(/[^A-Za-z0-9 ]/g, '')
+    .replace(/ {2,}/g, ' ')
+    .slice(0, 15);
 }
 
 export function isValidCallsign(raw: string): boolean {
-  return /^[A-Za-z0-9_]{3,12}$/.test(raw);
+  const trimmed = raw.trim();
+  return (
+    trimmed.length >= 3 &&
+    trimmed.length <= 15 &&
+    /^[A-Za-z0-9 ]{3,15}$/.test(trimmed)
+  );
 }
 
 export function generateDefaultCallsign(): string {
   const num = String(Math.floor(1000 + Math.random() * 9000));
-  return `SURVIVOR_${num}`.slice(0, 12);
+  return `SURVIVOR ${num}`.slice(0, 15);
 }
 
 export function loadCallsign(
   storage: StorageLike | null = getBrowserStorage(),
 ): string {
-  if (!storage) return 'SURVIVOR_1001';
+  if (!storage) return 'SURVIVOR 1001';
   try {
     const existing = storage.getItem(CALLSIGN_KEY);
-    if (existing && isValidCallsign(existing)) {
-      return existing;
+    if (existing) {
+      const migrated = sanitizeCallsign(existing).trim();
+      if (isValidCallsign(migrated)) {
+        if (migrated !== existing) {
+          storage.setItem(CALLSIGN_KEY, migrated);
+        }
+        return migrated;
+      }
     }
     const generated = generateDefaultCallsign();
     storage.setItem(CALLSIGN_KEY, generated);
     return generated;
   } catch {
-    return 'SURVIVOR_1001';
+    return 'SURVIVOR 1001';
   }
 }
 
@@ -68,7 +82,7 @@ export function saveCallsign(
   raw: string,
   storage: StorageLike | null = getBrowserStorage(),
 ): string {
-  const sanitized = sanitizeCallsign(raw);
+  const sanitized = sanitizeCallsign(raw).trim();
   const valid = isValidCallsign(sanitized)
     ? sanitized
     : loadCallsign(storage);

@@ -7,8 +7,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { StatusModal } from './components/StatusModal';
 import { TitleScreen } from './components/TitleScreen';
 import {
-  signInWithGoogle,
-  signOutFirebase,
+  ensureAnonymousAuth,
   subscribeToAuthState,
 } from './firebase';
 import { loadCareerStats } from './game/career';
@@ -32,7 +31,10 @@ import { APP_VERSION } from './game/version';
 import { createInitialWeapons } from './game/weapons';
 import { parseWeatherParam } from './game/weather';
 import { GameEngine } from './scene/GameEngine';
-import { submitLeaderboardRun } from './services/leaderboardService';
+import {
+  submitLeaderboardRun,
+  updateLeaderboardCallsign,
+} from './services/leaderboardService';
 import { checkForAndroidUpdate } from './services/updateChecker';
 
 function createDefaultHudSnapshot(): HudSnapshot {
@@ -122,6 +124,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [leaderboardOpen, setLeaderboardOpen] = useState(false);
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
+  const [authErrorCode, setAuthErrorCode] = useState<string | null>(null);
   const [leaderboardStatus, setLeaderboardStatus] = useState<string | null>(null);
   const [androidUpdate, setAndroidUpdate] = useState<RemoteAppConfig | null>(null);
   const [floatingDamages, setFloatingDamages] = useState<FloatingDamage[]>([]);
@@ -129,9 +132,27 @@ export default function App() {
   const [webglError, setWebglError] = useState<string | null>(null);
 
   useEffect(() => {
-    return subscribeToAuthState((user) => {
+    let active = true;
+    const unsubscribe = subscribeToAuthState((user) => {
+      if (!active) return;
       setFirebaseUser(user);
+      if (user) {
+        setAuthErrorCode(null);
+      }
     });
+    void ensureAnonymousAuth().then((res) => {
+      if (!active) return;
+      if (res.user) {
+        setFirebaseUser(res.user);
+        setAuthErrorCode(null);
+      } else if (res.errorCode) {
+        setAuthErrorCode(res.errorCode);
+      }
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
@@ -163,14 +184,9 @@ export default function App() {
       setLeaderboardStatus(null);
       return;
     }
-    const runKey = `${hud.wave}-${hud.score}-${hud.kills}-${hud.mode}-${hud.arena}-${firebaseUser?.uid ?? 'anon'}`;
+    const runKey = `${hud.wave}-${hud.score}-${hud.kills}-${hud.mode}-${hud.arena}-${firebaseUser?.uid ?? 'pending'}`;
     if (submittedRunKeyRef.current === runKey) return;
     submittedRunKeyRef.current = runKey;
-
-    if (!firebaseUser) {
-      setLeaderboardStatus('Sign in via Top 20 to publish runs globally.');
-      return;
-    }
 
     setLeaderboardStatus('Submitting score to Top 20...');
     submitLeaderboardRun({
@@ -190,8 +206,8 @@ export default function App() {
               ? 'Published new Global & Daily Top 20 record!'
               : 'Published new Personal Best to Global Top 20!',
           );
-        } else if (res.reason === 'not_verified') {
-          setLeaderboardStatus('Verified Google account required to post scores.');
+        } else if (res.reason === 'unauthenticated') {
+          setLeaderboardStatus('Leaderboard offline — run saved locally.');
         } else if (res.reason === 'not_personal_best') {
           setLeaderboardStatus('Existing Top 20 personal best kept.');
         }
@@ -314,9 +330,15 @@ export default function App() {
           arena={hud.arena}
           mode={hud.mode}
           callsign={hud.callsign}
+          isOnline={Boolean(firebaseUser)}
           career={career}
           androidUpdate={androidUpdate}
-          onChangeCallsign={(raw) => engineRef.current?.setCallsign(raw)}
+          onChangeCallsign={(raw) => {
+            const saved = engineRef.current?.setCallsign(raw);
+            if (saved) {
+              void updateLeaderboardCallsign(saved);
+            }
+          }}
           onSelectArena={(id) => engineRef.current?.setArena(id)}
           onSelectMode={(id) => engineRef.current?.setGameMode(id)}
           onEquipGear={(id) => engineRef.current?.equipGear(id)}
@@ -429,12 +451,13 @@ export default function App() {
         <LeaderboardModal
           open={leaderboardOpen}
           user={firebaseUser}
+          authErrorCode={authErrorCode}
           currentCallsign={hud.callsign}
-          onSignIn={async () => {
-            await signInWithGoogle();
-          }}
-          onSignOut={async () => {
-            await signOutFirebase();
+          onSaveCallsign={async (raw) => {
+            const saved = engineRef.current?.setCallsign(raw);
+            if (saved) {
+              await updateLeaderboardCallsign(saved);
+            }
           }}
           onClose={() => setLeaderboardOpen(false)}
         />

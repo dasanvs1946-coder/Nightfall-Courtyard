@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { User } from 'firebase/auth';
-import { Calendar, Globe, LogIn, LogOut, RefreshCw, Trophy, X } from 'lucide-react';
+import { Calendar, Check, Globe, RefreshCw, Trophy, X } from 'lucide-react';
 import { ARENA_SPECS, GAME_MODE_SPECS } from '../game/arenas';
 import { SKIN_SPECS } from '../game/career';
 import { getUtcDateKey } from '../game/dailyChallenge';
+import { isValidCallsign, sanitizeCallsign } from '../game/storage';
 import {
   fetchDailyTop20,
   fetchGlobalTop20,
@@ -13,9 +14,9 @@ import {
 interface LeaderboardModalProps {
   open: boolean;
   user: User | null;
+  authErrorCode: string | null;
   currentCallsign: string;
-  onSignIn: () => Promise<void>;
-  onSignOut: () => Promise<void>;
+  onSaveCallsign: (raw: string) => Promise<void>;
   onClose: () => void;
 }
 
@@ -24,17 +25,23 @@ type BoardTab = 'global' | 'daily';
 export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
   open,
   user,
+  authErrorCode,
   currentCallsign,
-  onSignIn,
-  onSignOut,
+  onSaveCallsign,
   onClose,
 }) => {
   const [boardTab, setBoardTab] = useState<BoardTab>('global');
   const [records, setRecords] = useState<LeaderboardRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [authBusy, setAuthBusy] = useState(false);
+  const [nameDraft, setNameDraft] = useState(currentCallsign);
+  const [savingName, setSavingName] = useState(false);
+  const [savedNotice, setSavedNotice] = useState(false);
   const dateKey = getUtcDateKey();
+
+  useEffect(() => {
+    setNameDraft(currentCallsign);
+  }, [currentCallsign, open]);
 
   const loadBoard = useCallback(async () => {
     setLoading(true);
@@ -63,7 +70,26 @@ export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
     }
   }, [open, loadBoard]);
 
+  const handleSaveName = async () => {
+    const trimmed = nameDraft.trim();
+    if (!isValidCallsign(trimmed) || savingName) return;
+    setSavingName(true);
+    setSavedNotice(false);
+    try {
+      await onSaveCallsign(trimmed);
+      setNameDraft(trimmed);
+      setSavedNotice(true);
+      await loadBoard();
+    } finally {
+      setSavingName(false);
+    }
+  };
+
   if (!open) return null;
+
+  const isOnline = Boolean(user);
+  const nameValid = isValidCallsign(nameDraft);
+  const nameChanged = nameDraft.trim() !== currentCallsign;
 
   return (
     <div
@@ -85,14 +111,38 @@ export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
               <Trophy className="h-4.5 w-4.5 text-amber-400" />
             </div>
             <div>
-              <h2
-                id="leaderboard-heading"
-                className="font-display text-lg font-extrabold tracking-wide text-white uppercase sm:text-xl"
-              >
-                Top 20 Survivors
-              </h2>
+              <div className="flex items-center gap-2">
+                <h2
+                  id="leaderboard-heading"
+                  className="font-display text-lg font-extrabold tracking-wide text-white uppercase sm:text-xl"
+                >
+                  Top 20 Survivors
+                </h2>
+                {isOnline ? (
+                  <span
+                    data-testid="lb-online-status"
+                    className="inline-flex items-center gap-1 rounded-md border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-extrabold tracking-wider text-emerald-400 uppercase"
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                    <span>Online</span>
+                  </span>
+                ) : (
+                  <span
+                    data-testid="lb-offline-status"
+                    className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-900 px-1.5 py-0.5 text-[9px] font-bold tracking-wider text-slate-400 uppercase"
+                  >
+                    <span className="h-1.5 w-1.5 rounded-full bg-slate-500" />
+                    <span>
+                      {authErrorCode === 'auth/operation-not-allowed'
+                        ? 'Anon Auth Off'
+                        : 'Connecting'}
+                    </span>
+                  </span>
+                )}
+              </div>
               <p className="font-mono-tabular text-[11px] text-slate-400">
-                Active Callsign: <span className="font-bold text-amber-300">{currentCallsign}</span>
+                Active Player:{' '}
+                <span className="font-bold text-amber-300">{currentCallsign}</span>
               </p>
             </div>
           </div>
@@ -119,12 +169,64 @@ export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
           </div>
         </div>
 
-        {/* Auth Status & Board Tabs */}
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+        {/* Player Name + Board Scope Tabs */}
+        <div className="mt-3 flex flex-col gap-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-800 bg-slate-950/80 px-3 py-2">
+            <label
+              htmlFor="leaderboard-player-name"
+              className="text-[10px] font-extrabold tracking-wider text-slate-400 uppercase"
+            >
+              Player Name
+            </label>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <input
+                id="leaderboard-player-name"
+                data-testid="leaderboard-player-name-input"
+                type="text"
+                maxLength={15}
+                value={nameDraft}
+                onChange={(e) => {
+                  const clean = sanitizeCallsign(e.target.value);
+                  setNameDraft(clean);
+                  setSavedNotice(false);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    void handleSaveName();
+                  }
+                }}
+                placeholder="SURVIVOR 01"
+                className="font-mono-tabular h-8 w-40 rounded-lg border border-slate-700 bg-slate-900 px-2.5 text-xs font-bold tracking-wide text-amber-300 focus:border-amber-400 focus:outline-none sm:w-44"
+              />
+              <button
+                type="button"
+                data-testid="leaderboard-save-name"
+                disabled={!nameValid || savingName || (!nameChanged && !savedNotice)}
+                onClick={() => void handleSaveName()}
+                className="flex h-8 cursor-pointer items-center gap-1 rounded-lg border border-amber-500/60 bg-amber-500/15 px-2.5 text-[10px] font-extrabold tracking-wider text-amber-200 uppercase hover:bg-amber-500 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                {savedNotice && !nameChanged ? (
+                  <>
+                    <Check className="h-3 w-3 text-emerald-400" />
+                    <span>Saved</span>
+                  </>
+                ) : (
+                  <span>{savingName ? 'Saving...' : 'Save Name'}</span>
+                )}
+              </button>
+              {!nameValid && (
+                <span className="text-[10px] font-bold text-rose-400">
+                  3–15 chars
+                </span>
+              )}
+            </div>
+          </div>
+
           <div
             role="tablist"
             aria-label="Leaderboard Scope"
-            className="flex gap-1 rounded-xl border border-slate-800 bg-slate-950 p-1"
+            className="flex w-fit gap-1 rounded-xl border border-slate-800 bg-slate-950 p-1"
           >
             <button
               type="button"
@@ -157,40 +259,6 @@ export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
               <span>Daily ({dateKey})</span>
             </button>
           </div>
-
-          {user ? (
-            <div className="flex items-center gap-2 text-[11px] text-slate-300">
-              <span className="max-w-[140px] truncate font-medium text-emerald-300">
-                {user.email || 'Signed In'}
-              </span>
-              <button
-                type="button"
-                disabled={authBusy}
-                onClick={() => {
-                  setAuthBusy(true);
-                  void onSignOut().finally(() => setAuthBusy(false));
-                }}
-                className="flex min-h-[32px] cursor-pointer items-center gap-1 rounded-lg border border-slate-700 bg-slate-900 px-2.5 py-1 text-[10px] font-bold tracking-wider text-slate-300 uppercase hover:text-white"
-              >
-                <LogOut className="h-3 w-3" />
-                <span>Sign Out</span>
-              </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              data-testid="lb-google-signin"
-              disabled={authBusy}
-              onClick={() => {
-                setAuthBusy(true);
-                void onSignIn().finally(() => setAuthBusy(false));
-              }}
-              className="flex min-h-[34px] cursor-pointer items-center gap-1.5 rounded-lg border border-cyan-400/60 bg-cyan-500/15 px-3 py-1 text-[11px] font-extrabold tracking-wider text-cyan-200 uppercase hover:bg-cyan-500/25 disabled:opacity-50"
-            >
-              <LogIn className="h-3.5 w-3.5" />
-              <span>Sign In to Post Scores</span>
-            </button>
-          )}
         </div>
 
         {/* Table Content */}
@@ -216,7 +284,7 @@ export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
                 No {boardTab === 'daily' ? "Today's Daily" : 'Global'} Runs Posted Yet
               </div>
               <p className="max-w-xs text-[11px] text-slate-400">
-                Sign in with Google and survive a run to claim Rank #1 on the board.
+                Set your Player Name and survive a run to claim Rank #1 on the board.
               </p>
             </div>
           ) : (
