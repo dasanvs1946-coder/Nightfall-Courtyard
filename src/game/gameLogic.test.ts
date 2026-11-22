@@ -78,6 +78,33 @@ import {
   shouldFlashInvulnMesh,
 } from './revive';
 import { APP_VERSION } from './version';
+import { compareSemVer, isRemoteVersionNewer, parseSemVer } from './semver';
+import {
+  DEFAULT_GAME_SETTINGS,
+  getEffectivePixelRatio,
+  getRainQualityScale,
+  loadSettings,
+  saveSettings,
+  shouldEnableShadows,
+} from './settings';
+import {
+  CLASS_ORDER,
+  computeRunScrapReward,
+  createDefaultCareerStats,
+  evaluateSkinUnlocks,
+  getBestiaryMasteryBonusPct,
+  getBestiaryMasteryMultiplier,
+  getPermanentBaseHpBonus,
+  getPermanentDashCooldownMultiplier,
+  getPermanentReloadMultiplier,
+  getPermanentStartingUpBonus,
+  getSkinProgress,
+  isClassUnlocked,
+  loadCareerStats,
+  purchasePermanentUpgrade,
+  saveCareerStats,
+  SKIN_ORDER,
+} from './career';
 
 test('weapon progression has 12 distinct weapons unlocking across waves 1 to 20 with next/prev cycling', () => {
   assert.equal(WEAPON_ORDER.length, 12);
@@ -464,4 +491,123 @@ test('minimap projects world coordinates, clamps out-of-bounds points, and inclu
   assert.ok(shapes.some((s) => s.kind === 'lamp'));
   assert.ok(shapes.some((s) => s.kind === 'car'));
 });
+
+test('strict numeric SemVer comparison handles v prefixes and multi-digit segments accurately', () => {
+  assert.deepEqual(parseSemVer('v1.2.0'), [1, 2, 0]);
+  assert.deepEqual(parseSemVer('1.2.10'), [1, 2, 10]);
+  assert.deepEqual(parseSemVer('invalid'), [0, 0, 0]);
+
+  assert.equal(compareSemVer('v1.2.10', 'v1.2.2'), 1);
+  assert.equal(compareSemVer('1.2.0', 'v1.2.0'), 0);
+  assert.equal(compareSemVer('v1.1.9', 'v1.2.0'), -1);
+
+  assert.equal(isRemoteVersionNewer('1.2.1', 'v1.2.0'), true);
+  assert.equal(isRemoteVersionNewer('v2.0.0', 'v1.9.9'), true);
+  assert.equal(isRemoteVersionNewer('v1.2.0', 'v1.2.0'), false);
+  assert.equal(isRemoteVersionNewer('v1.1.5', 'v1.2.0'), false);
+  assert.equal(isRemoteVersionNewer('0.0.0', 'v1.2.0'), false);
+});
+
+test('game settings persist and clamp mobile pixelRatio to 1.5 max', () => {
+  const map = new Map<string, string>();
+  const mockStorage: StorageLike = {
+    getItem: (k) => map.get(k) ?? null,
+    setItem: (k, v) => {
+      map.set(k, v);
+    },
+  };
+
+  assert.deepEqual(loadSettings(mockStorage), DEFAULT_GAME_SETTINGS);
+  saveSettings(
+    {
+      graphicsQuality: 'medium',
+      hapticsEnabled: false,
+      autoFire: true,
+      showFps: true,
+    },
+    mockStorage,
+  );
+  const loaded = loadSettings(mockStorage);
+  assert.equal(loaded.graphicsQuality, 'medium');
+  assert.equal(loaded.hapticsEnabled, false);
+  assert.equal(loaded.autoFire, true);
+  assert.equal(loaded.showFps, true);
+
+  // Mobile DPR 3.0 clamps strictly to <= 1.5
+  assert.equal(getEffectivePixelRatio('high', 3.0, true, false), 1.5);
+  assert.equal(getEffectivePixelRatio('medium', 3.0, true, false), 1.25);
+  assert.equal(getEffectivePixelRatio('low', 3.0, false, false), 1);
+  assert.equal(getEffectivePixelRatio('high', 3.0, false, true), 1);
+  assert.equal(getEffectivePixelRatio('high', 2.0, false, false), 2);
+  assert.equal(shouldEnableShadows('low', false), false);
+  assert.equal(shouldEnableShadows('high', false), true);
+  assert.equal(shouldEnableShadows('high', true), false);
+  assert.equal(getRainQualityScale('low'), 0);
+  assert.equal(getRainQualityScale('high'), 1);
+});
+
+test('career stats, 6 skin thresholds, 4 classes, permanent scrap upgrades, and bestiary mastery work end-to-end', () => {
+  assert.equal(SKIN_ORDER.length, 6);
+  assert.equal(CLASS_ORDER.length, 4);
+
+  const map = new Map<string, string>();
+  const mockStorage: StorageLike = {
+    getItem: (k) => map.get(k) ?? null,
+    setItem: (k, v) => {
+      map.set(k, v);
+    },
+  };
+
+  const career = createDefaultCareerStats();
+  assert.deepEqual(career.unlockedSkins, ['nightwatch']);
+  assert.equal(isClassUnlocked('vanguard', career), true);
+  assert.equal(isClassUnlocked('engineer', career), false);
+  assert.equal(isClassUnlocked('recon', career), false);
+  assert.equal(isClassUnlocked('demolitionist', career), false);
+
+  // Cross wave 8 + 500 kills + 5 bosses + 25,000 score
+  career.totalKills = 500;
+  career.bestWave = 10;
+  career.bestScore = 26000;
+  career.bossesKilled = 5;
+  const newlyUnlocked = evaluateSkinUnlocks(career);
+  assert.deepEqual(newlyUnlocked, [
+    'crimson_recon',
+    'hazmat_breacher',
+    'cyber_ronin',
+    'storm_phantom',
+  ]);
+  assert.equal(isClassUnlocked('engineer', career), true);
+  assert.equal(isClassUnlocked('recon', career), true);
+  assert.equal(isClassUnlocked('demolitionist', career), true);
+
+  // Golden Sovereign still locked until 1500 kills or 50000 score
+  const goldProg = getSkinProgress('golden_sovereign', career);
+  assert.equal(goldProg.unlocked, false);
+
+  // Scrap reward & permanent upgrades
+  career.scrap = computeRunScrapReward({
+    wave: 10,
+    kills: 150,
+    bossesKilledInRun: 2,
+  });
+  assert.ok(career.scrap > 100);
+  const buyHp = purchasePermanentUpgrade(career, 'baseHp');
+  assert.equal(buyHp.purchased, true);
+  assert.equal(getPermanentBaseHpBonus(buyHp.career.permanentUpgrades), 10);
+  assert.ok(getPermanentReloadMultiplier({ ...buyHp.career.permanentUpgrades, reloadSpeed: 5 }) < 0.85);
+  assert.equal(getPermanentStartingUpBonus({ ...buyHp.career.permanentUpgrades, startingUp: 3 }), 3);
+  assert.ok(getPermanentDashCooldownMultiplier({ ...buyHp.career.permanentUpgrades, dashCooldown: 4 }) < 0.9);
+
+  // Save and reload career
+  buyHp.career.killsByEnemyType.walker = 210;
+  saveCareerStats(buyHp.career, mockStorage);
+  const reloaded = loadCareerStats(mockStorage);
+  assert.equal(reloaded.totalKills, 500);
+  assert.equal(reloaded.killsByEnemyType.walker, 210);
+  assert.equal(getBestiaryMasteryBonusPct(210), 10);
+  assert.ok(Math.abs(getBestiaryMasteryMultiplier('walker', reloaded.killsByEnemyType) - 1.1) < 1e-9);
+  assert.equal(getBestiaryMasteryMultiplier('runner', reloaded.killsByEnemyType), 1);
+});
+
 

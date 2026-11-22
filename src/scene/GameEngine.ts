@@ -24,12 +24,17 @@ import {
   shouldFlashInvulnMesh,
 } from '../game/revive';
 import {
+  CareerStats,
   CrateKind,
   FloatingDamage,
   GamePhase,
+  GameSettings,
   HudSnapshot,
   MinimapHazard,
+  PermanentUpgradeId,
   SavedRunProgress,
+  SkinId,
+  SurvivorClassId,
   TacticalGearId,
   UpgradeId,
   UpgradeLevels,
@@ -86,7 +91,6 @@ import {
   WEAPON_SPECS,
 } from '../game/weapons';
 import {
-  buildAcidPuddleMesh,
   buildCarMesh,
   buildCornerBrazier,
   buildCrateCluster,
@@ -98,6 +102,8 @@ import {
   buildProximityMineMesh,
   buildStreetLamp,
   buildZombieRig,
+  applyPlayerSkin,
+  updateDiegeticFootArcs,
   DeployableTurretRig,
   disposeSharedModelGeometries,
   PlayerRig,
@@ -105,6 +111,36 @@ import {
   StreetLampRig,
   ZombieRig,
 } from './models';
+import {
+  CLASS_SPECS,
+  computeRunScrapReward,
+  evaluateSkinUnlocks,
+  getBestiaryMasteryMultiplier,
+  getPermanentBaseHpBonus,
+  getPermanentDashCooldownMultiplier,
+  getPermanentReloadMultiplier,
+  getPermanentStartingUpBonus,
+  loadCareerStats,
+  purchasePermanentUpgrade,
+  saveCareerStats,
+  SKIN_SPECS,
+} from '../game/career';
+import {
+  getEffectivePixelRatio,
+  getRainQualityScale,
+  isMobileDeviceViewport,
+  loadSettings,
+  saveSettings,
+  shouldEnableShadows,
+} from '../game/settings';
+
+import {
+  hapticPlayerDamage,
+  hapticReviveShockwave,
+  hapticShotgunBlast,
+  hapticTurretDeploy,
+  setHapticsEnabled,
+} from '../services/haptics';
 import {
   getNextWeatherKind,
   getWeatherForWaveStart,
@@ -153,12 +189,19 @@ interface ActiveZombie {
   rangedCooldown: number;
   stunTimer: number;
   revealTimer: number;
+  wasRevealed: boolean;
   lungeTimer: number;
+  chargeCooldown: number;
+  chargeTimer: number;
+  chargePending: boolean;
+  chargeDirX: number;
+  chargeDirZ: number;
   acidTargetX: number;
   acidTargetZ: number;
   dying: boolean;
   deathTimer: number;
   walkPhase: number;
+  lastStepIndex: number;
 }
 
 interface BossProjectile {
@@ -183,9 +226,7 @@ interface AcidProjectile {
 }
 
 interface AcidPuddle {
-  mesh: THREE.Group;
-  mat: THREE.MeshBasicMaterial;
-  ringMat: THREE.MeshBasicMaterial;
+  active: boolean;
   x: number;
   z: number;
   age: number;
@@ -230,8 +271,32 @@ interface ActivePickup {
 }
 
 interface TracerSlot {
-  mesh: THREE.Mesh;
-  mat: THREE.MeshBasicMaterial;
+  active: boolean;
+  x: number;
+  y: number;
+  z: number;
+  angle: number;
+  length: number;
+  r: number;
+  g: number;
+  b: number;
+  life: number;
+  maxLife: number;
+}
+
+interface CasingSlot {
+  active: boolean;
+  x: number;
+  y: number;
+  z: number;
+  vx: number;
+  vy: number;
+  vz: number;
+  rx: number;
+  ry: number;
+  rz: number;
+  vrx: number;
+  vry: number;
   life: number;
   maxLife: number;
 }
@@ -280,6 +345,7 @@ interface FloatingDamageInternal {
   wz: number;
   amount: number;
   isCrit: boolean;
+  isWeakpoint?: boolean;
   blockedByArmor?: boolean;
   age: number;
   duration: number;
@@ -289,12 +355,17 @@ export interface EngineCallbacks {
   onHudUpdate: (snapshot: HudSnapshot) => void;
   onFloatingDamageUpdate: (items: FloatingDamage[]) => void;
   onSavedProgressUpdate?: (saved: SavedRunProgress | null) => void;
+  onCareerUpdate?: (career: CareerStats) => void;
+  onSettingsUpdate?: (settings: GameSettings) => void;
 }
 
-const MAX_TRACERS = 28;
+const MAX_TRACERS = 48;
+const MAX_CASINGS = 72;
 const MAX_PARTICLES = 180;
 const MAX_DECALS = 56;
 const MAX_RAIN_DROPS = 180;
+const MAX_ACID_POOLS = 16;
+const MAX_ACID_IMPACT_RINGS = 12;
 const ZOMBIE_LIGHT_POOL_SIZE = 5;
 const PLAYER_RADIUS = 0.48;
 const PLAYER_SPEED = 6.8;
@@ -350,8 +421,12 @@ export class GameEngine {
   private hemiLight!: THREE.HemisphereLight;
   private groundMat!: THREE.MeshStandardMaterial;
 
+  private tracerMesh!: THREE.InstancedMesh;
   private tracers: TracerSlot[] = [];
   private tracerCursor = 0;
+  private casingMesh!: THREE.InstancedMesh;
+  private casings: CasingSlot[] = [];
+  private casingCursor = 0;
   private particleMesh!: THREE.InstancedMesh;
   private particles: ParticleSlot[] = [];
   private particleCursor = 0;
@@ -361,6 +436,9 @@ export class GameEngine {
   private dustMat!: THREE.PointsMaterial;
   private rainMesh!: THREE.InstancedMesh;
   private rainDrops: RainDropSlot[] = [];
+  private acidPoolDiscMesh!: THREE.InstancedMesh;
+  private acidPoolRimMesh!: THREE.InstancedMesh;
+  private acidImpactRingMesh!: THREE.InstancedMesh;
   private cornerEmbers: Array<{
     mesh: THREE.Mesh;
     light: THREE.PointLight | null;
@@ -381,6 +459,20 @@ export class GameEngine {
   private resizeObserver: ResizeObserver;
   private viewportW = 1;
   private viewportH = 1;
+
+  // Settings, Career & FPS
+  private settings: GameSettings = loadSettings();
+  private career: CareerStats = loadCareerStats();
+  private skinPreviewActive = false;
+  private skinPreviewId: SkinId | null = null;
+  private skinPreviewRotation = 0;
+  private skinUnlockToast: string | null = null;
+  private skinUnlockToastTimer = 0;
+  private bossesKilledInRun = 0;
+  private lastScrapEarned = 0;
+  private fpsFrameCount = 0;
+  private fpsElapsed = 0;
+  private currentFps = 60;
 
   // Game State
   private phase: GamePhase = 'title';
@@ -472,6 +564,8 @@ export class GameEngine {
   // Camera & Juice
   private camPos = new THREE.Vector3(0, 20, 12);
   private camLook = new THREE.Vector3(0, 0, 0);
+  private camRecoilX = 0;
+  private camRecoilZ = 0;
   private trauma = 0;
   private hitstopTimer = 0;
   private titleOrbitAngle = 0.4;
@@ -509,10 +603,6 @@ export class GameEngine {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.15;
-    this.renderer.setPixelRatio(
-      this.isSoftwareGl ? 1 : Math.min(window.devicePixelRatio || 1, 2),
-    );
-    this.renderer.shadowMap.enabled = !this.isSoftwareGl;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
     const canvas = this.renderer.domElement;
@@ -539,6 +629,10 @@ export class GameEngine {
     this.buildPools();
 
     this.updateSize();
+    this.applyGraphicsSettings();
+    applyPlayerSkin(this.playerRig, this.career.equippedSkinId);
+    this.applyClassFlashlightVisuals();
+    setHapticsEnabled(this.settings.hapticsEnabled);
     this.resizeObserver = new ResizeObserver(() => this.updateSize());
     this.resizeObserver.observe(this.container);
 
@@ -564,6 +658,8 @@ export class GameEngine {
       this.startNewGame({ fromBeginning: true });
     } else {
       this.setPhase('title');
+      this.updateTitleCamera(0);
+      this.renderer.render(this.scene, this.camera);
       this.emitHudSnapshot(true);
     }
 
@@ -990,22 +1086,159 @@ export class GameEngine {
   }
 
   private buildPools(): void {
-    // Bullet tracer pool
-    const tracerGeo = new THREE.BoxGeometry(0.065, 0.065, 1);
+    // InstancedMesh Bullet Tracer Pool
+    const tracerGeo = new THREE.BoxGeometry(0.068, 0.068, 1);
     tracerGeo.translate(0, 0, -0.5);
+    const tracerMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    this.tracerMesh = new THREE.InstancedMesh(tracerGeo, tracerMat, MAX_TRACERS);
+    this.tracerMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.tracerMesh.frustumCulled = false;
     for (let i = 0; i < MAX_TRACERS; i++) {
-      const mat = new THREE.MeshBasicMaterial({
-        color: 0xffd166,
-        transparent: true,
-        opacity: 0,
-        depthWrite: false,
-        blending: THREE.AdditiveBlending,
+      this.tracers.push({
+        active: false,
+        x: 0,
+        y: -20,
+        z: 0,
+        angle: 0,
+        length: 1,
+        r: 1,
+        g: 0.85,
+        b: 0.4,
+        life: 0,
+        maxLife: 0.09,
       });
-      const mesh = new THREE.Mesh(tracerGeo, mat);
-      mesh.visible = false;
-      this.scene.add(mesh);
-      this.tracers.push({ mesh, mat, life: 0, maxLife: 0.09 });
+      _mat4.makeScale(0, 0, 0);
+      this.tracerMesh.setMatrixAt(i, _mat4);
+      _color.setRGB(1, 0.85, 0.4);
+      this.tracerMesh.setColorAt(i, _color);
     }
+    this.tracerMesh.instanceMatrix.needsUpdate = true;
+    if (this.tracerMesh.instanceColor) {
+      this.tracerMesh.instanceColor.needsUpdate = true;
+    }
+    this.scene.add(this.tracerMesh);
+
+    // InstancedMesh Brass Shell Casings Pool
+    const casingGeo = new THREE.CylinderGeometry(0.032, 0.032, 0.12, 6);
+    const casingMat = new THREE.MeshStandardMaterial({
+      color: 0xfbbf24,
+      roughness: 0.35,
+      metalness: 0.88,
+    });
+    this.casingMesh = new THREE.InstancedMesh(casingGeo, casingMat, MAX_CASINGS);
+    this.casingMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.casingMesh.frustumCulled = false;
+    for (let i = 0; i < MAX_CASINGS; i++) {
+      this.casings.push({
+        active: false,
+        x: 0,
+        y: -20,
+        z: 0,
+        vx: 0,
+        vy: 0,
+        vz: 0,
+        rx: 0,
+        ry: 0,
+        rz: 0,
+        vrx: 0,
+        vry: 0,
+        life: 0,
+        maxLife: 0.9,
+      });
+      _mat4.makeScale(0, 0, 0);
+      this.casingMesh.setMatrixAt(i, _mat4);
+    }
+    this.casingMesh.instanceMatrix.needsUpdate = true;
+    this.scene.add(this.casingMesh);
+
+    // InstancedMesh Acid Pools (Disc + Outer Glow Rim)
+    const acidDiscGeo = new THREE.CircleGeometry(1.85, 22);
+    acidDiscGeo.rotateX(-Math.PI / 2);
+    const acidDiscMat = new THREE.MeshBasicMaterial({
+      color: 0x84cc16,
+      transparent: true,
+      opacity: 0.56,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    });
+    this.acidPoolDiscMesh = new THREE.InstancedMesh(
+      acidDiscGeo,
+      acidDiscMat,
+      MAX_ACID_POOLS,
+    );
+    this.acidPoolDiscMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.acidPoolDiscMesh.frustumCulled = false;
+
+    const acidRimGeo = new THREE.RingGeometry(1.66, 1.88, 22);
+    acidRimGeo.rotateX(-Math.PI / 2);
+    const acidRimMat = new THREE.MeshBasicMaterial({
+      color: 0xa3e635,
+      transparent: true,
+      opacity: 0.72,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    });
+    this.acidPoolRimMesh = new THREE.InstancedMesh(
+      acidRimGeo,
+      acidRimMat,
+      MAX_ACID_POOLS,
+    );
+    this.acidPoolRimMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.acidPoolRimMesh.frustumCulled = false;
+
+    for (let i = 0; i < MAX_ACID_POOLS; i++) {
+      this.acidPuddles.push({
+        active: false,
+        x: 0,
+        z: 0,
+        age: 0,
+        duration: 5.5,
+        tickTimer: 0,
+        damage: 0,
+      });
+      _mat4.makeScale(0, 0, 0);
+      this.acidPoolDiscMesh.setMatrixAt(i, _mat4);
+      this.acidPoolRimMesh.setMatrixAt(i, _mat4);
+    }
+    this.acidPoolDiscMesh.instanceMatrix.needsUpdate = true;
+    this.acidPoolRimMesh.instanceMatrix.needsUpdate = true;
+    this.scene.add(this.acidPoolDiscMesh);
+    this.scene.add(this.acidPoolRimMesh);
+
+    // InstancedMesh Red Ground Telegraph Rings for incoming Acid Spitter Globs
+    const acidTargetGeo = new THREE.RingGeometry(1.05, 1.42, 24);
+    acidTargetGeo.rotateX(-Math.PI / 2);
+    const acidTargetMat = new THREE.MeshBasicMaterial({
+      color: 0xef4444,
+      transparent: true,
+      opacity: 0.82,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    this.acidImpactRingMesh = new THREE.InstancedMesh(
+      acidTargetGeo,
+      acidTargetMat,
+      MAX_ACID_IMPACT_RINGS,
+    );
+    this.acidImpactRingMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.acidImpactRingMesh.frustumCulled = false;
+    for (let i = 0; i < MAX_ACID_IMPACT_RINGS; i++) {
+      _mat4.makeScale(0, 0, 0);
+      this.acidImpactRingMesh.setMatrixAt(i, _mat4);
+    }
+    this.acidImpactRingMesh.instanceMatrix.needsUpdate = true;
+    this.scene.add(this.acidImpactRingMesh);
 
     // InstancedMesh particle ring buffer
     const pGeo = new THREE.BoxGeometry(0.14, 0.14, 0.14);
@@ -1327,12 +1560,14 @@ export class GameEngine {
     this.dashCooldownTimer = this.getEffectiveDashCooldown();
     this.invulnTimer = Math.max(this.invulnTimer, DASH_DURATION + 0.08);
     this.sound.playDash();
+    const trailColor =
+      SKIN_SPECS[this.career.equippedSkinId]?.trailColor ?? 0x38bdf8;
     this.spawnBurstParticles(
       this.playerX,
       0.5,
       this.playerZ,
       10,
-      0x38bdf8,
+      trailColor,
       4.5,
     );
     this.emitHudSnapshot(true);
@@ -1372,7 +1607,8 @@ export class GameEngine {
 
     const gearId = this.equippedGear;
     const spec = TACTICAL_GEAR_SPECS[gearId];
-    this.gearCooldownTimer = spec.cooldownSec;
+    const classSpec = CLASS_SPECS[this.career.selectedClass];
+    this.gearCooldownTimer = spec.cooldownSec * classSpec.gearCooldownMult;
 
     const fwdX = -Math.sin(this.playerAimAngle);
     const fwdZ = -Math.cos(this.playerAimAngle);
@@ -1383,7 +1619,8 @@ export class GameEngine {
         this.playerZ + fwdZ * 1.15,
         0.4,
       );
-      if (this.activeMines.length >= spec.maxActive) {
+      const maxMines = spec.maxActive + classSpec.bonusMineCap;
+      if (this.activeMines.length >= maxMines) {
         const oldest = this.activeMines.shift();
         if (oldest) this.scene.remove(oldest.rig.root);
       }
@@ -1423,15 +1660,17 @@ export class GameEngine {
         fireTimer: 0.25,
         flashTimer: 0,
       });
+      hapticTurretDeploy();
       this.sound.playGearDeploy('turret');
       this.pickupToast = 'SENTRY TURRET DEPLOYED';
       this.pickupToastTimer = 1.6;
       this.spawnBurstParticles(pos.x, 0.5, pos.z, 10, 0x38bdf8, 4.0);
     } else {
       // Flashbang blast around player
-      const blastR = spec.blastRadius;
+      const blastR = spec.blastRadius * classSpec.blastRadiusMult;
       const dmg = Math.round(spec.damage * getDamageMultiplier(this.upgradeLevels));
       this.sound.playFlashbang();
+      this.hitstopTimer = Math.max(this.hitstopTimer, 0.02);
       this.trauma = Math.min(0.95, this.trauma + 0.42);
       this.spawnFlashRing(this.playerX, this.playerZ, blastR, 0xe0f2fe, 0.34);
       this.spawnBurstParticles(this.playerX, 0.9, this.playerZ, 24, 0xf8fafc, 8.2);
@@ -1451,6 +1690,7 @@ export class GameEngine {
           );
           z.revealTimer = Math.max(z.revealTimer, 4.5);
           z.isWindingUp = false;
+          z.chargePending = false;
           if (z.rig.telegraphRing) z.rig.telegraphRing.visible = false;
           if (z.rig.telegraphLine) z.rig.telegraphLine.visible = false;
           this.damageZombie(z, dmg, false, dx / dist, dz / dist, 7.5, true);
@@ -1515,7 +1755,9 @@ export class GameEngine {
     this.upgradePoints = result.nextPoints;
 
     if (id === 'vitality') {
-      this.maxHp = getMaxHpForLevel(this.upgradeLevels);
+      this.maxHp =
+        getMaxHpForLevel(this.upgradeLevels) +
+        getPermanentBaseHpBonus(this.career.permanentUpgrades);
       this.hp = Math.min(this.maxHp, this.hp + 12);
       this.ghostHp = Math.max(this.ghostHp, this.hp);
     } else if (id === 'capacity') {
@@ -1537,18 +1779,142 @@ export class GameEngine {
     return true;
   }
 
+  // --- Settings, Career, Skins, Classes & Live 3D Preview ---
+
+  public getSettings(): GameSettings {
+    return { ...this.settings };
+  }
+
+  public setSettings(next: GameSettings): GameSettings {
+    this.settings = saveSettings(next);
+    this.applyGraphicsSettings();
+    setHapticsEnabled(this.settings.hapticsEnabled);
+    this.callbacks.onSettingsUpdate?.({ ...this.settings });
+    this.emitHudSnapshot(true);
+    return { ...this.settings };
+  }
+
+  private applyGraphicsSettings(): void {
+    const mobile = isMobileDeviceViewport(
+      this.viewportW,
+      typeof navigator !== 'undefined' ? navigator.maxTouchPoints || 0 : 0,
+    );
+    const dpr = getEffectivePixelRatio(
+      this.settings.graphicsQuality,
+      typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1,
+      mobile,
+      this.isSoftwareGl,
+    );
+    this.renderer.setPixelRatio(dpr);
+    const shadows = shouldEnableShadows(
+      this.settings.graphicsQuality,
+      this.isSoftwareGl,
+    );
+    this.renderer.shadowMap.enabled = shadows;
+    if (this.moonLight) {
+      this.moonLight.castShadow = shadows;
+    }
+    this.renderer.shadowMap.needsUpdate = true;
+  }
+
+  private applyClassFlashlightVisuals(): void {
+    const mult = CLASS_SPECS[this.career.selectedClass].flashlightConeMult;
+    this.playerRig.flashlightSpot.angle = 0.56 * mult;
+    this.playerRig.flashlightCone.scale.set(mult, 1, mult);
+  }
+
+  public getCareer(): CareerStats {
+    return this.career;
+  }
+
+  public setSkinPreviewMode(active: boolean, skinId?: SkinId): void {
+    this.skinPreviewActive = active;
+    if (active) {
+      const targetSkin: SkinId = skinId ?? this.career.equippedSkinId;
+      this.skinPreviewId = targetSkin;
+      applyPlayerSkin(this.playerRig, targetSkin);
+    } else {
+      this.skinPreviewId = null;
+      this.skinPreviewRotation = 0;
+      this.playerRig.root.rotation.y = 0;
+      applyPlayerSkin(this.playerRig, this.career.equippedSkinId);
+    }
+  }
+
+  public equipSkin(skinId: SkinId): CareerStats {
+    if (!this.career.unlockedSkins.includes(skinId)) {
+      return this.career;
+    }
+    this.career = saveCareerStats({
+      ...this.career,
+      equippedSkinId: skinId,
+    });
+    applyPlayerSkin(this.playerRig, skinId);
+    if (this.skinPreviewActive) {
+      this.skinPreviewId = skinId;
+    }
+    this.callbacks.onCareerUpdate?.(this.career);
+    this.emitHudSnapshot(true);
+    return this.career;
+  }
+
+  public selectClass(classId: SurvivorClassId): CareerStats {
+    this.career = saveCareerStats({
+      ...this.career,
+      selectedClass: classId,
+    });
+    this.applyClassFlashlightVisuals();
+    this.callbacks.onCareerUpdate?.(this.career);
+    this.emitHudSnapshot(true);
+    return this.career;
+  }
+
+  public buyPermanentUpgrade(
+    id: PermanentUpgradeId,
+  ): { purchased: boolean; career: CareerStats } {
+    const res = purchasePermanentUpgrade(this.career, id);
+    if (res.purchased) {
+      this.career = saveCareerStats(res.career);
+      this.sound.playUpgrade();
+      this.callbacks.onCareerUpdate?.(this.career);
+      this.emitHudSnapshot(true);
+    }
+    return { purchased: res.purchased, career: this.career };
+  }
+
+  private checkCareerSkinUnlocks(): void {
+    const newly = evaluateSkinUnlocks(this.career);
+    if (newly.length > 0) {
+      const skinName = SKIN_SPECS[newly[newly.length - 1]].name;
+      this.skinUnlockToast = `SKIN UNLOCKED: ${skinName.toUpperCase()}`;
+      this.skinUnlockToastTimer = 3.2;
+      this.sound.playUpgrade();
+      this.callbacks.onCareerUpdate?.(this.career);
+    }
+  }
+
   private getEffectiveDashCooldown(): number {
-    return DASH_COOLDOWN * getDashCooldownMultiplier(this.upgradeLevels);
+    return (
+      DASH_COOLDOWN *
+      getDashCooldownMultiplier(this.upgradeLevels) *
+      getPermanentDashCooldownMultiplier(this.career.permanentUpgrades) *
+      CLASS_SPECS[this.career.selectedClass].dashCooldownMult
+    );
   }
 
   private getEffectiveMoveSpeed(): number {
-    return PLAYER_SPEED * getMoveSpeedMultiplier(this.upgradeLevels);
+    return (
+      PLAYER_SPEED *
+      getMoveSpeedMultiplier(this.upgradeLevels) *
+      CLASS_SPECS[this.career.selectedClass].moveSpeedMult
+    );
   }
 
   private getEffectiveReloadDuration(id: WeaponId): number {
     return (
       WEAPON_SPECS[id].reloadDuration *
-      getReloadDurationMultiplier(this.upgradeLevels)
+      getReloadDurationMultiplier(this.upgradeLevels) *
+      getPermanentReloadMultiplier(this.career.permanentUpgrades)
     );
   }
 
@@ -1586,6 +1952,18 @@ export class GameEngine {
     const fromBeginning = options?.fromBeginning ?? true;
     const resumeInterrupted = options?.resumeInterrupted ?? !fromBeginning;
     const saved = !fromBeginning ? loadRunProgress() : null;
+    const startingUpBonus = getPermanentStartingUpBonus(
+      this.career.permanentUpgrades,
+    );
+
+    this.skinPreviewActive = false;
+    this.skinPreviewId = null;
+    this.skinUnlockToast = null;
+    this.skinUnlockToastTimer = 0;
+    this.bossesKilledInRun = 0;
+    this.lastScrapEarned = 0;
+    applyPlayerSkin(this.playerRig, this.career.equippedSkinId);
+    this.applyClassFlashlightVisuals();
 
     if (saved) {
       this.wave = options?.startWaveOverride ?? saved.lastWave;
@@ -1600,7 +1978,7 @@ export class GameEngine {
       }
     } else {
       this.wave = options?.startWaveOverride ?? this.initialWave;
-      this.upgradePoints = 1;
+      this.upgradePoints = 1 + startingUpBonus;
       this.killsTowardNextUp = 0;
       this.upgradeLevels = createInitialUpgradeLevels();
       this.score = 0;
@@ -1614,7 +1992,9 @@ export class GameEngine {
     this.playerZ = 0;
     this.playerAimAngle = 0;
     this.playerWalkPhase = 0;
-    this.maxHp = getMaxHpForLevel(this.upgradeLevels);
+    this.maxHp =
+      getMaxHpForLevel(this.upgradeLevels) +
+      getPermanentBaseHpBonus(this.career.permanentUpgrades);
     const isResumingInterrupted = Boolean(saved && resumeInterrupted);
     this.hp = isResumingInterrupted
       ? getReviveRestoreHp(this.maxHp)
@@ -1650,8 +2030,42 @@ export class GameEngine {
     this.dashCooldownTimer = 0;
     this.gearCooldownTimer = 0;
     this.invulnTimer = isResumingInterrupted ? REVIVE_INVULN_SEC : 0.5;
+    this.camRecoilX = 0;
+    this.camRecoilZ = 0;
     this.trauma = 0;
     this.hitstopTimer = 0;
+
+    // Class Starting Tactical Perks on fresh runs
+    const classSpec = CLASS_SPECS[this.career.selectedClass];
+    if (!saved) {
+      if (classSpec.startsWithFreeTurret) {
+        const turretPos = resolveArenaCollisions(1.4, -1.2, 0.55);
+        const rig = buildDeployableTurretRig(this.shadowTex);
+        rig.root.position.set(turretPos.x, 0, turretPos.z);
+        this.scene.add(rig.root);
+        this.activeTurrets.push({
+          rig,
+          x: turretPos.x,
+          z: turretPos.z,
+          life: TACTICAL_GEAR_SPECS.turret.durationSec ?? 14,
+          fireTimer: 0.4,
+          flashTimer: 0,
+        });
+      }
+      if (classSpec.startsWithBonusMine) {
+        const minePos = resolveArenaCollisions(-1.3, -1.3, 0.4);
+        const rig = buildProximityMineMesh(this.shadowTex);
+        rig.root.position.set(minePos.x, 0, minePos.z);
+        this.scene.add(rig.root);
+        this.activeMines.push({
+          rig,
+          x: minePos.x,
+          z: minePos.z,
+          armTimer: 0.2,
+          life: 45,
+        });
+      }
+    }
 
     this.wavePlan = buildWavePlan(this.wave);
     this.spawnTimer = 0.2;
@@ -1674,6 +2088,7 @@ export class GameEngine {
     this.playerRig.root.position.set(0, 0, 0);
     this.playerRig.root.rotation.y = 0;
     this.playerRig.root.visible = shouldFlashInvulnMesh(this.invulnTimer);
+    updateDiegeticFootArcs(this.playerRig, false, 0, 1);
 
     const portrait = this.viewportW < 700;
     this.camPos.set(0, portrait ? 23.5 : 19.5, portrait ? 12.2 : 11.2);
@@ -1700,27 +2115,31 @@ export class GameEngine {
     this.playerRig.root.visible = shouldFlashInvulnMesh(this.invulnTimer);
     this.bloodSplatter = 0;
 
+    const classSpec = CLASS_SPECS[this.career.selectedClass];
+    const shockRadius =
+      REVIVE_SHOCKWAVE_RADIUS * classSpec.reviveShockwaveRadiusMult;
+    const reviveColor =
+      SKIN_SPECS[this.career.equippedSkinId]?.reviveColor ?? 0x38bdf8;
+
+    hapticReviveShockwave();
     this.sound.playRevive();
     this.trauma = Math.min(1.0, this.trauma + 0.55);
-    this.spawnFlashRing(
-      this.playerX,
-      this.playerZ,
-      REVIVE_SHOCKWAVE_RADIUS,
-      0x38bdf8,
-      0.46,
-    );
+    this.spawnFlashRing(this.playerX, this.playerZ, shockRadius, reviveColor, 0.46);
     this.spawnBurstParticles(
       this.playerX,
       0.9,
       this.playerZ,
       28,
-      0x38bdf8,
+      reviveColor,
       9.5,
     );
 
     for (let i = 0; i < this.zombies.length; i++) {
       const z = this.zombies[i];
       if (z.dying) continue;
+      const dx = z.x - this.playerX;
+      const dz = z.z - this.playerZ;
+      const dist = Math.hypot(dx, dz) || 0.001;
       const push = computeReviveShockwavePush(
         this.playerX,
         this.playerZ,
@@ -1728,19 +2147,25 @@ export class GameEngine {
         z.z,
         z.radius,
       );
-      if (!push.inRange) continue;
+      if (!push.inRange && dist > shockRadius + z.radius) continue;
+      const dirX = push.inRange ? push.dirX : dx / dist;
+      const dirZ = push.inRange ? push.dirZ : dz / dist;
+      const pushForce =
+        (push.inRange ? push.pushForce : 14) * classSpec.reviveShockwavePushMult;
       const resist =
         z.kind === 'boss' ? 0.35 : z.kind === 'breacher' ? 0.65 : 1.0;
-      z.knockVx += push.dirX * push.pushForce * resist;
-      z.knockVz += push.dirZ * push.pushForce * resist;
+      z.knockVx += dirX * pushForce * resist;
+      z.knockVz += dirZ * pushForce * resist;
       z.stunTimer = Math.max(z.stunTimer, z.kind === 'boss' ? 0.9 : 1.5);
       z.isWindingUp = false;
+      z.chargePending = false;
       if (z.rig.telegraphRing) z.rig.telegraphRing.visible = false;
       if (z.rig.telegraphLine) z.rig.telegraphLine.visible = false;
     }
 
-    for (let i = this.acidPuddles.length - 1; i >= 0; i--) {
+    for (let i = 0; i < this.acidPuddles.length; i++) {
       const puddle = this.acidPuddles[i];
+      if (!puddle.active) continue;
       if (
         isAcidPoolClearedByRevive(
           this.playerX,
@@ -1750,8 +2175,7 @@ export class GameEngine {
           1.85,
         )
       ) {
-        this.scene.remove(puddle.mesh);
-        this.acidPuddles.splice(i, 1);
+        puddle.active = false;
       }
     }
     for (let i = this.acidProjectiles.length - 1; i >= 0; i--) {
@@ -1760,7 +2184,7 @@ export class GameEngine {
         Math.hypot(
           ap.mesh.position.x - this.playerX,
           ap.mesh.position.z - this.playerZ,
-        ) <= REVIVE_SHOCKWAVE_RADIUS
+        ) <= shockRadius
       ) {
         this.scene.remove(ap.mesh);
         this.acidProjectiles.splice(i, 1);
@@ -1769,8 +2193,7 @@ export class GameEngine {
     for (let i = this.bossProjectiles.length - 1; i >= 0; i--) {
       const bp = this.bossProjectiles[i];
       if (
-        Math.hypot(bp.x - this.playerX, bp.z - this.playerZ) <=
-        REVIVE_SHOCKWAVE_RADIUS
+        Math.hypot(bp.x - this.playerX, bp.z - this.playerZ) <= shockRadius
       ) {
         this.scene.remove(bp.mesh);
         this.bossProjectiles.splice(i, 1);
@@ -1793,11 +2216,26 @@ export class GameEngine {
 
   private finalizeGameOver(): void {
     this.uiSimulationPaused = false;
+    this.sound.setBossIntensity(false);
     const prevBest = this.highScore;
     this.highScore = saveHighScore(this.score);
     if (this.highScore > prevBest && this.score >= this.highScore) {
       this.isNewHighScore = true;
     }
+
+    const scrapReward = computeRunScrapReward({
+      wave: this.wave,
+      kills: this.kills,
+      bossesKilledInRun: this.bossesKilledInRun,
+    });
+    this.lastScrapEarned = scrapReward;
+    this.career.bestWave = Math.max(this.career.bestWave, this.wave);
+    this.career.bestScore = Math.max(this.career.bestScore, Math.round(this.score));
+    this.career.scrap += scrapReward;
+    this.checkCareerSkinUnlocks();
+    this.career = saveCareerStats(this.career);
+    this.callbacks.onCareerUpdate?.(this.career);
+
     clearRunProgress();
     this.callbacks.onSavedProgressUpdate?.(null);
     this.sound.playGameOver();
@@ -1824,6 +2262,7 @@ export class GameEngine {
 
   public returnToTitle(): void {
     this.uiSimulationPaused = false;
+    this.sound.setBossIntensity(false);
     if (
       this.phase === 'playing' ||
       this.phase === 'paused' ||
@@ -1840,6 +2279,8 @@ export class GameEngine {
     this.playerRig.root.position.set(0, 0, 0);
     this.playerRig.root.rotation.y = 0;
     this.playerRig.root.visible = true;
+    updateDiegeticFootArcs(this.playerRig, false, 0, 1);
+    applyPlayerSkin(this.playerRig, this.career.equippedSkinId);
     this.setPhase('title');
     this.emitHudSnapshot(true);
   }
@@ -1872,10 +2313,35 @@ export class GameEngine {
       this.scene.remove(ap.mesh);
     }
     this.acidProjectiles = [];
-    for (const puddle of this.acidPuddles) {
-      this.scene.remove(puddle.mesh);
+    for (let i = 0; i < this.acidPuddles.length; i++) {
+      this.acidPuddles[i].active = false;
+      _mat4.makeScale(0, 0, 0);
+      this.acidPoolDiscMesh.setMatrixAt(i, _mat4);
+      this.acidPoolRimMesh.setMatrixAt(i, _mat4);
     }
-    this.acidPuddles = [];
+    this.acidPoolDiscMesh.instanceMatrix.needsUpdate = true;
+    this.acidPoolRimMesh.instanceMatrix.needsUpdate = true;
+
+    for (let i = 0; i < MAX_ACID_IMPACT_RINGS; i++) {
+      _mat4.makeScale(0, 0, 0);
+      this.acidImpactRingMesh.setMatrixAt(i, _mat4);
+    }
+    this.acidImpactRingMesh.instanceMatrix.needsUpdate = true;
+
+    for (let i = 0; i < this.tracers.length; i++) {
+      this.tracers[i].active = false;
+      _mat4.makeScale(0, 0, 0);
+      this.tracerMesh.setMatrixAt(i, _mat4);
+    }
+    this.tracerMesh.instanceMatrix.needsUpdate = true;
+
+    for (let i = 0; i < this.casings.length; i++) {
+      this.casings[i].active = false;
+      _mat4.makeScale(0, 0, 0);
+      this.casingMesh.setMatrixAt(i, _mat4);
+    }
+    this.casingMesh.instanceMatrix.needsUpdate = true;
+
     for (const mine of this.activeMines) {
       this.scene.remove(mine.rig.root);
     }
@@ -1916,6 +2382,7 @@ export class GameEngine {
     this.viewportH = h;
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
+    this.applyGraphicsSettings();
     this.renderer.setSize(w, h, false);
   }
 
@@ -1959,7 +2426,40 @@ export class GameEngine {
     this.lastTimestamp = now;
     const dt = Math.min(Math.max(rawDt, 0.001), 0.05);
 
+    // FPS tracking
+    this.fpsFrameCount += 1;
+    this.fpsElapsed += Math.max(0.001, rawDt);
+    if (this.fpsElapsed >= 0.45) {
+      this.currentFps = Math.min(
+        240,
+        Math.max(1, Math.round(this.fpsFrameCount / this.fpsElapsed)),
+      );
+      this.fpsFrameCount = 0;
+      this.fpsElapsed = 0;
+    }
+
+    if (this.skinUnlockToastTimer > 0) {
+      this.skinUnlockToastTimer -= dt;
+      if (this.skinUnlockToastTimer <= 0) this.skinUnlockToast = null;
+    }
+
     this.updateVisualEffects(dt);
+
+    // Dynamic music boss intensity check
+    let bossAlive = false;
+    if (this.phase === 'playing') {
+      for (let i = 0; i < this.zombies.length; i++) {
+        if (!this.zombies[i].dying && this.zombies[i].kind === 'boss') {
+          bossAlive = true;
+          break;
+        }
+      }
+    }
+    this.sound.setBossIntensity(bossAlive);
+    this.sound.updateDynamicMusic(
+      dt,
+      this.phase === 'playing' && !this.uiSimulationPaused,
+    );
 
     if (this.phase === 'title') {
       this.updateTitleCamera(dt);
@@ -1987,6 +2487,18 @@ export class GameEngine {
   }
 
   private updateTitleCamera(dt: number): void {
+    if (this.skinPreviewActive) {
+      this.skinPreviewRotation += dt * 0.82;
+      this.playerRig.root.position.set(0, 0, 0);
+      this.playerRig.root.rotation.y = this.skinPreviewRotation;
+      this.playerRig.root.visible = true;
+      const portrait = this.viewportW < 700;
+      this.camera.position.set(0, portrait ? 2.35 : 1.9, portrait ? 5.9 : 4.2);
+      this.camera.lookAt(0, portrait ? 0.05 : -0.35, 0);
+      this.laserBeam.visible = false;
+      this.laserDot.visible = false;
+      return;
+    }
     this.titleOrbitAngle += dt * 0.16;
     const radius = 19.5;
     this.camera.position.set(
@@ -2075,7 +2587,7 @@ export class GameEngine {
     this.playerX = resolved.x;
     this.playerZ = resolved.z;
 
-    // Player Aiming (Right Stick > Mouse > Movement direction)
+    // Player Aiming (Right Stick > Mouse > Auto-Fire > Movement direction)
     let wantsToFire = false;
     if (this.aimStickActive) {
       const len = Math.hypot(this.aimStickX, this.aimStickY);
@@ -2087,6 +2599,17 @@ export class GameEngine {
     } else if (this.hasMouseAim) {
       this.updateMouseAim();
       wantsToFire = this.mouseDown;
+    } else if (this.settings.autoFire) {
+      const autoTarget = this.findAutoFireTarget();
+      if (autoTarget) {
+        const tdx = autoTarget.x - this.playerX;
+        const tdz = autoTarget.z - this.playerZ;
+        this.playerAimAngle = Math.atan2(-tdx, -tdz);
+        wantsToFire = true;
+      } else if (moveMag > 0.2) {
+        const move = this.getDesiredMoveVector();
+        this.playerAimAngle = Math.atan2(-move.x, -move.z);
+      }
     } else if (moveMag > 0.2) {
       const move = this.getDesiredMoveVector();
       this.playerAimAngle = Math.atan2(-move.x, -move.z);
@@ -2123,6 +2646,18 @@ export class GameEngine {
     this.playerRig.root.rotation.y = this.playerAimAngle;
     this.playerRig.root.visible =
       this.invulnTimer > 0 ? shouldFlashInvulnMesh(this.invulnTimer) : true;
+
+    // Slim circular diegetic reload & dash cooldown arc around survivor's feet
+    const reloadDur = this.getEffectiveReloadDuration(this.activeWeapon);
+    const reloadProg = this.isReloading
+      ? 1 - Math.max(0, this.reloadTimer / reloadDur)
+      : 0;
+    const dashCd = this.getEffectiveDashCooldown();
+    const dashProg =
+      this.dashCooldownTimer > 0
+        ? 1 - Math.min(1, this.dashCooldownTimer / dashCd)
+        : 1;
+    updateDiegeticFootArcs(this.playerRig, this.isReloading, reloadProg, dashProg);
 
     // Update visible red laser sight
     this.updateLaserSight();
@@ -2172,6 +2707,34 @@ export class GameEngine {
       };
     }
     return { x: 0, z: 0, len: 0 };
+  }
+
+  private findAutoFireTarget(): ActiveZombie | null {
+    const maxRange = WEAPON_SPECS[this.activeWeapon].range;
+    const maxDistSq = maxRange * maxRange;
+    let best: ActiveZombie | null = null;
+    let bestDistSq = maxDistSq;
+    for (let i = 0; i < this.zombies.length; i++) {
+      const z = this.zombies[i];
+      if (z.dying) continue;
+      const dx = z.x - this.playerX;
+      const dz = z.z - this.playerZ;
+      const dSq = dx * dx + dz * dz;
+      if (dSq >= bestDistSq) continue;
+      const d = Math.sqrt(dSq) || 1;
+      const wallDist = raycastObstaclesAndWalls(
+        this.playerX,
+        this.playerZ,
+        dx / d,
+        dz / d,
+        d,
+      );
+      if (wallDist >= d - z.radius * 0.5) {
+        bestDistSq = dSq;
+        best = z;
+      }
+    }
+    return best;
   }
 
   private updateMouseAim(): void {
@@ -2264,6 +2827,23 @@ export class GameEngine {
       getFireRateMultiplier(this.upgradeLevels);
     this.recoilOffset = Math.min(0.18, this.recoilOffset + 0.085);
     this.trauma = Math.min(0.85, this.trauma + spec.screenShake);
+
+    // Directional camera recoil kick opposite firing vector
+    const kickMag = Math.min(0.55, spec.screenShake * 1.15);
+    this.camRecoilX = THREE.MathUtils.clamp(
+      this.camRecoilX + Math.sin(this.playerAimAngle) * kickMag,
+      -0.65,
+      0.65,
+    );
+    this.camRecoilZ = THREE.MathUtils.clamp(
+      this.camRecoilZ + Math.cos(this.playerAimAngle) * kickMag,
+      -0.65,
+      0.65,
+    );
+
+    if (state.id === 'shotgun' || state.id === 'autoshotgun') {
+      hapticShotgunBlast();
+    }
 
     // Muzzle flash
     this.muzzleFlashTimer = 0.055;
@@ -2413,8 +2993,12 @@ export class GameEngine {
   ): boolean {
     const facingX = -Math.sin(z.facingYaw);
     const facingZ = -Math.cos(z.facingYaw);
-    const { finalDamage, blockedByArmor } = computeZombieHitDamage(
-      amount,
+    const masteryMult = getBestiaryMasteryMultiplier(
+      z.kind,
+      this.career.killsByEnemyType,
+    );
+    let { finalDamage, blockedByArmor } = computeZombieHitDamage(
+      Math.round(amount * masteryMult),
       z.kind,
       dirX,
       dirZ,
@@ -2422,6 +3006,13 @@ export class GameEngine {
       facingZ,
       armorBypass,
     );
+
+    const hitRear = dirX * facingX + dirZ * facingZ > 0.25;
+    const isWeakpoint =
+      z.kind === 'boss' && !blockedByArmor && (hitRear || isCrit);
+    if (isWeakpoint) {
+      finalDamage = Math.round(finalDamage * 1.35);
+    }
 
     z.hp -= finalDamage;
     z.hitFlashTimer = 0.065;
@@ -2453,7 +3044,8 @@ export class GameEngine {
             : 1.55,
       wz: z.z,
       amount: finalDamage,
-      isCrit: isCrit && !blockedByArmor,
+      isCrit: isCrit && !blockedByArmor && !isWeakpoint,
+      isWeakpoint,
       blockedByArmor,
       age: 0,
       duration: 0.65,
@@ -2476,10 +3068,17 @@ export class GameEngine {
         this.upgradePoints += 1;
       }
 
+      // Career & Bestiary kill tracking
+      this.career.totalKills += 1;
+      this.career.killsByEnemyType[z.kind] =
+        (this.career.killsByEnemyType[z.kind] ?? 0) + 1;
+
       if (z.kind === 'boss') {
+        this.bossesKilledInRun += 1;
+        this.career.bossesKilled += 1;
         this.upgradePoints += BOSS_KILL_UP_BONUS;
         this.trauma = Math.min(1.0, this.trauma + 0.7);
-        this.hitstopTimer = 0.06;
+        this.hitstopTimer = Math.max(this.hitstopTimer, 0.02);
         this.pickupToast = `BOSS DEFEATED · +${BOSS_KILL_UP_BONUS} UP`;
         this.pickupToastTimer = 2.6;
         this.spawnDirectionalBloodBurst(z.x, 1.2, z.z, dirX, dirZ, 28, 8.6, true);
@@ -2497,10 +3096,15 @@ export class GameEngine {
       }
 
       this.score += z.scoreValue;
+      this.career.bestScore = Math.max(this.career.bestScore, Math.round(this.score));
       if (this.score > this.highScore) {
         this.highScore = saveHighScore(this.score);
         this.isNewHighScore = true;
       }
+      this.checkCareerSkinUnlocks();
+      this.career = saveCareerStats(this.career);
+      this.callbacks.onCareerUpdate?.(this.career);
+
       this.sound.playKill();
       this.spawnBloodDecal(
         z.x,
@@ -2593,6 +3197,11 @@ export class GameEngine {
         this.wavePauseTimer -= dt;
         if (this.wavePauseTimer <= 0) {
           this.wave += 1;
+          this.career.bestWave = Math.max(this.career.bestWave, this.wave);
+          this.checkCareerSkinUnlocks();
+          this.career = saveCareerStats(this.career);
+          this.callbacks.onCareerUpdate?.(this.career);
+
           this.wavePlan = buildWavePlan(this.wave);
           this.spawnTimer = 0.5;
           this.waveBanner = isBossWaveNumber(this.wave)
@@ -2675,12 +3284,19 @@ export class GameEngine {
       rangedCooldown: kind === 'boss' ? getBossRangedCooldown(this.wave) : 0,
       stunTimer: 0,
       revealTimer: 0,
+      wasRevealed: false,
       lungeTimer: 0,
+      chargeCooldown: kind === 'breacher' ? 2.2 + Math.random() * 1.4 : 0,
+      chargeTimer: 0,
+      chargePending: false,
+      chargeDirX: 0,
+      chargeDirZ: 0,
       acidTargetX: pos.x,
       acidTargetZ: pos.z,
       dying: false,
       deathTimer: 0,
       walkPhase: Math.random() * Math.PI * 2,
+      lastStepIndex: 0,
     });
 
     if (kind === 'boss') {
@@ -2705,6 +3321,12 @@ export class GameEngine {
       if (z.stunTimer > 0) z.stunTimer = Math.max(0, z.stunTimer - dt);
       if (z.revealTimer > 0) z.revealTimer = Math.max(0, z.revealTimer - dt);
       if (z.lungeTimer > 0) z.lungeTimer = Math.max(0, z.lungeTimer - dt);
+      if (z.chargeCooldown > 0) {
+        z.chargeCooldown = Math.max(0, z.chargeCooldown - dt);
+      }
+      if (z.chargeTimer > 0) {
+        z.chargeTimer = Math.max(0, z.chargeTimer - dt);
+      }
 
       // Hit flash or stun dizzy tint
       if (z.hitFlashTimer > 0) {
@@ -2745,7 +3367,7 @@ export class GameEngine {
       const toPlayerX = dx / dist;
       const toPlayerZ = dz / dist;
 
-      // Shadow Stalker stealth reveal inside player's flashlight cone
+      // Shadow Stalker stealth reveal inside player's flashlight cone + hiss cue
       if (z.kind === 'stalker' && z.rig.stalkerMaterials) {
         const inCone =
           z.revealTimer > 0 ||
@@ -2757,6 +3379,10 @@ export class GameEngine {
             z.x,
             z.z,
           );
+        if (inCone && !z.wasRevealed) {
+          this.sound.playStalkerHiss();
+        }
+        z.wasRevealed = inCone;
         const targetBodyAlpha = inCone ? 0.96 : 0.16;
         const targetEyeAlpha = inCone ? 1.0 : 0.42;
         const mats = z.rig.stalkerMaterials;
@@ -2821,6 +3447,10 @@ export class GameEngine {
         if (z.lungeTimer > 0) {
           moveSpeedMult = 1.62;
         }
+      } else if (z.kind === 'breacher' && z.chargeTimer > 0) {
+        desiredX = z.chargeDirX;
+        desiredZ = z.chargeDirZ;
+        moveSpeedMult = 2.3;
       }
 
       const dLen = Math.hypot(desiredX, desiredZ) || 1;
@@ -2836,10 +3466,11 @@ export class GameEngine {
         }
       }
 
-      // Attack windup & telegraph check (melee or Acid Spitter ranged glob)
+      // Attack windup & telegraph check (melee, Breacher charge, or Acid Spitter ranged glob)
       if (z.isWindingUp) {
         z.windupTimer -= dt;
-        const prog = 1 - Math.max(0, z.windupTimer / z.attackWindup);
+        const denom = z.chargePending ? 0.45 : z.attackWindup;
+        const prog = 1 - Math.max(0, z.windupTimer / denom);
         if (z.kind === 'spitter') {
           const spitDx = z.acidTargetX - z.x;
           const spitDz = z.acidTargetZ - z.z;
@@ -2880,18 +3511,26 @@ export class GameEngine {
           }
           if (z.windupTimer <= 0) {
             z.isWindingUp = false;
-            z.cooldownTimer = z.attackCooldown;
             if (z.rig.telegraphRing) z.rig.telegraphRing.visible = false;
-            const slamRadius =
-              z.kind === 'boss'
-                ? z.attackRange + 0.5
-                : z.attackRange + PLAYER_RADIUS + 0.35;
-            if (dist <= slamRadius) {
-              this.damagePlayer(z.damage, toPlayerX, toPlayerZ);
-            }
-            if (z.kind === 'boss') {
-              this.trauma = Math.min(1.0, this.trauma + 0.35);
-              this.spawnBurstParticles(z.x, 0.25, z.z, 14, 0xf43f5e, 6.2);
+            if (z.chargePending) {
+              z.chargePending = false;
+              z.chargeTimer = 0.42;
+              z.chargeCooldown = 4.6;
+              z.chargeDirX = toPlayerX;
+              z.chargeDirZ = toPlayerZ;
+            } else {
+              z.cooldownTimer = z.attackCooldown;
+              const slamRadius =
+                z.kind === 'boss'
+                  ? z.attackRange + 0.5
+                  : z.attackRange + PLAYER_RADIUS + 0.35;
+              if (dist <= slamRadius) {
+                this.damagePlayer(z.damage, toPlayerX, toPlayerZ);
+              }
+              if (z.kind === 'boss') {
+                this.trauma = Math.min(1.0, this.trauma + 0.35);
+                this.spawnBurstParticles(z.x, 0.25, z.z, 14, 0xf43f5e, 6.2);
+              }
             }
           }
         }
@@ -2909,14 +3548,28 @@ export class GameEngine {
           activeAttackers++;
         }
       } else if (
+        z.kind === 'breacher' &&
+        dist >= 3.0 &&
+        dist <= 7.2 &&
+        z.chargeCooldown <= 0 &&
+        z.chargeTimer <= 0 &&
+        activeAttackers < 5
+      ) {
+        z.isWindingUp = true;
+        z.chargePending = true;
+        z.windupTimer = 0.45;
+        activeAttackers++;
+        this.sound.playBruteTelegraph();
+      } else if (
         dist <= z.attackRange + PLAYER_RADIUS * 0.6 &&
         z.cooldownTimer <= 0 &&
         activeAttackers < 5
       ) {
         z.isWindingUp = true;
+        z.chargePending = false;
         z.windupTimer = z.attackWindup;
         activeAttackers++;
-        if (z.kind === 'brute' || z.kind === 'boss') {
+        if (z.kind === 'brute' || z.kind === 'boss' || z.kind === 'breacher') {
           this.sound.playBruteTelegraph();
         }
       }
@@ -2969,6 +3622,13 @@ export class GameEngine {
 
       // Update mesh transform & gait
       z.walkPhase += dt * z.speed * 2.2;
+      if (z.kind === 'boss') {
+        const stepIdx = Math.floor(z.walkPhase / Math.PI);
+        if (stepIdx !== z.lastStepIndex) {
+          z.lastStepIndex = stepIdx;
+          this.sound.playBossFootstep();
+        }
+      }
       z.rig.root.position.set(z.x, 0, z.z);
       z.rig.root.rotation.y = z.facingYaw;
       if (z.rig.hpBarGroup.visible) {
@@ -3008,30 +3668,27 @@ export class GameEngine {
 
   private spawnAcidPuddle(x: number, z: number, damage: number): void {
     const pos = resolveArenaCollisions(x, z, 0.8);
-    if (this.acidPuddles.length >= 10) {
-      const oldest = this.acidPuddles.shift();
-      if (oldest) this.scene.remove(oldest.mesh);
+    let slot = this.acidPuddles.find((p) => !p.active);
+    if (!slot) {
+      // Recycle oldest active acid pool from fixed pool
+      slot = this.acidPuddles.reduce((oldest, curr) =>
+        curr.age > oldest.age ? curr : oldest,
+      );
     }
-    const { mesh, mat, ringMat } = buildAcidPuddleMesh();
-    mesh.position.set(pos.x, 0, pos.z);
-    this.scene.add(mesh);
-    this.acidPuddles.push({
-      mesh,
-      mat,
-      ringMat,
-      x: pos.x,
-      z: pos.z,
-      age: 0,
-      duration: 5.5,
-      tickTimer: 0,
-      damage,
-    });
+    slot.active = true;
+    slot.x = pos.x;
+    slot.z = pos.z;
+    slot.age = 0;
+    slot.duration = 5.5;
+    slot.tickTimer = 0;
+    slot.damage = damage;
+
     this.sound.playAcidSplat();
     this.spawnBurstParticles(pos.x, 0.2, pos.z, 10, 0x84cc16, 4.4);
   }
 
   private updateAcidHazards(dt: number): void {
-    // Acid arcing globs
+    // Acid arcing globs + pooled red ground impact telegraph rings
     for (let i = this.acidProjectiles.length - 1; i >= 0; i--) {
       const p = this.acidProjectiles[i];
       p.elapsed += dt;
@@ -3054,22 +3711,49 @@ export class GameEngine {
       }
     }
 
-    // Active acid puddles on courtyard floor
-    for (let i = this.acidPuddles.length - 1; i >= 0; i--) {
+    _quat.identity();
+    for (let i = 0; i < MAX_ACID_IMPACT_RINGS; i++) {
+      if (i < this.acidProjectiles.length) {
+        const p = this.acidProjectiles[i];
+        const t = Math.min(1, p.elapsed / p.duration);
+        const s = 0.7 + 0.55 * t;
+        _vec3B.set(p.targetX, 0.048, p.targetZ);
+        _scale.set(s, 1, s);
+        _mat4.compose(_vec3B, _quat, _scale);
+      } else {
+        _mat4.makeScale(0, 0, 0);
+      }
+      this.acidImpactRingMesh.setMatrixAt(i, _mat4);
+    }
+    this.acidImpactRingMesh.instanceMatrix.needsUpdate = true;
+
+    // Active acid puddles on courtyard floor (InstancedMesh pool)
+    let anyPoolDirty = false;
+    for (let i = 0; i < this.acidPuddles.length; i++) {
       const puddle = this.acidPuddles[i];
+      if (!puddle.active) continue;
+      anyPoolDirty = true;
       puddle.age += dt;
       if (puddle.age >= puddle.duration) {
-        this.scene.remove(puddle.mesh);
-        this.acidPuddles.splice(i, 1);
+        puddle.active = false;
+        _mat4.makeScale(0, 0, 0);
+        this.acidPoolDiscMesh.setMatrixAt(i, _mat4);
+        this.acidPoolRimMesh.setMatrixAt(i, _mat4);
         continue;
       }
       const fade =
         puddle.age > puddle.duration - 1.1
           ? Math.max(0, (puddle.duration - puddle.age) / 1.1)
           : 1;
-      const pulse = 0.92 + 0.08 * Math.sin(puddle.age * 7);
-      puddle.mat.opacity = 0.62 * fade * pulse;
-      puddle.ringMat.opacity = 0.75 * fade;
+      const pulse = 0.94 + 0.06 * Math.sin(puddle.age * 7);
+      const scaleXZ = fade * pulse;
+      _vec3B.set(puddle.x, 0.025, puddle.z);
+      _scale.set(scaleXZ, 1, scaleXZ);
+      _mat4.compose(_vec3B, _quat, _scale);
+      this.acidPoolDiscMesh.setMatrixAt(i, _mat4);
+      _vec3B.y = 0.029;
+      _mat4.compose(_vec3B, _quat, _scale);
+      this.acidPoolRimMesh.setMatrixAt(i, _mat4);
 
       puddle.tickTimer = Math.max(0, puddle.tickTimer - dt);
       const distToPlayer = Math.hypot(
@@ -3087,6 +3771,10 @@ export class GameEngine {
         const len = Math.hypot(dx, dz) || 1;
         this.damagePlayer(puddle.damage * 0.68, dx / len, dz / len);
       }
+    }
+    if (anyPoolDirty) {
+      this.acidPoolDiscMesh.instanceMatrix.needsUpdate = true;
+      this.acidPoolRimMesh.instanceMatrix.needsUpdate = true;
     }
   }
 
@@ -3146,9 +3834,13 @@ export class GameEngine {
         this.activeMines.splice(i, 1);
         if (m.life > 0) {
           // Detonate high-damage shrapnel blast (bypasses front armor!)
+          const blastRadius =
+            mineSpec.blastRadius *
+            CLASS_SPECS[this.career.selectedClass].blastRadiusMult;
           this.sound.playGearExplosion();
+          this.hitstopTimer = Math.max(this.hitstopTimer, 0.02);
           this.trauma = Math.min(1.0, this.trauma + 0.58);
-          this.spawnFlashRing(m.x, m.z, mineSpec.blastRadius, 0xf97316, 0.3);
+          this.spawnFlashRing(m.x, m.z, blastRadius, 0xf97316, 0.3);
           this.spawnBurstParticles(m.x, 0.45, m.z, 26, 0xfbbf24, 9.0);
           const dmg = Math.round(
             mineSpec.damage * getDamageMultiplier(this.upgradeLevels),
@@ -3159,8 +3851,8 @@ export class GameEngine {
             const dx = z.x - m.x;
             const dz = z.z - m.z;
             const dist = Math.hypot(dx, dz) || 0.001;
-            if (dist <= mineSpec.blastRadius + z.radius) {
-              const falloff = Math.max(0.55, 1 - (dist / (mineSpec.blastRadius + 1)) * 0.45);
+            if (dist <= blastRadius + z.radius) {
+              const falloff = Math.max(0.55, 1 - (dist / (blastRadius + 1)) * 0.45);
               this.damageZombie(
                 z,
                 Math.round(dmg * falloff),
@@ -3179,6 +3871,7 @@ export class GameEngine {
     // Deployable Sentry Turrets
     const turretRange = turretSpec.range ?? 13.5;
     const turretDmgMult = getDamageMultiplier(this.upgradeLevels);
+    const turretRateMult = CLASS_SPECS[this.career.selectedClass].turretFireRateMult;
     for (let i = this.activeTurrets.length - 1; i >= 0; i--) {
       const t = this.activeTurrets[i];
       t.life -= dt;
@@ -3223,7 +3916,7 @@ export class GameEngine {
         t.rig.headGroup.rotation.y = targetYaw;
 
         if (t.fireTimer <= 0) {
-          t.fireTimer = turretSpec.fireIntervalSec ?? 0.22;
+          t.fireTimer = (turretSpec.fireIntervalSec ?? 0.22) / turretRateMult;
           t.flashTimer = 0.045;
           t.rig.muzzleFlash.visible = true;
           t.rig.muzzleFlash.rotation.z = Math.random() * Math.PI;
@@ -3343,6 +4036,7 @@ export class GameEngine {
     this.bloodSeed += 1;
     this.trauma = Math.min(1.0, this.trauma + 0.55);
     this.hitstopTimer = 0.04;
+    hapticPlayerDamage();
     this.sound.playPlayerHurt();
 
     // Small knockback impulse away from attacker
@@ -3437,12 +4131,16 @@ export class GameEngine {
   ): void {
     const slot = this.tracers[this.tracerCursor];
     this.tracerCursor = (this.tracerCursor + 1) % MAX_TRACERS;
-    slot.mesh.position.set(x, y, z);
-    slot.mesh.rotation.y = angle;
-    slot.mesh.scale.set(1, 1, Math.max(0.4, length));
-    slot.mat.color.setHex(colorHex);
-    slot.mat.opacity = 0.9;
-    slot.mesh.visible = true;
+    _color.setHex(colorHex);
+    slot.active = true;
+    slot.x = x;
+    slot.y = y;
+    slot.z = z;
+    slot.angle = angle;
+    slot.length = Math.max(0.4, length);
+    slot.r = _color.r;
+    slot.g = _color.g;
+    slot.b = _color.b;
     slot.life = slot.maxLife;
   }
 
@@ -3532,8 +4230,8 @@ export class GameEngine {
   }
 
   private spawnShellCasing(x: number, z: number, aimAngle: number): void {
-    const slot = this.particles[this.particleCursor];
-    this.particleCursor = (this.particleCursor + 1) % MAX_PARTICLES;
+    const slot = this.casings[this.casingCursor];
+    this.casingCursor = (this.casingCursor + 1) % MAX_CASINGS;
     // Eject to the right of the gun barrel
     const rightX = Math.cos(aimAngle);
     const rightZ = -Math.sin(aimAngle);
@@ -3545,13 +4243,13 @@ export class GameEngine {
     slot.vx = rightX * spd + (Math.random() - 0.5) * 0.8;
     slot.vy = 2.8 + Math.random() * 1.2;
     slot.vz = rightZ * spd + (Math.random() - 0.5) * 0.8;
-    slot.maxLife = 0.38;
+    slot.rx = Math.random() * Math.PI;
+    slot.ry = aimAngle;
+    slot.rz = Math.random() * Math.PI;
+    slot.vrx = (Math.random() * 2 - 1) * 14;
+    slot.vry = (Math.random() * 2 - 1) * 12;
+    slot.maxLife = 0.85;
     slot.life = slot.maxLife;
-    slot.size = 0.55;
-    slot.r = 0.96;
-    slot.g = 0.78;
-    slot.b = 0.24;
-    slot.splatsOnLand = false;
   }
 
   private spawnBloodDecal(x: number, z: number, scale: number): void {
@@ -3694,8 +4392,11 @@ export class GameEngine {
       this.scene.background.copy(this.fogColorCurrent).lerp(this.lightningColor, flashBoost * 0.45);
     }
 
-    // Rain InstancedMesh animation
-    const activeDrops = Math.floor(MAX_RAIN_DROPS * this.weatherRainStrength);
+    // Rain InstancedMesh animation (modulated by Graphics Quality setting)
+    const rainQualityScale = getRainQualityScale(this.settings.graphicsQuality);
+    const activeDrops = Math.floor(
+      MAX_RAIN_DROPS * this.weatherRainStrength * rainQualityScale,
+    );
     if (activeDrops <= 2) {
       this.rainMesh.visible = false;
     } else {
@@ -3882,16 +4583,75 @@ export class GameEngine {
       }
     }
 
-    // Tracers
-    for (let i = 0; i < this.tracers.length; i++) {
+    // InstancedMesh Bullet Tracers update
+    let anyTracerUpdated = false;
+    for (let i = 0; i < MAX_TRACERS; i++) {
       const t = this.tracers[i];
-      if (t.life <= 0) continue;
+      if (!t.active) continue;
+      anyTracerUpdated = true;
       t.life -= dt;
       if (t.life <= 0) {
-        t.mesh.visible = false;
-      } else {
-        t.mat.opacity = (t.life / t.maxLife) * 0.9;
+        t.active = false;
+        _mat4.makeScale(0, 0, 0);
+        this.tracerMesh.setMatrixAt(i, _mat4);
+        continue;
       }
+      const alpha = Math.max(0.05, t.life / t.maxLife);
+      _quat.setFromEuler(_euler.set(0, t.angle, 0));
+      _vec3B.set(t.x, t.y, t.z);
+      _scale.set(alpha, alpha, t.length);
+      _mat4.compose(_vec3B, _quat, _scale);
+      this.tracerMesh.setMatrixAt(i, _mat4);
+      _color.setRGB(t.r * alpha, t.g * alpha, t.b * alpha);
+      this.tracerMesh.setColorAt(i, _color);
+    }
+    if (anyTracerUpdated) {
+      this.tracerMesh.instanceMatrix.needsUpdate = true;
+      if (this.tracerMesh.instanceColor) {
+        this.tracerMesh.instanceColor.needsUpdate = true;
+      }
+    }
+
+    // InstancedMesh Brass Shell Casings update
+    let anyCasingUpdated = false;
+    for (let i = 0; i < MAX_CASINGS; i++) {
+      const c = this.casings[i];
+      if (!c.active) continue;
+      anyCasingUpdated = true;
+      c.life -= dt;
+      if (c.life <= 0) {
+        c.active = false;
+        _mat4.makeScale(0, 0, 0);
+        this.casingMesh.setMatrixAt(i, _mat4);
+        continue;
+      }
+      c.vy -= 16 * dt;
+      c.x += c.vx * dt;
+      c.z += c.vz * dt;
+      c.y += c.vy * dt;
+      if (c.y <= 0.04) {
+        c.y = 0.04;
+        if (c.vy < -0.6) {
+          c.vy = -c.vy * 0.36;
+        } else {
+          c.vy = 0;
+        }
+        c.vx *= 0.82;
+        c.vz *= 0.82;
+        c.vrx *= 0.72;
+        c.vry *= 0.72;
+      }
+      c.rx += c.vrx * dt;
+      c.ry += c.vry * dt;
+      const fade = c.life < 0.25 ? Math.max(0, c.life / 0.25) : 1;
+      _quat.setFromEuler(_euler.set(c.rx, c.ry, c.rz));
+      _vec3B.set(c.x, c.y, c.z);
+      _scale.set(fade, fade, fade);
+      _mat4.compose(_vec3B, _quat, _scale);
+      this.casingMesh.setMatrixAt(i, _mat4);
+    }
+    if (anyCasingUpdated) {
+      this.casingMesh.instanceMatrix.needsUpdate = true;
     }
 
     // Particles InstancedMesh update
@@ -3959,12 +4719,16 @@ export class GameEngine {
     this.camLook.y = 0.6;
     this.camLook.z += (this.playerZ + leadZ * 0.65 - this.camLook.z) * k;
 
+    // Exponentially damped directional camera recoil + trauma shake
+    this.camRecoilX = THREE.MathUtils.damp(this.camRecoilX, 0, 14, dt);
+    this.camRecoilZ = THREE.MathUtils.damp(this.camRecoilZ, 0, 14, dt);
+
     // Decaying trauma * trauma camera shake
     this.trauma = Math.max(0, this.trauma - dt * 2.2);
     const shake = this.trauma * this.trauma;
-    const sx = (Math.random() * 2 - 1) * shake * 0.65;
+    const sx = (Math.random() * 2 - 1) * shake * 0.65 + this.camRecoilX;
     const sy = (Math.random() * 2 - 1) * shake * 0.45;
-    const sz = (Math.random() * 2 - 1) * shake * 0.65;
+    const sz = (Math.random() * 2 - 1) * shake * 0.65 + this.camRecoilZ;
 
     this.camera.position.set(this.camPos.x + sx, this.camPos.y + sy, this.camPos.z + sz);
     this.camera.lookAt(this.camLook.x, this.camLook.y, this.camLook.z);
@@ -3989,6 +4753,7 @@ export class GameEngine {
           y: (-_vec3B.y * 0.5 + 0.5) * this.viewportH,
           amount: f.amount,
           isCrit: f.isCrit,
+          isWeakpoint: f.isWeakpoint,
           blockedByArmor: f.blockedByArmor,
           age: f.age,
           duration: f.duration,
@@ -4010,7 +4775,9 @@ export class GameEngine {
       this.dashCooldownTimer > 0
         ? 1 - Math.min(1, this.dashCooldownTimer / dashCd)
         : 1;
-    const gearCd = TACTICAL_GEAR_SPECS[this.equippedGear].cooldownSec;
+    const gearCd =
+      TACTICAL_GEAR_SPECS[this.equippedGear].cooldownSec *
+      CLASS_SPECS[this.career.selectedClass].gearCooldownMult;
     const gearCooldownProgress =
       this.gearCooldownTimer > 0
         ? 1 - Math.min(1, this.gearCooldownTimer / gearCd)
@@ -4040,6 +4807,7 @@ export class GameEngine {
     const hazards: MinimapHazard[] = [];
     for (let i = 0; i < this.acidPuddles.length; i++) {
       const p = this.acidPuddles[i];
+      if (!p.active) continue;
       hazards.push({ x: p.x, z: p.z, kind: 'acid' });
     }
     for (let i = 0; i < this.activeMines.length; i++) {
@@ -4072,6 +4840,7 @@ export class GameEngine {
       muted: this.sound.isMuted(),
       waveBanner: this.waveBanner,
       pickupToast: this.pickupToast,
+      skinUnlockToast: this.skinUnlockToast,
       kills: this.kills,
       damageTaken: Math.round(this.damageTaken),
       isNewHighScore: this.isNewHighScore,
@@ -4091,6 +4860,12 @@ export class GameEngine {
       bloodSplatter: Math.round(this.bloodSplatter * 20) / 20,
       bloodSeed: this.bloodSeed,
       hasUsedRevive: this.hasUsedRevive,
+      fps: this.currentFps,
+      showFps: this.settings.showFps,
+      autoFire: this.settings.autoFire,
+      equippedSkinId: this.career.equippedSkinId,
+      selectedClass: this.career.selectedClass,
+      lastScrapEarned: this.lastScrapEarned,
       minimap: {
         playerX: this.playerX,
         playerZ: this.playerZ,

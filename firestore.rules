@@ -75,6 +75,13 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    // Public read-only Android APK release metadata (zero PII, admin-managed)
+    match /config/{configId} {
+      allow get: if isValidId(configId) && configId == 'app';
+      allow list: if false;
+      allow create, update, delete: if false;
+    }
+
     // Global personal-best high score leaderboard (zero PII stored)
     match /leaderboard/{entryId} {
       allow get: if isValidId(entryId) && existing().isPublic == true;

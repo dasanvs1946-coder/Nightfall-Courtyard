@@ -143,20 +143,27 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
       >
         {floatingDamages.map((d) => {
           const opacity = Math.max(0, 1 - d.age / d.duration);
+          const customColor =
+            !d.blockedByArmor && !d.isWeakpoint && d.isCrit
+              ? '#F59E0B'
+              : undefined;
           return (
             <div
               key={d.id}
               className={`font-mono-tabular hud-text-shadow absolute -translate-x-1/2 -translate-y-1/2 font-bold ${
                 d.blockedByArmor
                   ? 'text-xs text-sky-300'
-                  : d.isCrit
-                    ? 'text-base text-amber-300'
-                    : 'text-sm text-white'
+                  : d.isWeakpoint
+                    ? 'text-lg font-extrabold text-rose-500'
+                    : d.isCrit
+                      ? 'text-base'
+                      : 'text-sm text-white'
               }`}
               style={{
                 left: d.x,
                 top: d.y,
                 opacity,
+                color: customColor,
               }}
             >
               {d.amount}
@@ -344,14 +351,34 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
               )}
             </div>
 
-            <div
-              data-testid="weather-badge"
-              aria-label={`Weather: ${weatherLabel}`}
-              className="flex items-center gap-1.5 rounded-xl border border-slate-700/70 px-2.5 py-1 text-[10px] font-bold tracking-wider text-sky-200 uppercase sm:text-[11px]"
-              style={{ backgroundColor: 'rgba(10, 15, 24, 0.84)' }}
-            >
-              <WeatherIcon className="h-3.5 w-3.5 text-sky-300" />
-              <span>{weatherLabel}</span>
+            <div className="flex flex-wrap items-center justify-end gap-1">
+              {hud.showFps && (
+                <div
+                  data-testid="fps-counter"
+                  className="font-mono-tabular rounded-xl border border-amber-500/45 px-2 py-1 text-[10px] font-extrabold tracking-wider text-amber-300 uppercase sm:text-[11px]"
+                  style={{ backgroundColor: 'rgba(10, 15, 24, 0.86)' }}
+                >
+                  {hud.fps} FPS
+                </div>
+              )}
+              {hud.autoFire && (
+                <div
+                  data-testid="autofire-badge"
+                  className="font-mono-tabular rounded-xl border border-cyan-400/50 px-2 py-1 text-[10px] font-extrabold tracking-wider text-cyan-300 uppercase sm:text-[11px]"
+                  style={{ backgroundColor: 'rgba(10, 15, 24, 0.86)' }}
+                >
+                  Auto-Fire
+                </div>
+              )}
+              <div
+                data-testid="weather-badge"
+                aria-label={`Weather: ${weatherLabel}`}
+                className="flex items-center gap-1.5 rounded-xl border border-slate-700/70 px-2.5 py-1 text-[10px] font-bold tracking-wider text-sky-200 uppercase sm:text-[11px]"
+                style={{ backgroundColor: 'rgba(10, 15, 24, 0.84)' }}
+              >
+                <WeatherIcon className="h-3.5 w-3.5 text-sky-300" />
+                <span>{weatherLabel}</span>
+              </div>
             </div>
           </div>
 
@@ -421,6 +448,15 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
             style={{ backgroundColor: 'rgba(10, 15, 24, 0.82)' }}
           >
             {hud.waveBanner}
+          </div>
+        )}
+        {hud.skinUnlockToast && !upgradesOpen && (
+          <div
+            data-testid="skin-unlock-toast"
+            className="font-display hud-text-shadow rounded-xl border border-amber-400/80 px-3.5 py-1.5 text-center text-xs font-extrabold tracking-wider text-amber-300 uppercase shadow-[0_0_24px_rgba(245,158,11,0.35)] sm:text-sm"
+            style={{ backgroundColor: 'rgba(14, 18, 28, 0.94)' }}
+          >
+            {hud.skinUnlockToast}
           </div>
         )}
         {hud.pickupToast && !upgradesOpen && (

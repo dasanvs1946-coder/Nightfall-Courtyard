@@ -178,6 +178,16 @@ export const StatusModal: React.FC<StatusModalProps> = ({
           <span>Damage Taken · {hud.damageTaken}</span>
         </div>
 
+        {isGameOver && hud.lastScrapEarned > 0 && (
+          <div
+            data-testid="scrap-earned-badge"
+            className="mt-3 flex items-center justify-between rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs font-extrabold tracking-wider text-amber-300 uppercase"
+          >
+            <span>Armory Scrap Earned</span>
+            <span className="font-mono-tabular">+{hud.lastScrapEarned} SCRAP</span>
+          </div>
+        )}
+
         <div className="mt-5 flex flex-col gap-2.5">
           {!isGameOver && (
             <button

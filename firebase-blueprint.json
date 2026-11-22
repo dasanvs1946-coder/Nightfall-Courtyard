@@ -62,6 +62,27 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "AppConfig": {
+      "title": "AppConfig",
+      "description": "Public read-only Android APK release metadata stored at config/app.",
+      "type": "object",
+      "properties": {
+        "latestVersion": {
+          "type": "string",
+          "description": "Semantic version string (e.g. '1.2.1' or 'v1.2.1')."
+        },
+        "downloadUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "Direct APK / release download URL for native Android clients."
+        },
+        "changelog": {
+          "type": "string",
+          "description": "Short release notes summary displayed on the update banner."
+        }
+      },
+      "required": ["latestVersion", "downloadUrl"]
     }
   },
   "firestore": {
@@ -70,6 +91,12 @@
         "$ref": "#/entities/LeaderboardEntry"
       },
       "description": "Global personal-best high score entries keyed by the verified player UID."
+    },
+    "/config/{configId}": {
+      "schema": {
+        "$ref": "#/entities/AppConfig"
+      },
+      "description": "Public read-only app configuration document (config/app) for native Android update checks."
     }
   }
 }

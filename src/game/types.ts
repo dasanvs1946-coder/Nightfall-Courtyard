@@ -36,6 +36,58 @@ export type UpgradeId =
 
 export type UpgradeLevels = Record<UpgradeId, number>;
 
+export type GraphicsQuality = 'low' | 'medium' | 'high';
+
+export interface GameSettings {
+  graphicsQuality: GraphicsQuality;
+  hapticsEnabled: boolean;
+  autoFire: boolean;
+  showFps: boolean;
+}
+
+export type SkinId =
+  | 'nightwatch'
+  | 'crimson_recon'
+  | 'hazmat_breacher'
+  | 'cyber_ronin'
+  | 'storm_phantom'
+  | 'golden_sovereign';
+
+export type SurvivorClassId =
+  | 'vanguard'
+  | 'engineer'
+  | 'recon'
+  | 'demolitionist';
+
+export type PermanentUpgradeId =
+  | 'baseHp'
+  | 'reloadSpeed'
+  | 'startingUp'
+  | 'dashCooldown';
+
+export type PermanentUpgrades = Record<PermanentUpgradeId, number>;
+
+export type KillsByEnemyType = Record<ZombieKind, number>;
+
+export interface CareerStats {
+  totalKills: number;
+  bestWave: number;
+  bestScore: number;
+  bossesKilled: number;
+  scrap: number;
+  killsByEnemyType: KillsByEnemyType;
+  unlockedSkins: SkinId[];
+  equippedSkinId: SkinId;
+  selectedClass: SurvivorClassId;
+  permanentUpgrades: PermanentUpgrades;
+}
+
+export interface RemoteAppConfig {
+  latestVersion: string;
+  downloadUrl: string;
+  changelog: string;
+}
+
 export interface WeaponSpec {
   id: WeaponId;
   name: string;
@@ -99,6 +151,7 @@ export interface FloatingDamage {
   y: number; // screen px
   amount: number;
   isCrit: boolean;
+  isWeakpoint?: boolean;
   blockedByArmor?: boolean;
   age: number;
   duration: number;
@@ -162,6 +215,7 @@ export interface HudSnapshot {
   muted: boolean;
   waveBanner: string | null;
   pickupToast: string | null;
+  skinUnlockToast: string | null;
   kills: number;
   damageTaken: number;
   isNewHighScore: boolean;
@@ -174,5 +228,11 @@ export interface HudSnapshot {
   bloodSplatter: number; // 0..1 screen blood splatter intensity
   bloodSeed: number;
   hasUsedRevive: boolean;
+  fps: number;
+  showFps: boolean;
+  autoFire: boolean;
+  equippedSkinId: SkinId;
+  selectedClass: SurvivorClassId;
+  lastScrapEarned: number;
   minimap: MinimapSnapshot;
 }

@@ -4,6 +4,9 @@ export class SoundEngine {
   private ctx: AudioContext | null = null;
   private noiseBuffer: AudioBuffer | null = null;
   private muted = false;
+  private bossIntensityActive = false;
+  private bossPulseCooldown = 0;
+  private bossBeatStep = 0;
 
   public isMuted(): boolean {
     return this.muted;
@@ -643,6 +646,7 @@ export class SoundEngine {
   }
 
   public playGameOver(): void {
+    this.bossIntensityActive = false;
     const ctx = this.ready();
     if (!ctx) return;
     const now = ctx.currentTime;
@@ -664,5 +668,101 @@ export class SoundEngine {
       osc.start(t);
       osc.stop(t + 0.33);
     });
+  }
+
+  public setBossIntensity(active: boolean): void {
+    if (this.bossIntensityActive === active) return;
+    this.bossIntensityActive = active;
+    if (active) {
+      this.bossPulseCooldown = 0.05;
+      this.bossBeatStep = 0;
+    }
+  }
+
+  public updateDynamicMusic(dt: number, activeGameplay: boolean): void {
+    if (!activeGameplay || !this.bossIntensityActive) return;
+    const ctx = this.ready();
+    if (!ctx) return;
+
+    this.bossPulseCooldown -= dt;
+    if (this.bossPulseCooldown > 0) return;
+    this.bossPulseCooldown = 0.44;
+
+    const now = ctx.currentTime;
+    const bassNotes = [55.0, 55.0, 61.74, 51.91]; // Dark minor tension progression (A1 -> B1 -> G#1)
+    const freq = bassNotes[this.bossBeatStep % bassNotes.length];
+    const accented = this.bossBeatStep % 4 === 0;
+    this.bossBeatStep += 1;
+
+    const osc = ctx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(freq, now);
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(accented ? 340 : 220, now);
+    filter.frequency.exponentialRampToValueAtTime(95, now + 0.36);
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(accented ? 0.11 : 0.075, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.38);
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.4);
+
+    if (this.noiseBuffer && accented) {
+      const hat = ctx.createBufferSource();
+      hat.buffer = this.noiseBuffer;
+      const hp = ctx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.setValueAtTime(3800, now);
+      const hGain = ctx.createGain();
+      hGain.gain.setValueAtTime(0.035, now);
+      hGain.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
+      hat.connect(hp);
+      hp.connect(hGain);
+      hGain.connect(ctx.destination);
+      hat.start(now);
+      hat.stop(now + 0.1);
+    }
+  }
+
+  public playBossFootstep(): void {
+    const ctx = this.ready();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(78, now);
+    osc.frequency.exponentialRampToValueAtTime(30, now + 0.16);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.14, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.17);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.18);
+  }
+
+  public playStalkerHiss(): void {
+    const ctx = this.ready();
+    if (!ctx || !this.noiseBuffer) return;
+    const now = ctx.currentTime;
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.noiseBuffer;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(2900, now);
+    filter.frequency.exponentialRampToValueAtTime(1400, now + 0.24);
+    filter.Q.setValueAtTime(4.2, now);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.09, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
+    noise.connect(filter);
+    filter.connect(gain);
+    gain.connect(ctx.destination);
+    noise.start(now);
+    noise.stop(now + 0.26);
   }
 }

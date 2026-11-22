@@ -27,3 +27,8 @@
 10. **Path Variable / ID Poisoning**: 1.5KB junk document ID `/leaderboard/aaaaa...` -> Denied (`isValidId(entryId)`).
 11. **Oversized / XSS Callsign Injection**: `{ playerName: "<script>alert(1)</script>..." }` -> Denied (`playerName.matches(...)` and `.size() <= 24`).
 12. **Default Catch-All Arbitrary Collection Write**: Writing to `/users/uidA` or `/admins/uidA` -> Denied by top-level catch-all `match /{document=**}`.
+
+## 3. Native Android App Update Metadata (`/config/{configId}`)
+1. **Single Document Get Only**: `allow get: if isValidId(configId) && configId == 'app'` permits native Android clients to read `config/app` (`latestVersion`, `downloadUrl`, `changelog`) without authentication.
+2. **No Collection Listing & Zero Client Writes**: `allow list: if false` and `allow create, update, delete: if false` prevent enumerating `/config` or tampering with release URLs from clients.
+

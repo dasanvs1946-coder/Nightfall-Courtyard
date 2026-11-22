@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { CrateKind, WeaponId, ZombieKind } from '../game/types';
+import { SKIN_SPECS } from '../game/career';
+import { CrateKind, SkinId, WeaponId, ZombieKind } from '../game/types';
 import { TexturedSurfaceSet } from './textures';
 
 export interface PlayerRig {
@@ -13,6 +14,19 @@ export interface PlayerRig {
   flashLight: THREE.PointLight | null;
   flashlightSpot: THREE.SpotLight;
   flashlightCone: THREE.Mesh;
+  armorMat: THREE.MeshStandardMaterial;
+  clothMat: THREE.MeshStandardMaterial;
+  pouchMat: THREE.MeshStandardMaterial;
+  visorMat: THREE.MeshStandardMaterial;
+  trimMat: THREE.MeshStandardMaterial;
+  footRingMat: THREE.MeshBasicMaterial;
+  coneMat: THREE.MeshBasicMaterial;
+  bioPackGroup: THREE.Group;
+  katanaGroup: THREE.Group;
+  hoodGroup: THREE.Group;
+  exoTrimGroup: THREE.Group;
+  reloadArcSegments: THREE.Mesh[];
+  dashArcSegments: THREE.Mesh[];
 }
 
 const sharedGeoCache = new Map<string, THREE.BufferGeometry>();
@@ -93,20 +107,63 @@ export function buildPlayerRig(
   const root = new THREE.Group();
   root.add(buildContactShadow(shadowTex, 0.65, 0.65));
 
-  // Subtle tactical locator ring around survivor's boots
+  const footRingMat = new THREE.MeshBasicMaterial({
+    color: 0x38bdf8,
+    transparent: true,
+    opacity: 0.34,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
   const footRing = new THREE.Mesh(
-    new THREE.RingGeometry(0.54, 0.62, 28),
-    new THREE.MeshBasicMaterial({
-      color: 0x38bdf8,
-      transparent: true,
-      opacity: 0.34,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    }),
+    new THREE.RingGeometry(0.54, 0.6, 28),
+    footRingMat,
   );
   footRing.rotation.x = -Math.PI / 2;
   footRing.position.y = 0.025;
   root.add(footRing);
+
+  // Slim circular diegetic reload (outer amber) & dash cooldown (inner cyan) arcs around survivor's feet
+  const ARC_SEGMENTS = 24;
+  const reloadArcSegments: THREE.Mesh[] = [];
+  const dashArcSegments: THREE.Mesh[] = [];
+  const dashArcMat = new THREE.MeshBasicMaterial({
+    color: 0x38bdf8,
+    transparent: true,
+    opacity: 0.78,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const reloadArcMat = new THREE.MeshBasicMaterial({
+    color: 0xf59e0b,
+    transparent: true,
+    opacity: 0.9,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const segSpan = (Math.PI * 2) / ARC_SEGMENTS;
+  for (let i = 0; i < ARC_SEGMENTS; i++) {
+    const startA = Math.PI / 2 - (i + 1) * segSpan + 0.018;
+    const thetaLen = Math.max(0.05, segSpan - 0.036);
+    const dashSeg = new THREE.Mesh(
+      new THREE.RingGeometry(0.64, 0.7, 2, 1, startA, thetaLen),
+      dashArcMat,
+    );
+    dashSeg.rotation.x = -Math.PI / 2;
+    dashSeg.position.y = 0.027;
+    dashSeg.visible = false;
+    root.add(dashSeg);
+    dashArcSegments.push(dashSeg);
+
+    const relSeg = new THREE.Mesh(
+      new THREE.RingGeometry(0.73, 0.81, 2, 1, startA, thetaLen),
+      reloadArcMat,
+    );
+    relSeg.rotation.x = -Math.PI / 2;
+    relSeg.position.y = 0.028;
+    relSeg.visible = false;
+    root.add(relSeg);
+    reloadArcSegments.push(relSeg);
+  }
 
   const bodyGroup = new THREE.Group();
   root.add(bodyGroup);
@@ -137,6 +194,13 @@ export function buildPlayerRig(
     emissiveIntensity: 1.65,
     roughness: 0.15,
     metalness: 0.7,
+  });
+  const trimMat = new THREE.MeshStandardMaterial({
+    color: 0x38bdf8,
+    emissive: 0x38bdf8,
+    emissiveIntensity: 0.55,
+    roughness: 0.32,
+    metalness: 0.65,
   });
   const gunMetalMat = new THREE.MeshStandardMaterial({
     color: 0x64748b,
@@ -208,13 +272,18 @@ export function buildPlayerRig(
   strapR.position.set(0.15, 0.83, 0);
   bodyGroup.add(strapL, strapR);
 
-  // Shoulder pads
+  // Shoulder pads + accent trim strips
   const padGeo = new THREE.BoxGeometry(0.19, 0.17, 0.31);
   const leftPad = new THREE.Mesh(padGeo, armorMat);
   leftPad.position.set(-0.35, 1.0, 0);
   const rightPad = new THREE.Mesh(padGeo, armorMat);
   rightPad.position.set(0.35, 1.0, 0);
-  bodyGroup.add(leftPad, rightPad);
+  const padTrimGeo = new THREE.BoxGeometry(0.21, 0.045, 0.33);
+  const padTrimL = new THREE.Mesh(padTrimGeo, trimMat);
+  padTrimL.position.set(-0.35, 1.08, 0);
+  const padTrimR = new THREE.Mesh(padTrimGeo, trimMat);
+  padTrimR.position.set(0.35, 1.08, 0);
+  bodyGroup.add(leftPad, rightPad, padTrimL, padTrimR);
 
   // Head + tactical helmet + visor
   const head = new THREE.Mesh(new THREE.SphereGeometry(0.21, 14, 12), skinMat);
@@ -233,6 +302,89 @@ export function buildPlayerRig(
   const visor = new THREE.Mesh(new THREE.BoxGeometry(0.29, 0.085, 0.14), visorMat);
   visor.position.set(0, 1.28, -0.175);
   bodyGroup.add(visor);
+
+  // Skin Cosmetic 1: Hazmat Breacher Bio-Pack Canisters
+  const bioPackGroup = new THREE.Group();
+  const bioTankMat = new THREE.MeshStandardMaterial({
+    color: 0x22c55e,
+    emissive: 0x16a34a,
+    emissiveIntensity: 1.5,
+    roughness: 0.22,
+  });
+  const tankL = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.085, 0.42, 10), bioTankMat);
+  tankL.position.set(-0.11, 0.88, 0.33);
+  const tankR = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.085, 0.42, 10), bioTankMat);
+  tankR.position.set(0.11, 0.88, 0.33);
+  const bioBar = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.08, 0.09), visorMat);
+  bioBar.position.set(0, 1.05, 0.34);
+  bioPackGroup.add(tankL, tankR, bioBar);
+  bioPackGroup.visible = false;
+  bodyGroup.add(bioPackGroup);
+
+  // Skin Cosmetic 2: Cyber Ronin Back Katana & Illuminated Cyber Ribs
+  const katanaGroup = new THREE.Group();
+  const scabbard = new THREE.Mesh(
+    new THREE.BoxGeometry(0.055, 0.08, 1.15),
+    new THREE.MeshStandardMaterial({ color: 0x090a0f, roughness: 0.3, metalness: 0.85 }),
+  );
+  scabbard.position.set(0.02, 0.92, 0.32);
+  scabbard.rotation.set(0.55, 0, -0.68);
+  const bladeHilt = new THREE.Mesh(
+    new THREE.BoxGeometry(0.07, 0.1, 0.28),
+    visorMat,
+  );
+  bladeHilt.position.set(0.28, 1.32, 0.28);
+  bladeHilt.rotation.set(0.55, 0, -0.68);
+  const cyberRibL = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.36, 0.05), visorMat);
+  cyberRibL.position.set(-0.22, 0.84, -0.18);
+  const cyberRibR = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.36, 0.05), visorMat);
+  cyberRibR.position.set(0.22, 0.84, -0.18);
+  katanaGroup.add(scabbard, bladeHilt, cyberRibL, cyberRibR);
+  katanaGroup.visible = false;
+  bodyGroup.add(katanaGroup);
+
+  // Skin Cosmetic 3: Storm Phantom Hooded Cloak
+  const hoodGroup = new THREE.Group();
+  const hoodMat = new THREE.MeshStandardMaterial({
+    color: 0x1e1b4b,
+    roughness: 0.78,
+    metalness: 0.15,
+  });
+  const hoodDome = new THREE.Mesh(
+    new THREE.ConeGeometry(0.32, 0.44, 8),
+    hoodMat,
+  );
+  hoodDome.position.set(0, 1.44, 0.03);
+  hoodDome.rotation.x = 0.18;
+  const cloakBack = new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.56, 0.08), hoodMat);
+  cloakBack.position.set(0, 0.86, 0.32);
+  cloakBack.rotation.x = 0.14;
+  const hoodEdge = new THREE.Mesh(new THREE.TorusGeometry(0.24, 0.03, 8, 16), visorMat);
+  hoodEdge.position.set(0, 1.28, -0.12);
+  hoodGroup.add(hoodDome, cloakBack, hoodEdge);
+  hoodGroup.visible = false;
+  bodyGroup.add(hoodGroup);
+
+  // Skin Cosmetic 4: Golden Sovereign Brushed Gold Exo-Suit Trim
+  const exoTrimGroup = new THREE.Group();
+  const goldMat = new THREE.MeshStandardMaterial({
+    color: 0xf59e0b,
+    emissive: 0xd97706,
+    emissiveIntensity: 0.65,
+    roughness: 0.22,
+    metalness: 0.92,
+  });
+  const crownCrest = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.1, 0.34), goldMat);
+  crownCrest.position.set(0, 1.54, 0);
+  const wingL = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.36, 0.12), goldMat);
+  wingL.position.set(-0.26, 1.1, 0.26);
+  wingL.rotation.z = 0.25;
+  const wingR = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.36, 0.12), goldMat);
+  wingR.position.set(0.26, 1.1, 0.26);
+  wingR.rotation.z = -0.25;
+  exoTrimGroup.add(crownCrest, wingL, wingR);
+  exoTrimGroup.visible = false;
+  bodyGroup.add(exoTrimGroup);
 
   // Arms aiming forward (-Z)
   const armGeo = new THREE.BoxGeometry(0.15, 0.15, 0.44);
@@ -526,7 +678,64 @@ export function buildPlayerRig(
     flashLight,
     flashlightSpot,
     flashlightCone,
+    armorMat,
+    clothMat,
+    pouchMat,
+    visorMat,
+    trimMat,
+    footRingMat,
+    coneMat,
+    bioPackGroup,
+    katanaGroup,
+    hoodGroup,
+    exoTrimGroup,
+    reloadArcSegments,
+    dashArcSegments,
   };
+}
+
+export function applyPlayerSkin(rig: PlayerRig, skinId: SkinId): void {
+  const spec = SKIN_SPECS[skinId] ?? SKIN_SPECS.nightwatch;
+  rig.armorMat.color.setHex(spec.armorColor);
+  rig.clothMat.color.setHex(spec.clothColor);
+  rig.pouchMat.color.setHex(spec.pouchColor);
+  rig.visorMat.color.setHex(spec.visorColor);
+  rig.visorMat.emissive.setHex(spec.visorColor);
+  rig.visorMat.emissiveIntensity = spec.emissiveIntensity;
+  rig.trimMat.color.setHex(spec.trimColor);
+  rig.trimMat.emissive.setHex(spec.trimColor);
+  rig.footRingMat.color.setHex(spec.trailColor);
+  rig.flashlightSpot.color.setHex(spec.beamColor);
+  rig.coneMat.color.setHex(spec.coneColor);
+
+  rig.bioPackGroup.visible = Boolean(spec.hasBioPack);
+  rig.katanaGroup.visible = Boolean(spec.hasKatana);
+  rig.hoodGroup.visible = Boolean(spec.hasHood);
+  rig.exoTrimGroup.visible = Boolean(spec.hasExoTrim);
+}
+
+export function updateDiegeticFootArcs(
+  rig: PlayerRig,
+  isReloading: boolean,
+  reloadProgress: number,
+  dashCooldownProgress: number,
+): void {
+  const relCount = rig.reloadArcSegments.length;
+  const activeRelSegs = isReloading
+    ? Math.max(1, Math.round(Math.min(1, Math.max(0, reloadProgress)) * relCount))
+    : 0;
+  for (let i = 0; i < relCount; i++) {
+    rig.reloadArcSegments[i].visible = isReloading && i < activeRelSegs;
+  }
+
+  const dashCount = rig.dashArcSegments.length;
+  const rechargingDash = dashCooldownProgress < 0.999;
+  const activeDashSegs = rechargingDash
+    ? Math.max(1, Math.round(Math.min(1, Math.max(0, dashCooldownProgress)) * dashCount))
+    : 0;
+  for (let i = 0; i < dashCount; i++) {
+    rig.dashArcSegments[i].visible = rechargingDash && i < activeDashSegs;
+  }
 }
 
 export function buildZombieRig(
@@ -982,18 +1191,37 @@ export function buildZombieRig(
   rightArm.position.set(0.3 * scale, 0.88 * scale, -0.26 * scale);
   bodyGroup.add(leftArm, rightArm);
 
-  // Telegraph ring (Brute, Boss, Acid Spitter)
+  // Clear Red Ground Telegraph Rings (Brute, Breacher, Boss, Acid Spitter)
   let telegraphRing: THREE.Mesh | null = null;
   let telegraphLine: THREE.Mesh | null = null;
-  if (kind === 'brute' || kind === 'boss' || kind === 'spitter') {
-    const innerR = kind === 'boss' ? 2.35 : kind === 'spitter' ? 0.5 : 1.55;
-    const outerR = kind === 'boss' ? 2.8 : kind === 'spitter' ? 0.72 : 1.88;
+  if (
+    kind === 'brute' ||
+    kind === 'breacher' ||
+    kind === 'boss' ||
+    kind === 'spitter'
+  ) {
+    const innerR =
+      kind === 'boss'
+        ? 2.35
+        : kind === 'spitter'
+          ? 0.95
+          : kind === 'breacher'
+            ? 1.55
+            : 1.55;
+    const outerR =
+      kind === 'boss'
+        ? 2.8
+        : kind === 'spitter'
+          ? 1.35
+          : kind === 'breacher'
+            ? 1.92
+            : 1.88;
     const ringGeo = getSharedGeo(
       `z-tele-ring-${kind}`,
       () => new THREE.RingGeometry(innerR, outerR, 28),
     );
     const ringMat = new THREE.MeshBasicMaterial({
-      color: kind === 'spitter' ? 0x84cc16 : kind === 'boss' ? 0xf43f5e : 0xef4444,
+      color: kind === 'boss' ? 0xf43f5e : 0xef4444,
       transparent: true,
       opacity: 0,
       side: THREE.DoubleSide,
@@ -1012,9 +1240,9 @@ export function buildZombieRig(
         return g;
       });
       const beamMat = new THREE.MeshBasicMaterial({
-        color: 0xa3e635,
+        color: 0xef4444,
         transparent: true,
-        opacity: 0.75,
+        opacity: 0.72,
         depthWrite: false,
       });
       telegraphLine = new THREE.Mesh(beamGeo, beamMat);

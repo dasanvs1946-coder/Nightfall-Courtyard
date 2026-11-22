@@ -1,19 +1,34 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { HudOverlay } from './components/HudOverlay';
+import { SettingsModal } from './components/SettingsModal';
 import { StatusModal } from './components/StatusModal';
 import { TitleScreen } from './components/TitleScreen';
+import { loadCareerStats } from './game/career';
+import { loadSettings } from './game/settings';
 import { loadHighScore, loadRunProgress } from './game/storage';
-import { FloatingDamage, HudSnapshot, SavedRunProgress } from './game/types';
+import {
+  CareerStats,
+  FloatingDamage,
+  GameSettings,
+  HudSnapshot,
+  RemoteAppConfig,
+  SavedRunProgress,
+  SkinId,
+} from './game/types';
 import {
   createInitialUpgradeLevels,
   KILLS_PER_UPGRADE_POINT,
 } from './game/upgrades';
+import { APP_VERSION } from './game/version';
 import { createInitialWeapons } from './game/weapons';
 import { parseWeatherParam } from './game/weather';
 import { GameEngine } from './scene/GameEngine';
+import { checkForAndroidUpdate } from './services/updateChecker';
 
 function createDefaultHudSnapshot(): HudSnapshot {
   const saved = loadRunProgress();
+  const initialCareer = loadCareerStats();
+  const initialSettings = loadSettings();
   return {
     phase: 'title',
     hp: 100,
@@ -35,6 +50,7 @@ function createDefaultHudSnapshot(): HudSnapshot {
     muted: false,
     waveBanner: null,
     pickupToast: null,
+    skinUnlockToast: null,
     kills: 0,
     damageTaken: 0,
     isNewHighScore: false,
@@ -47,6 +63,12 @@ function createDefaultHudSnapshot(): HudSnapshot {
     bloodSplatter: 0,
     bloodSeed: 1,
     hasUsedRevive: false,
+    fps: 60,
+    showFps: initialSettings.showFps,
+    autoFire: initialSettings.autoFire,
+    equippedSkinId: initialCareer.equippedSkinId,
+    selectedClass: initialCareer.selectedClass,
+    lastScrapEarned: 0,
     minimap: {
       playerX: 0,
       playerZ: 0,
@@ -65,6 +87,10 @@ export default function App() {
   const [savedProgress, setSavedProgress] = useState<SavedRunProgress | null>(() =>
     loadRunProgress(),
   );
+  const [career, setCareer] = useState<CareerStats>(() => loadCareerStats());
+  const [settings, setSettings] = useState<GameSettings>(() => loadSettings());
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [androidUpdate, setAndroidUpdate] = useState<RemoteAppConfig | null>(null);
   const [floatingDamages, setFloatingDamages] = useState<FloatingDamage[]>([]);
   const [upgradesOpen, setUpgradesOpen] = useState(false);
   const [webglError, setWebglError] = useState<string | null>(null);
@@ -75,6 +101,22 @@ export default function App() {
       engineRef.current?.setUpgradeDrawerOpen(false);
     }
   }, [hud.phase, upgradesOpen]);
+
+  useEffect(() => {
+    let active = true;
+    checkForAndroidUpdate(APP_VERSION)
+      .then((res) => {
+        if (active && res) {
+          setAndroidUpdate(res);
+        }
+      })
+      .catch(() => {
+        // Update check silently ignored if offline or unauthorized
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -108,6 +150,8 @@ export default function App() {
           onHudUpdate: (snapshot) => setHud(snapshot),
           onFloatingDamageUpdate: (items) => setFloatingDamages(items),
           onSavedProgressUpdate: (saved) => setSavedProgress(saved),
+          onCareerUpdate: (nextCareer) => setCareer(nextCareer),
+          onSettingsUpdate: (nextSettings) => setSettings(nextSettings),
         },
         autostart,
         startWave,
@@ -134,6 +178,13 @@ export default function App() {
     });
   };
 
+  const handleSkinPreviewChange = useCallback(
+    (active: boolean, skinId?: SkinId) => {
+      engineRef.current?.setSkinPreviewMode(active, skinId);
+    },
+    [],
+  );
+
   return (
     <main className="relative h-dvh w-screen overflow-hidden bg-[#070a10] touch-none select-none">
       {/* Isolated WebGL Canvas Container */}
@@ -159,18 +210,41 @@ export default function App() {
           highScore={hud.highScore}
           savedProgress={savedProgress}
           equippedGear={hud.equippedGear}
+          career={career}
+          androidUpdate={androidUpdate}
           onEquipGear={(id) => engineRef.current?.equipGear(id)}
+          onOpenSettings={() => setSettingsOpen(true)}
+          onSkinPreviewChange={handleSkinPreviewChange}
+          onEquipSkin={(skinId) => engineRef.current?.equipSkin(skinId)}
+          onSelectClass={(classId) => engineRef.current?.selectClass(classId)}
+          onBuyPermanentUpgrade={(id) =>
+            engineRef.current?.buyPermanentUpgrade(id)
+          }
           onStartFromBeginning={() => {
+            setSettingsOpen(false);
             setUpgradesOpen(false);
             engineRef.current?.startNewGame({ fromBeginning: true });
           }}
           onResumeInterrupted={() => {
+            setSettingsOpen(false);
             setUpgradesOpen(false);
             engineRef.current?.startNewGame({
               fromBeginning: false,
               resumeInterrupted: true,
             });
           }}
+        />
+      )}
+
+      {!webglError && hud.phase === 'title' && (
+        <SettingsModal
+          open={settingsOpen}
+          settings={settings}
+          onUpdate={(next) => {
+            setSettings(next);
+            engineRef.current?.setSettings(next);
+          }}
+          onClose={() => setSettingsOpen(false)}
         />
       )}
 
