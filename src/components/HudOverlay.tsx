@@ -10,9 +10,12 @@ import {
   Skull,
   Volume2,
   VolumeX,
+  Zap,
 } from 'lucide-react';
+import { ARENA_SPECS, GAME_MODE_SPECS } from '../game/arenas';
 import {
   FloatingDamage,
+  GadgetId,
   HudSnapshot,
   TacticalGearId,
   UpgradeId,
@@ -35,7 +38,9 @@ interface HudOverlayProps {
   onReload: () => void;
   onSwitchWeapon: () => void;
   onTriggerGear: () => void;
+  onTriggerGadget: () => void;
   onEquipGear: (id: TacticalGearId) => void;
+  onEquipGadget: (id: GadgetId) => void;
   onPrevWeapon: () => void;
   onNextWeapon: () => void;
   onSelectWeapon: (id: WeaponId) => void;
@@ -43,6 +48,7 @@ interface HudOverlayProps {
   onPause: () => void;
   onToggleUpgrades: () => void;
   onBuyUpgrade: (id: UpgradeId) => void;
+  onBuyMastery: (weaponId: WeaponId) => void;
 }
 
 export const HudOverlay: React.FC<HudOverlayProps> = ({
@@ -55,7 +61,9 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
   onReload,
   onSwitchWeapon,
   onTriggerGear,
+  onTriggerGadget,
   onEquipGear,
+  onEquipGadget,
   onPrevWeapon,
   onNextWeapon,
   onSelectWeapon,
@@ -63,6 +71,7 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
   onPause,
   onToggleUpgrades,
   onBuyUpgrade,
+  onBuyMastery,
 }) => {
   const activeWeaponState =
     hud.weapons.find((w) => w.id === hud.activeWeapon) ?? hud.weapons[0];
@@ -76,6 +85,10 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
     ? Math.max(0, Math.min(100, (hud.activeBoss.hp / hud.activeBoss.maxHp) * 100))
     : 0;
   const weatherLabel = WEATHER_PRESETS[hud.weather].label;
+  const modeSpec = GAME_MODE_SPECS[hud.mode];
+  const arenaSpec = ARENA_SPECS[hud.arena];
+  const capturingGenerator = hud.generators.find((g) => g.playerInside && !g.powered);
+  const poweredGenCount = hud.generators.filter((g) => g.powered).length;
   const WeatherIcon =
     hud.weather === 'storm'
       ? CloudLightning
@@ -86,6 +99,16 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
           : Moon;
   const bloodAlpha = Math.max(0, Math.min(1, hud.bloodSplatter));
   const seedShift = (hud.bloodSeed % 5) * 14;
+
+  const isEvolvedShotgun =
+    hud.activeWeapon === 'shotgun' && hud.evolvedWeapons.includes('dragons_breath');
+  const isEvolvedSmg =
+    hud.activeWeapon === 'smg' && hud.evolvedWeapons.includes('rail_smg');
+  const weaponDisplayName = isEvolvedShotgun
+    ? "Dragon's Breath"
+    : isEvolvedSmg
+      ? 'Rail-SMG'
+      : activeSpec.name;
 
   return (
     <div className="pointer-events-none fixed inset-0 z-20 flex flex-col justify-between p-2.5 sm:p-5">
@@ -172,13 +195,13 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
         })}
       </div>
 
-      {/* Top HUD Row (Compact Perimeter Clusters, fits cleanly within 390px mobile) */}
+      {/* Top HUD Row */}
       <div className="relative z-30 flex items-start justify-between gap-1.5 sm:gap-3">
-        {/* Top-Left Column: Health, Wave, Score + Small Upgrades Tab */}
+        {/* Top-Left Column: Health, Wave, Score + Mode Tag + Small Upgrades Tab */}
         <div className="flex flex-col items-start">
           <div
-            className="pointer-events-auto flex w-[138px] flex-col gap-1 rounded-xl border border-slate-700/70 px-2 py-1.5 sm:w-auto sm:min-w-[230px] sm:gap-1.5 sm:px-3 sm:py-2"
-            style={{ backgroundColor: 'rgba(10, 15, 24, 0.84)' }}
+            className="pointer-events-auto flex w-[142px] flex-col gap-1 rounded-xl border border-slate-700/70 px-2 py-1.5 sm:w-auto sm:min-w-[235px] sm:gap-1.5 sm:px-3 sm:py-2"
+            style={{ backgroundColor: 'rgba(10, 15, 24, 0.86)' }}
           >
             <div className="flex items-center justify-between gap-1.5 sm:gap-4">
               <div className="flex items-baseline gap-1">
@@ -249,100 +272,124 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
             killsTowardNextUp={hud.killsTowardNextUp}
             killsPerUp={hud.killsPerUp}
             upgradeLevels={hud.upgradeLevels}
+            weaponMastery={hud.weaponMastery}
+            activeWeapon={hud.activeWeapon}
             equippedGear={hud.equippedGear}
+            equippedGadget={hud.equippedGadget}
+            ownedPerks={hud.ownedPerks}
+            evolvedWeapons={hud.evolvedWeapons}
             onToggle={onToggleUpgrades}
             onBuyUpgrade={onBuyUpgrade}
+            onBuyMastery={onBuyMastery}
             onEquipGear={onEquipGear}
+            onEquipGadget={onEquipGadget}
           />
         </div>
 
-        {/* Top-Right: Weapon, Ammo, Rapid Fire, Weather & Utility Buttons */}
+        {/* Top-Right: Weapon, Ammo, Powerups, Mode/Gen Tags, Weather & Utility Buttons */}
         <div className="pointer-events-auto flex items-start gap-1.5 sm:gap-2">
           <div className="flex flex-col items-end gap-1.5">
             <div
-              className="flex max-w-[166px] flex-col items-end gap-1 rounded-xl border border-slate-700/70 px-2 py-1.5 sm:max-w-none sm:px-3 sm:py-2"
-              style={{ backgroundColor: 'rgba(10, 15, 24, 0.84)' }}
+              className="flex max-w-[162px] flex-col items-end gap-1 rounded-xl border border-slate-700/70 px-2 py-1.5 sm:max-w-none sm:px-3 sm:py-2"
+              style={{ backgroundColor: 'rgba(10, 15, 24, 0.86)' }}
             >
-            <div className="flex items-baseline gap-1.5 sm:gap-2">
-              <span className="font-display max-w-[78px] truncate text-xs font-bold tracking-wide text-slate-100 uppercase sm:max-w-none sm:text-sm">
-                {activeSpec.name}
-              </span>
-              <span className="font-mono-tabular text-xs font-bold text-amber-400 sm:text-lg">
-                {hud.isReloading
-                  ? 'RLD'
-                  : `${activeWeaponState.mag}/${
-                      activeSpec.infiniteReserve ? '∞' : activeWeaponState.reserve
-                    }`}
-              </span>
-            </div>
-
-            {/* Weapon arsenal counter + prev/next cycle */}
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                tabIndex={-1}
-                disabled={unlockedWeapons.length <= 1}
-                aria-label="Previous Weapon"
-                onClick={(e) => {
-                  onPrevWeapon();
-                  e.currentTarget.blur();
-                }}
-                className="flex h-5 w-5 items-center justify-center rounded bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-35"
-              >
-                <ChevronLeft className="h-3 w-3" />
-              </button>
-              <span className="font-mono-tabular text-[10px] font-semibold text-slate-300">
-                {unlockedWeapons.length}/{hud.weapons.length}
-              </span>
-              <button
-                type="button"
-                tabIndex={-1}
-                disabled={unlockedWeapons.length <= 1}
-                aria-label="Next Weapon"
-                onClick={(e) => {
-                  onNextWeapon();
-                  e.currentTarget.blur();
-                }}
-                className="flex h-5 w-5 items-center justify-center rounded bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-35"
-              >
-                <ChevronRight className="h-3 w-3" />
-              </button>
-            </div>
-
-            {/* Unlocked weapon tabs (compact single-row scroll on mobile, wrapped grid on desktop) */}
-            <div
-              data-testid="unlocked-weapons-bar"
-              className="flex max-w-[144px] flex-nowrap gap-1 overflow-x-auto sm:max-w-[290px] sm:flex-wrap sm:justify-end sm:overflow-visible"
-            >
-              {unlockedWeapons.map((w) => {
-                const isSelected = w.id === hud.activeWeapon;
-                return (
-                  <button
-                    key={w.id}
-                    type="button"
-                    tabIndex={-1}
-                    aria-label={`Equip ${WEAPON_SPECS[w.id].name}`}
-                    onClick={(e) => {
-                      onSelectWeapon(w.id);
-                      e.currentTarget.blur();
-                    }}
-                    className={`shrink-0 rounded px-1 py-0.5 text-[9px] font-bold tracking-wide uppercase transition-colors sm:px-1.5 sm:text-[10px] ${
-                      isSelected
-                        ? 'bg-amber-500 text-slate-950'
-                        : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                    }`}
-                  >
-                    {WEAPON_SPECS[w.id].shortCode}
-                  </button>
-                );
-              })}
-            </div>
-            {nextLockedWeapon && (
-              <div className="font-mono-tabular text-[9px] text-slate-400">
-                Next: {WEAPON_SPECS[nextLockedWeapon.id].shortCode} @ W
-                {WEAPON_SPECS[nextLockedWeapon.id].unlockWave}
+              <div className="flex items-baseline gap-1.5 sm:gap-2">
+                <span
+                  className={`font-display max-w-[82px] truncate text-xs font-bold tracking-wide uppercase sm:max-w-none sm:text-sm ${
+                    isEvolvedShotgun || isEvolvedSmg
+                      ? 'text-amber-300'
+                      : 'text-slate-100'
+                  }`}
+                >
+                  {weaponDisplayName}
+                </span>
+                <span className="font-mono-tabular text-xs font-bold text-amber-400 sm:text-lg">
+                  {hud.isReloading
+                    ? 'RLD'
+                    : hud.minigunRemaining > 0
+                      ? '∞'
+                      : `${activeWeaponState.mag}/${
+                          activeSpec.infiniteReserve ? '∞' : activeWeaponState.reserve
+                        }`}
+                </span>
               </div>
-            )}
+
+              {/* Weapon arsenal counter + prev/next cycle */}
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  disabled={unlockedWeapons.length <= 1}
+                  aria-label="Previous Weapon"
+                  onClick={(e) => {
+                    onPrevWeapon();
+                    e.currentTarget.blur();
+                  }}
+                  className="flex h-5 w-5 items-center justify-center rounded bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-35"
+                >
+                  <ChevronLeft className="h-3 w-3" />
+                </button>
+                <span className="font-mono-tabular text-[10px] font-semibold text-slate-300">
+                  {unlockedWeapons.length}/{hud.weapons.length}
+                </span>
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  disabled={unlockedWeapons.length <= 1}
+                  aria-label="Next Weapon"
+                  onClick={(e) => {
+                    onNextWeapon();
+                    e.currentTarget.blur();
+                  }}
+                  className="flex h-5 w-5 items-center justify-center rounded bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-35"
+                >
+                  <ChevronRight className="h-3 w-3" />
+                </button>
+              </div>
+
+              {/* Unlocked weapon tabs */}
+              <div
+                data-testid="unlocked-weapons-bar"
+                className="flex max-w-[144px] flex-nowrap gap-1 overflow-x-auto sm:max-w-[290px] sm:flex-wrap sm:justify-end sm:overflow-visible"
+              >
+                {unlockedWeapons.map((w) => {
+                  const isSelected = w.id === hud.activeWeapon;
+                  return (
+                    <button
+                      key={w.id}
+                      type="button"
+                      tabIndex={-1}
+                      aria-label={`Equip ${WEAPON_SPECS[w.id].name}`}
+                      onClick={(e) => {
+                        onSelectWeapon(w.id);
+                        e.currentTarget.blur();
+                      }}
+                      className={`shrink-0 rounded px-1 py-0.5 text-[9px] font-bold tracking-wide uppercase transition-colors sm:px-1.5 sm:text-[10px] ${
+                        isSelected
+                          ? 'bg-amber-500 text-slate-950'
+                          : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                      }`}
+                    >
+                      {WEAPON_SPECS[w.id].shortCode}
+                    </button>
+                  );
+                })}
+              </div>
+              {nextLockedWeapon && (
+                <div className="font-mono-tabular text-[9px] text-slate-400">
+                  Next: {WEAPON_SPECS[nextLockedWeapon.id].shortCode} @ W
+                  {WEAPON_SPECS[nextLockedWeapon.id].unlockWave}
+                </div>
+              )}
+
+              {hud.minigunRemaining > 0 && (
+                <div
+                  data-testid="minigun-timer"
+                  className="font-mono-tabular text-[10px] font-extrabold text-amber-300 sm:text-[11px]"
+                >
+                  MINIGUN {hud.minigunRemaining.toFixed(1)}s
+                </div>
+              )}
 
               {hud.rapidFireRemaining > 0 && (
                 <div className="font-mono-tabular text-[10px] font-bold text-red-400 sm:text-[11px]">
@@ -351,11 +398,32 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
               )}
             </div>
 
-            <div className="flex flex-wrap items-center justify-end gap-1">
+            <div className="flex max-w-[180px] flex-wrap items-center justify-end gap-1 sm:max-w-none">
+              {hud.mode !== 'normal' && (
+                <div
+                  data-testid="mode-badge"
+                  className="font-mono-tabular rounded-xl border border-slate-700/80 px-2 py-0.5 text-[9px] font-extrabold tracking-wider uppercase sm:py-1 sm:text-[10px]"
+                  style={{
+                    backgroundColor: 'rgba(10, 15, 24, 0.88)',
+                    color: modeSpec.accentHex,
+                  }}
+                >
+                  {modeSpec.shortLabel}
+                </div>
+              )}
+              {poweredGenCount > 0 && (
+                <div
+                  className="font-mono-tabular flex items-center gap-1 rounded-xl border border-cyan-400/50 px-2 py-0.5 text-[9px] font-extrabold text-cyan-300 uppercase sm:py-1 sm:text-[10px]"
+                  style={{ backgroundColor: 'rgba(10, 15, 24, 0.88)' }}
+                >
+                  <Zap className="h-3 w-3" />
+                  <span>GEN {poweredGenCount}/2</span>
+                </div>
+              )}
               {hud.showFps && (
                 <div
                   data-testid="fps-counter"
-                  className="font-mono-tabular rounded-xl border border-amber-500/45 px-2 py-1 text-[10px] font-extrabold tracking-wider text-amber-300 uppercase sm:text-[11px]"
+                  className="font-mono-tabular rounded-xl border border-amber-500/45 px-2 py-0.5 text-[9px] font-extrabold tracking-wider text-amber-300 uppercase sm:py-1 sm:text-[11px]"
                   style={{ backgroundColor: 'rgba(10, 15, 24, 0.86)' }}
                 >
                   {hud.fps} FPS
@@ -364,19 +432,19 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
               {hud.autoFire && (
                 <div
                   data-testid="autofire-badge"
-                  className="font-mono-tabular rounded-xl border border-cyan-400/50 px-2 py-1 text-[10px] font-extrabold tracking-wider text-cyan-300 uppercase sm:text-[11px]"
+                  className="font-mono-tabular rounded-xl border border-cyan-400/50 px-2 py-0.5 text-[9px] font-extrabold tracking-wider text-cyan-300 uppercase sm:py-1 sm:text-[11px]"
                   style={{ backgroundColor: 'rgba(10, 15, 24, 0.86)' }}
                 >
-                  Auto-Fire
+                  Auto
                 </div>
               )}
               <div
                 data-testid="weather-badge"
-                aria-label={`Weather: ${weatherLabel}`}
-                className="flex items-center gap-1.5 rounded-xl border border-slate-700/70 px-2.5 py-1 text-[10px] font-bold tracking-wider text-sky-200 uppercase sm:text-[11px]"
+                aria-label={`Weather: ${weatherLabel}, Arena: ${arenaSpec.name}`}
+                className="flex items-center gap-1 rounded-xl border border-slate-700/70 px-2 py-0.5 text-[9px] font-bold tracking-wider text-sky-200 uppercase sm:px-2.5 sm:py-1 sm:text-[11px]"
                 style={{ backgroundColor: 'rgba(10, 15, 24, 0.84)' }}
               >
-                <WeatherIcon className="h-3.5 w-3.5 text-sky-300" />
+                <WeatherIcon className="h-3 w-3 text-sky-300 sm:h-3.5 sm:w-3.5" />
                 <span>{weatherLabel}</span>
               </div>
             </div>
@@ -414,13 +482,17 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
         </div>
       </div>
 
-      {/* Boss Health Bar & Transient Wave Banner (Stacked cleanly below Top HUD Row, zero overlap) */}
+      {/* Boss Health Bar, Generator Ring Capture & Transient Banners */}
       <div className="pointer-events-none relative z-20 mt-2 mb-auto flex w-[min(360px,92vw)] flex-col items-center gap-1.5 self-center">
         {hud.activeBoss && !upgradesOpen && (
           <div
             data-testid="boss-health-bar"
-            className="w-full rounded-xl border border-rose-500/60 px-3 py-1.5"
-            style={{ backgroundColor: 'rgba(16, 10, 18, 0.88)' }}
+            className={`w-full rounded-xl border px-3 py-1.5 ${
+              hud.activeBoss.phase2
+                ? 'border-amber-400/80 shadow-[0_0_24px_rgba(244,63,94,0.3)]'
+                : 'border-rose-500/60'
+            }`}
+            style={{ backgroundColor: 'rgba(16, 10, 18, 0.9)' }}
           >
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-1.5">
@@ -435,17 +507,48 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
             </div>
             <div className="mt-1 h-2 w-full overflow-hidden rounded-sm bg-slate-950">
               <div
-                className="h-full bg-rose-500 transition-[width] duration-100"
+                className={`h-full transition-[width] duration-100 ${
+                  hud.activeBoss.phase2 ? 'bg-amber-500' : 'bg-rose-500'
+                }`}
                 style={{ width: `${bossPct}%` }}
               />
             </div>
           </div>
         )}
 
+        {capturingGenerator && !upgradesOpen && (
+          <div
+            data-testid="generator-capture-bar"
+            className="w-64 rounded-xl border border-cyan-400/70 px-3 py-1.5"
+            style={{ backgroundColor: 'rgba(9, 16, 28, 0.9)' }}
+          >
+            <div className="font-mono-tabular flex items-center justify-between text-[10px] font-extrabold text-cyan-200 uppercase">
+              <span>Powering Floodlight...</span>
+              <span>{Math.round(capturingGenerator.progress * 100)}%</span>
+            </div>
+            <div className="mt-1 h-1.5 w-full overflow-hidden rounded-sm bg-slate-900">
+              <div
+                className="h-full bg-cyan-400 transition-[width] duration-100"
+                style={{ width: `${Math.round(capturingGenerator.progress * 100)}%` }}
+              />
+            </div>
+          </div>
+        )}
+
+        {hud.evolutionBanner && !upgradesOpen && (
+          <div
+            data-testid="evolution-banner"
+            className="font-display hud-text-shadow rounded-xl border border-amber-400 px-4 py-1.5 text-center text-xs font-extrabold tracking-wider text-amber-300 uppercase shadow-[0_0_30px_rgba(245,158,11,0.45)] sm:text-base"
+            style={{ backgroundColor: 'rgba(18, 12, 8, 0.95)' }}
+          >
+            {hud.evolutionBanner}
+          </div>
+        )}
+
         {hud.waveBanner && !upgradesOpen && (
           <div
             className="font-display hud-text-shadow rounded-lg border border-amber-500/40 px-3.5 py-1 text-center text-sm font-extrabold tracking-wider text-amber-300 uppercase sm:px-4 sm:py-1.5 sm:text-xl"
-            style={{ backgroundColor: 'rgba(10, 15, 24, 0.82)' }}
+            style={{ backgroundColor: 'rgba(10, 15, 24, 0.84)' }}
           >
             {hud.waveBanner}
           </div>
@@ -476,7 +579,7 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
           onChange={(x, y) => onMoveStick(x, y)}
         />
 
-        <Minimap minimap={hud.minimap} />
+        <Minimap minimap={hud.minimap} arena={hud.arena} />
 
         <div className="flex flex-col items-end gap-3">
           <ActionControls
@@ -487,12 +590,16 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
             equippedGear={hud.equippedGear}
             gearCooldownProgress={hud.gearCooldownProgress}
             gearCooldownRemaining={hud.gearCooldownRemaining}
+            equippedGadget={hud.equippedGadget}
+            gadgetCooldownProgress={hud.gadgetCooldownProgress}
+            gadgetCooldownRemaining={hud.gadgetCooldownRemaining}
             isReloading={hud.isReloading}
             reloadProgress={hud.reloadProgress}
             onDash={onDash}
             onReload={onReload}
             onSwitchWeapon={onSwitchWeapon}
             onTriggerGear={onTriggerGear}
+            onTriggerGadget={onTriggerGadget}
           />
           <VirtualThumbstick
             side="right"

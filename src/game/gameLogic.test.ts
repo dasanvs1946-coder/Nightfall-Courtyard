@@ -88,6 +88,7 @@ import {
   shouldEnableShadows,
 } from './settings';
 import {
+  BESTIARY_ENTRIES,
   CLASS_ORDER,
   computeRunScrapReward,
   createDefaultCareerStats,
@@ -105,6 +106,25 @@ import {
   saveCareerStats,
   SKIN_ORDER,
 } from './career';
+import {
+  evaluateWeaponEvolutions,
+  PERK_ORDER,
+  rollPerkDraftChoices,
+} from './perks';
+import { GADGET_ORDER, GADGET_SPECS, getNextGadget } from './gadgets';
+import { ARENA_ORDER, ARENA_SPECS, GAME_MODE_ORDER, GAME_MODE_SPECS } from './arenas';
+import { createSeededRng, getDailyChallengeConfig } from './dailyChallenge';
+import {
+  isValidCallsign,
+  sanitizeCallsign,
+} from './storage';
+import {
+  createInitialWeaponMastery,
+  getWeaponMasteryCost,
+  getWeaponMasteryDamageMult,
+  MAX_WEAPON_MASTERY_LEVEL,
+  purchaseWeaponMastery,
+} from './upgrades';
 
 test('weapon progression has 12 distinct weapons unlocking across waves 1 to 20 with next/prev cycling', () => {
   assert.equal(WEAPON_ORDER.length, 12);
@@ -450,8 +470,8 @@ test('tactical gear specs and cycling cover mine, turret, and flashbang with lon
   assert.equal(getNextTacticalGear('flashbang'), 'mine');
 });
 
-test('app version matches v1.2.0 release', () => {
-  assert.equal(APP_VERSION, 'v1.2.0');
+test('app version matches 2.0.0 release', () => {
+  assert.equal(APP_VERSION, '2.0.0');
 });
 
 test('dynamic weather cycles across states, escalates to storm on boss waves, and parses query overrides', () => {
@@ -609,5 +629,135 @@ test('career stats, 6 skin thresholds, 4 classes, permanent scrap upgrades, and 
   assert.ok(Math.abs(getBestiaryMasteryMultiplier('walker', reloaded.killsByEnemyType) - 1.1) < 1e-9);
   assert.equal(getBestiaryMasteryMultiplier('runner', reloaded.killsByEnemyType), 1);
 });
+
+test('perks, weapon mastery, and weapon evolutions unlock deterministically without duplicates', () => {
+  assert.equal(PERK_ORDER.length, 11);
+  const owned = ['cryo_rounds', 'vampiric_rounds'] as const;
+  const draft = rollPerkDraftChoices([...owned], createSeededRng('perk-seed-1'));
+  assert.equal(draft.length, 3);
+  assert.equal(new Set(draft).size, 3);
+  assert.equal(draft.includes('cryo_rounds'), false);
+
+  const mastery = createInitialWeaponMastery();
+  assert.equal(MAX_WEAPON_MASTERY_LEVEL, 5);
+  assert.equal(getWeaponMasteryCost(0), 1);
+  assert.equal(getWeaponMasteryCost(2), 2);
+  assert.equal(getWeaponMasteryCost(4), 3);
+
+  let up = 20;
+  for (let i = 0; i < 5; i++) {
+    const res = purchaseWeaponMastery(mastery, up, 'shotgun');
+    assert.equal(res.purchased, true);
+    up = res.nextPoints;
+  }
+  assert.equal(mastery.shotgun, 5);
+  assert.equal(purchaseWeaponMastery(mastery, up, 'shotgun').purchased, false);
+  assert.ok(Math.abs(getWeaponMasteryDamageMult(5) - 1.5) < 1e-9);
+
+  mastery.smg = 5;
+  const upgrades = createInitialUpgradeLevels();
+  upgrades.handling = 5;
+
+  const unlocked = evaluateWeaponEvolutions(
+    mastery,
+    upgrades,
+    ['incendiary', 'piercing_core', 'shockwave_coil'],
+    [],
+  );
+  assert.deepEqual(unlocked, ['dragons_breath', 'rail_smg', 'tesla_coil']);
+
+  // Already evolved entries are not returned twice
+  const repeat = evaluateWeaponEvolutions(
+    mastery,
+    upgrades,
+    ['incendiary', 'piercing_core', 'shockwave_coil'],
+    unlocked,
+  );
+  assert.deepEqual(repeat, []);
+});
+
+test('dedicated tactical gadgets, 3 arenas, 5 modes, 9-enemy bestiary, daily seed, and callsign validation work cleanly', () => {
+  assert.deepEqual(GADGET_ORDER, ['tripmine', 'decoy', 'wire', 'mortar']);
+  assert.equal(getNextGadget('tripmine'), 'decoy');
+  assert.equal(getNextGadget('mortar'), 'tripmine');
+  assert.ok(GADGET_SPECS.mortar.damage > 400);
+
+  assert.deepEqual(ARENA_ORDER, ['courtyard', 'parking_deck', 'helipad']);
+  for (const arenaId of ARENA_ORDER) {
+    const spec = ARENA_SPECS[arenaId];
+    assert.ok(spec.barrelCoords.length >= 4);
+    assert.equal(spec.generatorCoords.length, 2);
+    assert.equal(spec.supplyDropCoords.length, 4);
+    const minimapObs = getMinimapObstacles(100, spec.obstacles, spec.halfSize);
+    assert.equal(minimapObs.length, spec.obstacles.length);
+  }
+  assert.ok(ARENA_SPECS.helipad.spawnIntervalMultiplier < 1.0);
+
+  assert.deepEqual(GAME_MODE_ORDER, [
+    'normal',
+    'storm',
+    'blackout',
+    'boss_rush',
+    'daily',
+  ]);
+  assert.equal(GAME_MODE_SPECS.blackout.rewardMultiplier, 2);
+  assert.equal(isBossWaveNumber(1, 'boss_rush'), true);
+  assert.equal(isBossWaveNumber(1, 'normal'), false);
+
+  const w3 = buildWavePlan(3, () => 0.5);
+  const w6 = buildWavePlan(6, () => 0.5);
+  assert.equal(w3.queue.includes('bomber'), true);
+  assert.equal(w6.queue.includes('howler'), true);
+  assert.equal(BESTIARY_ENTRIES.length, 9);
+
+  // Daily challenge deterministic for same UTC key
+  const d1 = getDailyChallengeConfig('2026-11-22');
+  const d2 = getDailyChallengeConfig('2026-11-22');
+  assert.deepEqual(d1, d2);
+
+  // Callsign sanitization & validation
+  assert.equal(sanitizeCallsign('ghost_99!@#'), 'ghost_99');
+  assert.equal(isValidCallsign('GHOST_99'), true);
+  assert.equal(isValidCallsign('AB'), false);
+
+  // v2.0.0 run snapshot persistence
+  const map = new Map<string, string>();
+  const mockStorage: StorageLike = {
+    getItem: (k) => map.get(k) ?? null,
+    setItem: (k, v) => {
+      map.set(k, v);
+    },
+    removeItem: (k) => {
+      map.delete(k);
+    },
+  };
+  saveRunProgress(
+    {
+      lastWave: 6,
+      score: 4200,
+      kills: 88,
+      upgradePoints: 4,
+      upgradeLevels: createInitialUpgradeLevels(),
+      weaponMastery: { ...createInitialWeaponMastery(), shotgun: 5 },
+      activeWeapon: 'shotgun',
+      equippedGear: 'turret',
+      equippedGadget: 'mortar',
+      arena: 'parking_deck',
+      mode: 'blackout',
+      ownedPerks: ['incendiary', 'uv_overdrive'],
+      evolvedWeapons: ['dragons_breath'],
+      activeInterrupted: true,
+    },
+    mockStorage,
+  );
+  const restored = loadRunProgress(mockStorage)!;
+  assert.equal(restored.arena, 'parking_deck');
+  assert.equal(restored.mode, 'blackout');
+  assert.equal(restored.equippedGadget, 'mortar');
+  assert.equal(restored.weaponMastery?.shotgun, 5);
+  assert.deepEqual(restored.ownedPerks, ['incendiary', 'uv_overdrive']);
+  assert.deepEqual(restored.evolvedWeapons, ['dragons_breath']);
+});
+
 
 

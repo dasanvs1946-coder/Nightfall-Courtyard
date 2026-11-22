@@ -1,11 +1,17 @@
-import { UpgradeId, UpgradeLevels, WeaponId } from './types';
-import { WEAPON_SPECS } from './weapons';
+import {
+  UpgradeId,
+  UpgradeLevels,
+  WeaponId,
+  WeaponMasteryLevels,
+} from './types';
+import { WEAPON_ORDER, WEAPON_SPECS } from './weapons';
 
 export const KILLS_PER_UPGRADE_POINT = 8; // Reduced ~40% UP gain rate per kill vs 5 kills
 export const WAVE_CLEAR_UP_REGULAR = 1; // Tighter wave completion UP (-40%+ economy)
 export const WAVE_CLEAR_UP_BOSS = 2;
 export const BOSS_KILL_UP_BONUS = 2;
 export const MAX_UPGRADE_LEVEL = 50;
+export const MAX_WEAPON_MASTERY_LEVEL = 5;
 
 export interface UpgradeSpec {
   id: UpgradeId;
@@ -69,6 +75,56 @@ export function createInitialUpgradeLevels(): UpgradeLevels {
     mobility: 0,
     capacity: 0,
   };
+}
+
+export function createInitialWeaponMastery(): WeaponMasteryLevels {
+  const mastery = {} as WeaponMasteryLevels;
+  for (const id of WEAPON_ORDER) {
+    mastery[id] = 0;
+  }
+  return mastery;
+}
+
+export function getWeaponMasteryCost(currentLevel: number): number {
+  const lv = Math.max(0, Math.floor(currentLevel));
+  if (lv <= 1) return 1;
+  if (lv <= 3) return 2;
+  return 3;
+}
+
+export function canPurchaseWeaponMastery(
+  mastery: WeaponMasteryLevels,
+  points: number,
+  weaponId: WeaponId,
+): boolean {
+  const level = mastery[weaponId] ?? 0;
+  if (level >= MAX_WEAPON_MASTERY_LEVEL) return false;
+  return points >= getWeaponMasteryCost(level);
+}
+
+export function purchaseWeaponMastery(
+  mastery: WeaponMasteryLevels,
+  points: number,
+  weaponId: WeaponId,
+): { purchased: boolean; nextPoints: number; newLevel: number } {
+  if (!canPurchaseWeaponMastery(mastery, points, weaponId)) {
+    return {
+      purchased: false,
+      nextPoints: points,
+      newLevel: mastery[weaponId] ?? 0,
+    };
+  }
+  const cost = getWeaponMasteryCost(mastery[weaponId] ?? 0);
+  mastery[weaponId] = (mastery[weaponId] ?? 0) + 1;
+  return {
+    purchased: true,
+    nextPoints: points - cost,
+    newLevel: mastery[weaponId],
+  };
+}
+
+export function getWeaponMasteryDamageMult(level: number): number {
+  return 1 + Math.max(0, Math.min(MAX_WEAPON_MASTERY_LEVEL, level)) * 0.1;
 }
 
 export function getUpgradeCost(currentLevel: number): number {

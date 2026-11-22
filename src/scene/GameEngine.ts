@@ -10,8 +10,10 @@ import {
 } from '../game/collision';
 import {
   clearRunProgress,
+  loadCallsign,
   loadHighScore,
   loadRunProgress,
+  saveCallsign,
   saveHighScore,
   saveRunProgress,
 } from '../game/storage';
@@ -24,13 +26,21 @@ import {
   shouldFlashInvulnMesh,
 } from '../game/revive';
 import {
+  ArenaId,
   CareerStats,
   CrateKind,
+  DailyMutatorId,
+  EvolutionId,
   FloatingDamage,
+  GadgetId,
+  GameModeId,
   GamePhase,
   GameSettings,
+  GeneratorHudStatus,
   HudSnapshot,
   MinimapHazard,
+  MinimapPickup,
+  PerkId,
   PermanentUpgradeId,
   SavedRunProgress,
   SkinId,
@@ -39,10 +49,24 @@ import {
   UpgradeId,
   UpgradeLevels,
   WeaponId,
+  WeaponMasteryLevels,
   WeaponRuntimeState,
   WeatherKind,
   ZombieKind,
 } from '../game/types';
+import { ARENA_SPECS, GAME_MODE_SPECS } from '../game/arenas';
+import {
+  createSeededRng,
+  DAILY_MUTATOR_SPECS,
+  getDailyChallengeConfig,
+} from '../game/dailyChallenge';
+import { GADGET_SPECS, getNextGadget } from '../game/gadgets';
+import {
+  evaluateWeaponEvolutions,
+  EVOLUTION_SPECS,
+  PERK_SPECS,
+  rollPerkDraftChoices,
+} from '../game/perks';
 import {
   TACTICAL_GEAR_SPECS,
   getNextTacticalGear,
@@ -50,6 +74,7 @@ import {
 import {
   BOSS_KILL_UP_BONUS,
   createInitialUpgradeLevels,
+  createInitialWeaponMastery,
   getDamageMultiplier,
   getDamageTakenMultiplier,
   getDashCooldownMultiplier,
@@ -58,8 +83,10 @@ import {
   getMaxHpForLevel,
   getMoveSpeedMultiplier,
   getReloadDurationMultiplier,
+  getWeaponMasteryDamageMult,
   KILLS_PER_UPGRADE_POINT,
   purchaseUpgrade,
+  purchaseWeaponMastery,
   UPGRADE_SPECS,
   WAVE_CLEAR_UP_BOSS,
   WAVE_CLEAR_UP_REGULAR,
@@ -91,24 +118,35 @@ import {
   WEAPON_SPECS,
 } from '../game/weapons';
 import {
+  applyBossPhase2Glow,
+  applyPlayerSkin,
+  buildBarbedWireMesh,
   buildCarMesh,
+  buildConcretePillar,
   buildCornerBrazier,
   buildCrateCluster,
+  buildDecoyFlare,
   buildDeployableTurretRig,
   buildDumpster,
+  buildExplosiveBarrel,
+  buildFloodlightGenerator,
   buildJerseyBarrier,
+  buildLaserTripmine,
+  buildMortarTargetRing,
   buildPickupCrate,
   buildPlayerRig,
   buildProximityMineMesh,
+  buildRiskSupplyCrate,
   buildStreetLamp,
   buildZombieRig,
-  applyPlayerSkin,
-  updateDiegeticFootArcs,
   DeployableTurretRig,
   disposeSharedModelGeometries,
+  ExplosiveBarrelRig,
+  FloodlightGeneratorRig,
   PlayerRig,
   ProximityMineRig,
   StreetLampRig,
+  updateDiegeticFootArcs,
   ZombieRig,
 } from './models';
 import {
@@ -202,6 +240,77 @@ interface ActiveZombie {
   deathTimer: number;
   walkPhase: number;
   lastStepIndex: number;
+  howlerBuffTimer: number;
+  howlerCooldown: number;
+  cryoTimer: number;
+  burnTimer: number;
+  burnDps: number;
+  phase2Triggered: boolean;
+  bossSlamCooldown: number;
+}
+
+interface ActiveBarrel {
+  id: string;
+  rig: ExplosiveBarrelRig;
+  x: number;
+  z: number;
+  active: boolean;
+  respawnTimer: number;
+}
+
+interface ActiveGenerator {
+  id: string;
+  rig: FloodlightGeneratorRig;
+  x: number;
+  z: number;
+  powered: boolean;
+  hp: number;
+  maxHp: number;
+  chargeProgress: number;
+  activeRemaining: number;
+  playerInside: boolean;
+}
+
+interface ActiveSupplyCrate {
+  id: number;
+  mesh: THREE.Group;
+  x: number;
+  z: number;
+  age: number;
+  life: number;
+}
+
+interface ActiveTripmine {
+  root: THREE.Group;
+  x: number;
+  z: number;
+  armTimer: number;
+  life: number;
+}
+
+interface ActiveDecoy {
+  root: THREE.Group;
+  x: number;
+  z: number;
+  life: number;
+  maxLife: number;
+}
+
+interface ActiveWire {
+  root: THREE.Group;
+  x: number;
+  z: number;
+  life: number;
+  tickTimer: number;
+}
+
+interface ActiveMortar {
+  group: THREE.Group;
+  fillMat: THREE.MeshBasicMaterial;
+  x: number;
+  z: number;
+  age: number;
+  duration: number;
 }
 
 interface BossProjectile {
@@ -506,15 +615,57 @@ export class GameEngine {
   private dashDirZ = -1;
   private invulnTimer = 0;
   private hasUsedRevive = false;
-  private readonly runMode: 'survival' = 'survival';
+  private arenaGroup = new THREE.Group();
+  private arena: ArenaId = loadRunProgress()?.arena ?? 'courtyard';
+  private mode: GameModeId = (() => {
+    const savedMode = loadRunProgress()?.mode;
+    return savedMode && savedMode !== 'survival' ? savedMode : 'normal';
+  })();
+  private dailyDateKey: string | null = null;
+  private dailyMutator: DailyMutatorId | undefined = undefined;
+  private dailyMutatorLabel: string | null = null;
+  private seededRng: (() => number) | null = null;
+  private perkDraftSeedCursor = 0;
+  private callsign = loadCallsign();
 
-  // Tactical Gear State
+  private arenaResources!: {
+    sidewalkTex: THREE.CanvasTexture;
+    crateTex: { map: THREE.CanvasTexture; bumpMap: THREE.CanvasTexture };
+    brickTex: { map: THREE.CanvasTexture; bumpMap: THREE.CanvasTexture };
+    lightPoolTex: THREE.CanvasTexture;
+    plazaEmblemTex: THREE.CanvasTexture;
+    hazardTex: THREE.CanvasTexture;
+  };
+
+  // Tactical Gear & Dedicated Gadget State
   private equippedGear: TacticalGearId = loadRunProgress()?.equippedGear ?? 'mine';
   private gearCooldownTimer = 0;
   private activeMines: ActiveMine[] = [];
   private activeTurrets: ActiveTurret[] = [];
+  private equippedGadget: GadgetId = loadRunProgress()?.equippedGadget ?? 'tripmine';
+  private gadgetCooldownTimer = 0;
+  private activeTripmines: ActiveTripmine[] = [];
+  private activeDecoys: ActiveDecoy[] = [];
+  private activeWires: ActiveWire[] = [];
+  private activeMortars: ActiveMortar[] = [];
   private flashRings: FlashRing[] = [];
   private flashRingGeo = new THREE.RingGeometry(0.82, 1.0, 32);
+
+  // Interactive Arena Mechanics
+  private barrels: ActiveBarrel[] = [];
+  private generators: ActiveGenerator[] = [];
+  private supplyCrate: ActiveSupplyCrate | null = null;
+  private supplyDropTimer = 18;
+  private minigunRemaining = 0;
+
+  // Perks, Evolutions & Weapon Mastery
+  private weaponMastery: WeaponMasteryLevels = createInitialWeaponMastery();
+  private ownedPerks: PerkId[] = [];
+  private perkDraftChoices: PerkId[] | null = null;
+  private evolvedWeapons: EvolutionId[] = [];
+  private evolutionBanner: string | null = null;
+  private evolutionBannerTimer = 0;
+  private vampiricKillCounter = 0;
 
   // Wave & Entities
   private wave = 1;
@@ -679,22 +830,32 @@ export class GameEngine {
     const lightPoolTex = createLightPoolTexture();
     const plazaEmblemTex = createPlazaEmblemTexture(maxAniso);
     const hazardTex = createHazardChevronTexture(maxAniso);
-    this.disposables.push(
-      asphalt.map,
-      asphalt.bumpMap,
+    this.arenaResources = {
       sidewalkTex,
-      crateTex.map,
-      crateTex.bumpMap,
-      brickTex.map,
-      brickTex.bumpMap,
-      this.shadowTex,
-      this.bloodSplatTex,
-      this.bloodStreakTex,
+      crateTex,
+      brickTex,
       lightPoolTex,
       plazaEmblemTex,
       hazardTex,
+    };
+    this.disposables.push(
+      ...[
+        asphalt.map,
+        asphalt.roughnessMap,
+        asphalt.bumpMap,
+        sidewalkTex,
+        crateTex.map,
+        crateTex.bumpMap,
+        brickTex.map,
+        brickTex.bumpMap,
+        this.shadowTex,
+        this.bloodSplatTex,
+        this.bloodStreakTex,
+        lightPoolTex,
+        plazaEmblemTex,
+        hazardTex,
+      ].filter((item): item is NonNullable<typeof item> => Boolean(item)),
     );
-    if (asphalt.roughnessMap) this.disposables.push(asphalt.roughnessMap);
 
     // 1. Lighting Rig: Cool moonlight key + silhouette rim light + Hemisphere fill
     this.hemiLight = new THREE.HemisphereLight(0x5275b5, 0x181310, 1.02);
@@ -735,331 +896,8 @@ export class GameEngine {
     ground.receiveShadow = true;
     this.scene.add(ground);
 
-    // Concrete Perimeter Sidewalk & Curb Walkways (offset +0.025 Y)
-    const sidewalkMat = new THREE.MeshStandardMaterial({
-      map: sidewalkTex,
-      color: 0xffffff,
-      roughness: 0.88,
-      metalness: 0.04,
-      polygonOffset: true,
-      polygonOffsetFactor: -1,
-      polygonOffsetUnits: -1,
-    });
-    const swWidth = 2.4;
-    const swSpan = ARENA_HALF_SIZE * 2;
-    const swOffset = ARENA_HALF_SIZE - swWidth / 2;
-    const swSegments: [number, number, number, number][] = [
-      [0, -swOffset, swSpan, swWidth],
-      [0, swOffset, swSpan, swWidth],
-      [-swOffset, 0, swWidth, swSpan - swWidth * 2],
-      [swOffset, 0, swWidth, swSpan - swWidth * 2],
-    ];
-    for (const [sx, sz, sw, sd] of swSegments) {
-      const walk = new THREE.Mesh(new THREE.BoxGeometry(sw, 0.08, sd), sidewalkMat);
-      walk.position.set(sx, 0.04, sz);
-      walk.receiveShadow = true;
-      this.scene.add(walk);
-    }
-
-    const plazaEmblem = new THREE.Mesh(
-      new THREE.PlaneGeometry(9.6, 9.6),
-      new THREE.MeshBasicMaterial({
-        map: plazaEmblemTex,
-        transparent: true,
-        opacity: 0.72,
-        depthWrite: false,
-        polygonOffset: true,
-        polygonOffsetFactor: -1,
-        polygonOffsetUnits: -1,
-      }),
-    );
-    plazaEmblem.rotation.x = -Math.PI / 2;
-    plazaEmblem.position.y = 0.024;
-    this.scene.add(plazaEmblem);
-
-    const stripeMat = new THREE.MeshBasicMaterial({
-      color: 0xf59e0b,
-      transparent: true,
-      opacity: 0.24,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-      polygonOffset: true,
-      polygonOffsetFactor: -1,
-      polygonOffsetUnits: -1,
-    });
-
-    // Dashed lane stripes leading toward the 4 courtyard gates
-    const dashGeo = new THREE.PlaneGeometry(0.28, 1.4);
-    for (const d of [-14, -10.5, -7, 7, 10.5, 14]) {
-      const dashNS = new THREE.Mesh(dashGeo, stripeMat);
-      dashNS.rotation.x = -Math.PI / 2;
-      dashNS.position.set(0, 0.022, d);
-      this.scene.add(dashNS);
-
-      const dashEW = new THREE.Mesh(dashGeo, stripeMat);
-      dashEW.rotation.x = -Math.PI / 2;
-      dashEW.rotation.z = Math.PI / 2;
-      dashEW.position.set(d, 0.022, 0);
-      this.scene.add(dashEW);
-    }
-
-    // Cast-iron manhole covers for street micro-detail
-    const ironGrateMat = new THREE.MeshStandardMaterial({
-      color: 0x334155,
-      roughness: 0.48,
-      metalness: 0.72,
-    });
-    for (const [mx, mz] of [
-      [-3.8, -4.6],
-      [4.2, 5.1],
-      [-11.5, 2.5],
-      [11.2, -3.5],
-    ]) {
-      const manhole = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.52, 0.55, 0.04, 16),
-        ironGrateMat,
-      );
-      manhole.position.set(mx, 0.02, mz);
-      manhole.receiveShadow = true;
-      this.scene.add(manhole);
-    }
-
-    // 3. Perimeter Brick Walls, Pilasters, Wrought-Iron Fence & Open Courtyard Gates
-    const wallMat = new THREE.MeshStandardMaterial({
-      map: brickTex.map,
-      bumpMap: brickTex.bumpMap,
-      bumpScale: 0.04,
-      color: 0xffffff,
-      roughness: 0.88,
-      metalness: 0.05,
-    });
-    const wallCapMat = new THREE.MeshStandardMaterial({
-      color: 0x334155,
-      roughness: 0.52,
-      metalness: 0.35,
-    });
-    const ironFenceMat = new THREE.MeshStandardMaterial({
-      color: 0x111827,
-      roughness: 0.4,
-      metalness: 0.82,
-    });
-
-    const span = ARENA_HALF_SIZE * 2 + 1.2;
-    const wallThickness = 1.1;
-    const wallHeight = 2.4;
-    const wallOffset = ARENA_HALF_SIZE + wallThickness * 0.5;
-
-    const wallSpecs: [number, number, number, number][] = [
-      [0, -wallOffset, span, wallThickness],
-      [0, wallOffset, span, wallThickness],
-      [-wallOffset, 0, wallThickness, span],
-      [wallOffset, 0, wallThickness, span],
-    ];
-    for (const [wx, wz, ww, wd] of wallSpecs) {
-      const wall = new THREE.Mesh(
-        new THREE.BoxGeometry(ww, wallHeight, wd),
-        wallMat,
-      );
-      wall.position.set(wx, wallHeight / 2, wz);
-      wall.receiveShadow = true;
-      wall.castShadow = true;
-      this.scene.add(wall);
-
-      const cap = new THREE.Mesh(
-        new THREE.BoxGeometry(ww + 0.16, 0.18, wd + 0.16),
-        wallCapMat,
-      );
-      cap.position.set(wx, wallHeight + 0.09, wz);
-      this.scene.add(cap);
-
-      // Top iron fence rail above brick parapet
-      const rail = new THREE.Mesh(
-        new THREE.BoxGeometry(
-          ww > wd ? ww : 0.1,
-          0.1,
-          wd > ww ? wd : 0.1,
-        ),
-        ironFenceMat,
-      );
-      rail.position.set(wx, wallHeight + 0.72, wz);
-      this.scene.add(rail);
-    }
-
-    // Brick pilasters & iron gate arches at center of each perimeter wall
-    const pilasterGeo = new THREE.BoxGeometry(1.45, 3.3, 1.45);
-    const gateArchGeo = new THREE.BoxGeometry(5.2, 0.32, 0.4);
-    for (let p = -ARENA_HALF_SIZE; p <= ARENA_HALF_SIZE; p += 10.75) {
-      for (const [px, pz] of [
-        [p, -wallOffset],
-        [p, wallOffset],
-        [-wallOffset, p],
-        [wallOffset, p],
-      ]) {
-        const pil = new THREE.Mesh(pilasterGeo, wallMat);
-        pil.position.set(px, 1.65, pz);
-        pil.castShadow = true;
-        this.scene.add(pil);
-      }
-    }
-    for (const [gx, gz, rot] of [
-      [0, -wallOffset, 0],
-      [0, wallOffset, 0],
-      [-wallOffset, 0, Math.PI / 2],
-      [wallOffset, 0, Math.PI / 2],
-    ]) {
-      const arch = new THREE.Mesh(gateArchGeo, ironFenceMat);
-      arch.position.set(gx, 3.25, gz);
-      arch.rotation.y = rot;
-      this.scene.add(arch);
-    }
-
-    // Perimeter Dumpsters, Corner Fire Braziers & Wall-Edge Jersey Barriers
-    for (const [dx, dz, rot] of [
-      [-16.8, -20.2, 0.05],
-      [16.8, 20.2, -3.09],
-    ]) {
-      const dumpster = buildDumpster(this.shadowTex);
-      dumpster.position.set(dx, 0, dz);
-      dumpster.rotation.y = rot;
-      this.scene.add(dumpster);
-    }
-
-    const brazierCoords: [number, number][] = [
-      [-20.3, -20.3],
-      [20.3, -20.3],
-      [-20.3, 20.3],
-      [20.3, 20.3],
-    ];
-    brazierCoords.forEach(([bx, bz], idx) => {
-      const brazier = buildCornerBrazier(this.shadowTex, !this.isSoftwareGl);
-      brazier.group.position.set(bx, 0, bz);
-      this.scene.add(brazier.group);
-      this.cornerEmbers.push({
-        mesh: brazier.emberMesh,
-        light: brazier.pointLight,
-        phase: idx * 1.65,
-      });
-    });
-
-    const barrierPlacements: [number, number, number][] = [
-      [-4.6, -21.05, 0],
-      [4.6, -21.05, 0],
-      [-4.6, 21.05, 0],
-      [4.6, 21.05, 0],
-      [-21.05, -4.6, Math.PI / 2],
-      [-21.05, 4.6, Math.PI / 2],
-      [21.05, -4.6, Math.PI / 2],
-      [21.05, 4.6, Math.PI / 2],
-    ];
-    for (const [jx, jz, rot] of barrierPlacements) {
-      const barrier = buildJerseyBarrier(hazardTex);
-      barrier.position.set(jx, 0, jz);
-      barrier.rotation.y = rot;
-      this.scene.add(barrier);
-    }
-
-    // Surrounding urban city block silhouettes + rooftop HVAC + glowing neon signs
-    const bldgMat = new THREE.MeshStandardMaterial({
-      color: 0x0f172a,
-      roughness: 0.85,
-      metalness: 0.15,
-    });
-    const winMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b });
-    const neonRedMat = new THREE.MeshBasicMaterial({ color: 0xef4444 });
-    const neonCyanMat = new THREE.MeshBasicMaterial({ color: 0x06b6d4 });
-    const outerCoords: [number, number, number, number, number][] = [
-      [-32, -30, 12, 16, 10],
-      [-14, -34, 16, 12, 11],
-      [14, -33, 14, 18, 10],
-      [33, -28, 12, 14, 12],
-      [-34, 0, 12, 20, 16],
-      [34, 2, 12, 15, 18],
-      [-32, 31, 13, 13, 12],
-      [0, 35, 22, 10, 10],
-      [32, 32, 14, 17, 12],
-    ];
-    outerCoords.forEach(([bx, bz, bw, bh, bd], idx) => {
-      const bldg = new THREE.Mesh(new THREE.BoxGeometry(bw, bh, bd), bldgMat);
-      bldg.position.set(bx, bh / 2, bz);
-      this.scene.add(bldg);
-
-      // Rooftop HVAC / penthouse unit
-      const hvac = new THREE.Mesh(
-        new THREE.BoxGeometry(bw * 0.35, 1.4, bd * 0.35),
-        wallCapMat,
-      );
-      hvac.position.set(bx + 1.2, bh + 0.7, bz);
-      this.scene.add(hvac);
-
-      // Sparse lit apartment windows
-      for (let w = 0; w < 3; w++) {
-        const win = new THREE.Mesh(new THREE.BoxGeometry(0.95, 1.3, 0.2), winMat);
-        win.position.set(
-          bx + (w - 1) * 3.1,
-          bh * (0.55 + (w % 2) * 0.16),
-          bz + (bz < 0 ? bd / 2 + 0.05 : -bd / 2 - 0.05),
-        );
-        this.scene.add(win);
-      }
-
-      // Neon alley sign on select perimeter facades
-      if (idx === 1 || idx === 2 || idx === 4) {
-        const sign = new THREE.Mesh(
-          new THREE.BoxGeometry(3.8, 0.65, 0.22),
-          idx === 1 ? neonRedMat : neonCyanMat,
-        );
-        sign.position.set(
-          bx,
-          5.2,
-          bz + (bz < 0 ? bd / 2 + 0.15 : -bd / 2 - 0.15),
-        );
-        if (idx === 4) {
-          sign.rotation.y = Math.PI / 2;
-          sign.position.set(bx + bw / 2 + 0.15, 5.4, bz);
-        }
-        this.scene.add(sign);
-      }
-    });
-
-    // 4. Courtyard Tactical Obstacles (Cars, Crates, Streetlamps)
-    let lampIdx = 0;
-    for (const obs of COURTYARD_OBSTACLES) {
-      let mesh: THREE.Group;
-      if (obs.kind === 'car') {
-        mesh = buildCarMesh(
-          obs.colorVariant ?? 0,
-          obs.halfW,
-          obs.halfD,
-          this.shadowTex,
-        );
-      } else if (obs.kind === 'crate') {
-        mesh = buildCrateCluster(
-          obs.halfW,
-          obs.halfD,
-          obs.height,
-          crateTex,
-          this.shadowTex,
-          hazardTex,
-        );
-      } else {
-        const lampRig = buildStreetLamp(lightPoolTex, true);
-        mesh = lampRig.group;
-        // Aim lamp arm inward toward center plaza
-        mesh.rotation.y = Math.atan2(-obs.x, -obs.z);
-        this.streetLamps.push({
-          rig: lampRig,
-          phase: lampIdx * 1.93,
-          glitchCooldown: 2.2 + lampIdx * 1.4,
-          glitchTimer: 0,
-        });
-        lampIdx += 1;
-      }
-      mesh.position.set(obs.x, 0, obs.z);
-      if (obs.kind !== 'lamp') {
-        mesh.rotation.y = obs.rotationY;
-      }
-      this.scene.add(mesh);
-    }
+    this.scene.add(this.arenaGroup);
+    this.rebuildArena();
 
     // 5. Player Rig + Red Laser Sight
     this.playerRig = buildPlayerRig(this.shadowTex, !this.isSoftwareGl);
@@ -1083,6 +921,485 @@ export class GameEngine {
       new THREE.MeshBasicMaterial({ color: 0xff4d4d }),
     );
     this.scene.add(this.laserDot);
+  }
+
+  private getObstacles() {
+    return ARENA_SPECS[this.arena].obstacles;
+  }
+
+  private getHalfSize(): number {
+    return ARENA_SPECS[this.arena].halfSize;
+  }
+
+  private rebuildArena(): void {
+    const {
+      sidewalkTex,
+      crateTex,
+      brickTex,
+      lightPoolTex,
+      plazaEmblemTex,
+      hazardTex,
+    } = this.arenaResources;
+
+    // Cleanly dispose previous arenaGroup geometry/materials
+    this.arenaGroup.traverse((obj) => {
+      if ((obj as THREE.Mesh).isMesh) {
+        const m = obj as THREE.Mesh;
+        if (m.geometry && !m.geometry.userData?.shared) {
+          m.geometry.dispose();
+        }
+        if (Array.isArray(m.material)) {
+          m.material.forEach((mat) => mat.dispose());
+        } else {
+          m.material?.dispose();
+        }
+      }
+    });
+    while (this.arenaGroup.children.length > 0) {
+      this.arenaGroup.remove(this.arenaGroup.children[0]);
+    }
+    this.streetLamps = [];
+    this.cornerEmbers = [];
+    this.barrels = [];
+    this.generators = [];
+
+    const arenaSpec = ARENA_SPECS[this.arena];
+    const halfSize = arenaSpec.halfSize;
+
+    // Concrete Perimeter Sidewalk & Curb Walkways
+    const sidewalkMat = new THREE.MeshStandardMaterial({
+      map: sidewalkTex,
+      color: this.arena === 'parking_deck' ? 0xcbd5e1 : 0xffffff,
+      roughness: 0.88,
+      metalness: 0.04,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    });
+    const swWidth = 2.4;
+    const swSpan = halfSize * 2;
+    const swOffset = halfSize - swWidth / 2;
+    const swSegments: [number, number, number, number][] = [
+      [0, -swOffset, swSpan, swWidth],
+      [0, swOffset, swSpan, swWidth],
+      [-swOffset, 0, swWidth, swSpan - swWidth * 2],
+      [swOffset, 0, swWidth, swSpan - swWidth * 2],
+    ];
+    for (const [sx, sz, sw, sd] of swSegments) {
+      const walk = new THREE.Mesh(new THREE.BoxGeometry(sw, 0.08, sd), sidewalkMat);
+      walk.position.set(sx, 0.04, sz);
+      walk.receiveShadow = true;
+      this.arenaGroup.add(walk);
+    }
+
+    // Arena-specific floor markings
+    if (this.arena === 'courtyard') {
+      const plazaEmblem = new THREE.Mesh(
+        new THREE.PlaneGeometry(9.6, 9.6),
+        new THREE.MeshBasicMaterial({
+          map: plazaEmblemTex,
+          transparent: true,
+          opacity: 0.72,
+          depthWrite: false,
+          polygonOffset: true,
+          polygonOffsetFactor: -1,
+          polygonOffsetUnits: -1,
+        }),
+      );
+      plazaEmblem.rotation.x = -Math.PI / 2;
+      plazaEmblem.position.y = 0.024;
+      this.arenaGroup.add(plazaEmblem);
+
+      const stripeMat = new THREE.MeshBasicMaterial({
+        color: 0xf59e0b,
+        transparent: true,
+        opacity: 0.24,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -1,
+      });
+      const dashGeo = new THREE.PlaneGeometry(0.28, 1.4);
+      for (const d of [-14, -10.5, -7, 7, 10.5, 14]) {
+        const dashNS = new THREE.Mesh(dashGeo, stripeMat);
+        dashNS.rotation.x = -Math.PI / 2;
+        dashNS.position.set(0, 0.022, d);
+        this.arenaGroup.add(dashNS);
+
+        const dashEW = new THREE.Mesh(dashGeo, stripeMat);
+        dashEW.rotation.x = -Math.PI / 2;
+        dashEW.rotation.z = Math.PI / 2;
+        dashEW.position.set(d, 0.022, 0);
+        this.arenaGroup.add(dashEW);
+      }
+    } else if (this.arena === 'parking_deck') {
+      const bayMat = new THREE.MeshBasicMaterial({
+        color: 0x38bdf8,
+        transparent: true,
+        opacity: 0.24,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -1,
+      });
+      const bayLineGeo = new THREE.PlaneGeometry(0.18, 4.4);
+      for (let x = -14; x <= 14; x += 3.5) {
+        if (Math.abs(x) < 1.5) continue;
+        for (const zSign of [-1, 1]) {
+          const line = new THREE.Mesh(bayLineGeo, bayMat);
+          line.rotation.x = -Math.PI / 2;
+          line.position.set(x, 0.023, zSign * 14.5);
+          this.arenaGroup.add(line);
+        }
+      }
+      const laneArrowMat = new THREE.MeshBasicMaterial({
+        color: 0xfbbf24,
+        transparent: true,
+        opacity: 0.28,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      const centerLine = new THREE.Mesh(new THREE.PlaneGeometry(26, 0.22), laneArrowMat);
+      centerLine.rotation.x = -Math.PI / 2;
+      centerLine.position.y = 0.022;
+      this.arenaGroup.add(centerLine);
+    } else {
+      // Abandoned Helipad: giant ringed landing pad & 'H' markings
+      const padRing = new THREE.Mesh(
+        new THREE.RingGeometry(6.8, 7.35, 48),
+        new THREE.MeshBasicMaterial({
+          color: 0xf59e0b,
+          transparent: true,
+          opacity: 0.55,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        }),
+      );
+      padRing.rotation.x = -Math.PI / 2;
+      padRing.position.y = 0.025;
+      this.arenaGroup.add(padRing);
+
+      const hMat = new THREE.MeshBasicMaterial({
+        color: 0xf8fafc,
+        transparent: true,
+        opacity: 0.42,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      const barGeo = new THREE.PlaneGeometry(0.85, 5.6);
+      const hLeft = new THREE.Mesh(barGeo, hMat);
+      hLeft.rotation.x = -Math.PI / 2;
+      hLeft.position.set(-1.9, 0.026, 0);
+      const hRight = new THREE.Mesh(barGeo, hMat);
+      hRight.rotation.x = -Math.PI / 2;
+      hRight.position.set(1.9, 0.026, 0);
+      const hCross = new THREE.Mesh(new THREE.PlaneGeometry(3.8, 0.85), hMat);
+      hCross.rotation.x = -Math.PI / 2;
+      hCross.position.set(0, 0.026, 0);
+      this.arenaGroup.add(hLeft, hRight, hCross);
+    }
+
+    // Cast-iron manhole covers for street micro-detail
+    const ironGrateMat = new THREE.MeshStandardMaterial({
+      color: 0x334155,
+      roughness: 0.48,
+      metalness: 0.72,
+    });
+    for (const [mx, mz] of [
+      [-3.8, -4.6],
+      [4.2, 5.1],
+      [-11.5, 2.5],
+      [11.2, -3.5],
+    ]) {
+      const manhole = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.52, 0.55, 0.04, 16),
+        ironGrateMat,
+      );
+      manhole.position.set(mx, 0.02, mz);
+      manhole.receiveShadow = true;
+      this.arenaGroup.add(manhole);
+    }
+
+    // Perimeter Walls, Pilasters, Wrought-Iron Fence & Open Gates
+    const wallMat = new THREE.MeshStandardMaterial({
+      ...(this.arena === 'courtyard'
+        ? { map: brickTex.map, bumpMap: brickTex.bumpMap, bumpScale: 0.04 }
+        : {}),
+      color: this.arena === 'parking_deck' ? 0x1e293b : this.arena === 'helipad' ? 0x334155 : 0xffffff,
+      roughness: 0.88,
+      metalness: this.arena === 'courtyard' ? 0.05 : 0.25,
+    });
+    const wallCapMat = new THREE.MeshStandardMaterial({
+      color: 0x334155,
+      roughness: 0.52,
+      metalness: 0.35,
+    });
+    const ironFenceMat = new THREE.MeshStandardMaterial({
+      color: 0x111827,
+      roughness: 0.4,
+      metalness: 0.82,
+    });
+
+    const span = halfSize * 2 + 1.2;
+    const wallThickness = 1.1;
+    const wallHeight = this.arena === 'helipad' ? 1.2 : 2.4;
+    const wallOffset = halfSize + wallThickness * 0.5;
+
+    const wallSpecs: [number, number, number, number][] = [
+      [0, -wallOffset, span, wallThickness],
+      [0, wallOffset, span, wallThickness],
+      [-wallOffset, 0, wallThickness, span],
+      [wallOffset, 0, wallThickness, span],
+    ];
+    for (const [wx, wz, ww, wd] of wallSpecs) {
+      const wall = new THREE.Mesh(
+        new THREE.BoxGeometry(ww, wallHeight, wd),
+        wallMat,
+      );
+      wall.position.set(wx, wallHeight / 2, wz);
+      wall.receiveShadow = true;
+      wall.castShadow = true;
+      this.arenaGroup.add(wall);
+
+      const cap = new THREE.Mesh(
+        new THREE.BoxGeometry(ww + 0.16, 0.18, wd + 0.16),
+        wallCapMat,
+      );
+      cap.position.set(wx, wallHeight + 0.09, wz);
+      this.arenaGroup.add(cap);
+
+      const rail = new THREE.Mesh(
+        new THREE.BoxGeometry(
+          ww > wd ? ww : 0.1,
+          0.1,
+          wd > ww ? wd : 0.1,
+        ),
+        ironFenceMat,
+      );
+      rail.position.set(wx, wallHeight + 0.72, wz);
+      this.arenaGroup.add(rail);
+    }
+
+    const pilasterGeo = new THREE.BoxGeometry(1.45, wallHeight + 0.9, 1.45);
+    const gateArchGeo = new THREE.BoxGeometry(5.2, 0.32, 0.4);
+    for (let p = -halfSize; p <= halfSize; p += 10.75) {
+      for (const [px, pz] of [
+        [p, -wallOffset],
+        [p, wallOffset],
+        [-wallOffset, p],
+        [wallOffset, p],
+      ]) {
+        const pil = new THREE.Mesh(pilasterGeo, wallMat);
+        pil.position.set(px, (wallHeight + 0.9) / 2, pz);
+        pil.castShadow = true;
+        this.arenaGroup.add(pil);
+      }
+    }
+    if (this.arena !== 'helipad') {
+      for (const [gx, gz, rot] of [
+        [0, -wallOffset, 0],
+        [0, wallOffset, 0],
+        [-wallOffset, 0, Math.PI / 2],
+        [wallOffset, 0, Math.PI / 2],
+      ]) {
+        const arch = new THREE.Mesh(gateArchGeo, ironFenceMat);
+        arch.position.set(gx, 3.25, gz);
+        arch.rotation.y = rot;
+        this.arenaGroup.add(arch);
+      }
+    }
+
+    // Perimeter Dumpsters, Corner Fire Braziers & Wall-Edge Jersey Barriers
+    for (const [dx, dz, rot] of [
+      [-16.8, -20.2, 0.05],
+      [16.8, 20.2, -3.09],
+    ]) {
+      const dumpster = buildDumpster(this.shadowTex);
+      dumpster.position.set(dx, 0, dz);
+      dumpster.rotation.y = rot;
+      this.arenaGroup.add(dumpster);
+    }
+
+    const brazierCoords: [number, number][] = [
+      [-20.3, -20.3],
+      [20.3, -20.3],
+      [-20.3, 20.3],
+      [20.3, 20.3],
+    ];
+    brazierCoords.forEach(([bx, bz], idx) => {
+      const brazier = buildCornerBrazier(this.shadowTex, !this.isSoftwareGl);
+      brazier.group.position.set(bx, 0, bz);
+      this.arenaGroup.add(brazier.group);
+      this.cornerEmbers.push({
+        mesh: brazier.emberMesh,
+        light: brazier.pointLight,
+        phase: idx * 1.65,
+      });
+    });
+
+    const barrierPlacements: [number, number, number][] = [
+      [-4.6, -21.05, 0],
+      [4.6, -21.05, 0],
+      [-4.6, 21.05, 0],
+      [4.6, 21.05, 0],
+      [-21.05, -4.6, Math.PI / 2],
+      [-21.05, 4.6, Math.PI / 2],
+      [21.05, -4.6, Math.PI / 2],
+      [21.05, 4.6, Math.PI / 2],
+    ];
+    for (const [jx, jz, rot] of barrierPlacements) {
+      const barrier = buildJerseyBarrier(hazardTex);
+      barrier.position.set(jx, 0, jz);
+      barrier.rotation.y = rot;
+      this.arenaGroup.add(barrier);
+    }
+
+    // Surrounding urban city block silhouettes
+    const bldgMat = new THREE.MeshStandardMaterial({
+      color: 0x0f172a,
+      roughness: 0.85,
+      metalness: 0.15,
+    });
+    const winMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b });
+    const neonRedMat = new THREE.MeshBasicMaterial({ color: 0xef4444 });
+    const neonCyanMat = new THREE.MeshBasicMaterial({ color: 0x06b6d4 });
+    const outerCoords: [number, number, number, number, number][] = [
+      [-32, -30, 12, 16, 10],
+      [-14, -34, 16, 12, 11],
+      [14, -33, 14, 18, 10],
+      [33, -28, 12, 14, 12],
+      [-34, 0, 12, 20, 16],
+      [34, 2, 12, 15, 18],
+      [-32, 31, 13, 13, 12],
+      [0, 35, 22, 10, 10],
+      [32, 32, 14, 17, 12],
+    ];
+    outerCoords.forEach(([bx, bz, bw, bh, bd], idx) => {
+      const bldg = new THREE.Mesh(new THREE.BoxGeometry(bw, bh, bd), bldgMat);
+      bldg.position.set(bx, bh / 2, bz);
+      this.arenaGroup.add(bldg);
+
+      const hvac = new THREE.Mesh(
+        new THREE.BoxGeometry(bw * 0.35, 1.4, bd * 0.35),
+        wallCapMat,
+      );
+      hvac.position.set(bx + 1.2, bh + 0.7, bz);
+      this.arenaGroup.add(hvac);
+
+      for (let w = 0; w < 3; w++) {
+        const win = new THREE.Mesh(new THREE.BoxGeometry(0.95, 1.3, 0.2), winMat);
+        win.position.set(
+          bx + (w - 1) * 3.1,
+          bh * (0.55 + (w % 2) * 0.16),
+          bz + (bz < 0 ? bd / 2 + 0.05 : -bd / 2 - 0.05),
+        );
+        this.arenaGroup.add(win);
+      }
+
+      if (idx === 1 || idx === 2 || idx === 4) {
+        const sign = new THREE.Mesh(
+          new THREE.BoxGeometry(3.8, 0.65, 0.22),
+          idx === 1 ? neonRedMat : neonCyanMat,
+        );
+        sign.position.set(
+          bx,
+          5.2,
+          bz + (bz < 0 ? bd / 2 + 0.15 : -bd / 2 - 0.15),
+        );
+        if (idx === 4) {
+          sign.rotation.y = Math.PI / 2;
+          sign.position.set(bx + bw / 2 + 0.15, 5.4, bz);
+        }
+        this.arenaGroup.add(sign);
+      }
+    });
+
+    // Arena Tactical Obstacles (Cars, Crates, Pillars, Streetlamps)
+    let lampIdx = 0;
+    for (const obs of arenaSpec.obstacles) {
+      let mesh: THREE.Group;
+      if (obs.kind === 'car') {
+        mesh = buildCarMesh(
+          obs.colorVariant ?? 0,
+          obs.halfW,
+          obs.halfD,
+          this.shadowTex,
+        );
+      } else if (obs.kind === 'crate') {
+        mesh = buildCrateCluster(
+          obs.halfW,
+          obs.halfD,
+          obs.height,
+          crateTex,
+          this.shadowTex,
+          hazardTex,
+        );
+      } else if (obs.kind === 'pillar') {
+        mesh = buildConcretePillar(
+          obs.halfW,
+          obs.halfD,
+          obs.height,
+          this.shadowTex,
+          hazardTex,
+        );
+      } else {
+        const lampRig = buildStreetLamp(lightPoolTex, true);
+        mesh = lampRig.group;
+        mesh.rotation.y = Math.atan2(-obs.x, -obs.z);
+        this.streetLamps.push({
+          rig: lampRig,
+          phase: lampIdx * 1.93,
+          glitchCooldown: 2.2 + lampIdx * 1.4,
+          glitchTimer: 0,
+        });
+        lampIdx += 1;
+      }
+      mesh.position.set(obs.x, 0, obs.z);
+      if (obs.kind !== 'lamp') {
+        mesh.rotation.y = obs.rotationY;
+      }
+      this.arenaGroup.add(mesh);
+    }
+
+    // Explosive Barrels
+    arenaSpec.barrelCoords.forEach((coord, idx) => {
+      const rig = buildExplosiveBarrel(this.shadowTex, hazardTex);
+      rig.root.position.set(coord.x, 0, coord.z);
+      this.arenaGroup.add(rig.root);
+      this.barrels.push({
+        id: `barrel-${idx}`,
+        rig,
+        x: coord.x,
+        z: coord.z,
+        active: true,
+        respawnTimer: 0,
+      });
+    });
+
+    // Floodlight Generators
+    arenaSpec.generatorCoords.forEach((coord, idx) => {
+      const rig = buildFloodlightGenerator(
+        this.shadowTex,
+        lightPoolTex,
+        !this.isSoftwareGl,
+      );
+      rig.root.position.set(coord.x, 0, coord.z);
+      this.arenaGroup.add(rig.root);
+      this.generators.push({
+        id: idx === 0 ? 'GEN-W' : 'GEN-E',
+        rig,
+        x: coord.x,
+        z: coord.z,
+        powered: false,
+        hp: 100,
+        maxHp: 100,
+        chargeProgress: 0,
+        activeRemaining: 0,
+        playerInside: false,
+      });
+    });
   }
 
   private buildPools(): void {
@@ -1427,6 +1744,10 @@ export class GameEngine {
   private handleKeyDown = (e: KeyboardEvent) => {
     this.sound.unlock();
     const code = e.code;
+    const activeTag = (e.target as HTMLElement | null)?.tagName;
+    if (activeTag === 'INPUT' || activeTag === 'TEXTAREA') {
+      return;
+    }
 
     if (this.phase === 'title') {
       if (code === 'Enter' || code === 'Space') {
@@ -1442,7 +1763,7 @@ export class GameEngine {
     }
 
     if (code === 'KeyP' || code === 'Escape') {
-      if (this.phase === 'playing') {
+      if (this.phase === 'playing' && !this.perkDraftChoices) {
         this.pauseGame();
         return;
       } else if (this.phase === 'paused') {
@@ -1457,6 +1778,17 @@ export class GameEngine {
     }
 
     if (this.phase !== 'playing') return;
+
+    if (this.perkDraftChoices) {
+      if (code === 'Digit1' && this.perkDraftChoices[0]) {
+        this.choosePerk(this.perkDraftChoices[0]);
+      } else if (code === 'Digit2' && this.perkDraftChoices[1]) {
+        this.choosePerk(this.perkDraftChoices[1]);
+      } else if (code === 'Digit3' && this.perkDraftChoices[2]) {
+        this.choosePerk(this.perkDraftChoices[2]);
+      }
+      return;
+    }
 
     this.keys.add(code);
 
@@ -1488,6 +1820,9 @@ export class GameEngine {
     } else if (code === 'KeyG' || code === 'KeyE') {
       this.triggerGear();
     } else if (code === 'KeyQ') {
+      this.triggerGadget();
+    } else if (code === 'Tab') {
+      e.preventDefault();
       this.switchWeapon();
     } else if (code === 'BracketLeft') {
       this.prevWeapon();
@@ -1544,6 +1879,18 @@ export class GameEngine {
     }
   }
 
+  private hasPerk(id: PerkId): boolean {
+    return this.ownedPerks.includes(id);
+  }
+
+  private hasEvolution(id: EvolutionId): boolean {
+    return this.evolvedWeapons.includes(id);
+  }
+
+  private rand(): number {
+    return this.seededRng ? this.seededRng() : Math.random();
+  }
+
   public triggerDash(): void {
     if (this.phase !== 'playing' || this.uiSimulationPaused) return;
     if (this.dashCooldownTimer > 0 || this.dashTimer > 0) return;
@@ -1570,6 +1917,33 @@ export class GameEngine {
       trailColor,
       4.5,
     );
+
+    if (this.hasPerk('dash_shockwave')) {
+      const pulseR = 4.6;
+      const dmg = Math.round(48 * getDamageMultiplier(this.upgradeLevels));
+      this.spawnFlashRing(this.playerX, this.playerZ, pulseR, 0x38bdf8, 0.34);
+      for (let i = this.zombies.length - 1; i >= 0; i--) {
+        const z = this.zombies[i];
+        if (z.dying) continue;
+        const dx = z.x - this.playerX;
+        const dz = z.z - this.playerZ;
+        const dist = Math.hypot(dx, dz) || 0.001;
+        if (dist <= pulseR + z.radius) {
+          z.stunTimer = Math.max(z.stunTimer, z.kind === 'boss' ? 0.4 : 0.9);
+          this.damageZombie(z, dmg, false, dx / dist, dz / dist, 11.5, true);
+        }
+      }
+      for (let i = 0; i < this.acidPuddles.length; i++) {
+        const puddle = this.acidPuddles[i];
+        if (
+          puddle.active &&
+          Math.hypot(puddle.x - this.playerX, puddle.z - this.playerZ) <= 4.2
+        ) {
+          puddle.active = false;
+        }
+      }
+    }
+
     this.emitHudSnapshot(true);
   }
 
@@ -1601,8 +1975,156 @@ export class GameEngine {
     this.equipGear(getNextTacticalGear(this.equippedGear));
   }
 
+  public equipGadget(id: GadgetId): void {
+    if (this.equippedGadget === id) return;
+    this.equippedGadget = id;
+    if (this.phase === 'playing' || this.phase === 'paused') {
+      this.pickupToast = `GADGET · ${GADGET_SPECS[id].name.toUpperCase()}`;
+      this.pickupToastTimer = 1.6;
+      this.persistCurrentProgress();
+    }
+    this.emitHudSnapshot(true);
+  }
+
+  public cycleGadget(): void {
+    this.equipGadget(getNextGadget(this.equippedGadget));
+  }
+
+  public triggerGadget(): void {
+    if (
+      this.phase !== 'playing' ||
+      this.uiSimulationPaused ||
+      this.perkDraftChoices
+    ) {
+      return;
+    }
+    if (this.gadgetCooldownTimer > 0) return;
+
+    const gadgetId = this.equippedGadget;
+    const spec = GADGET_SPECS[gadgetId];
+    this.gadgetCooldownTimer =
+      spec.cooldownSec * (this.dailyMutator === 'hyper_dash' ? 0.85 : 1);
+
+    const fwdX = -Math.sin(this.playerAimAngle);
+    const fwdZ = -Math.cos(this.playerAimAngle);
+    const obstacles = this.getObstacles();
+    const halfSize = this.getHalfSize();
+
+    if (gadgetId === 'tripmine') {
+      const pos = resolveArenaCollisions(
+        this.playerX + fwdX * 1.25,
+        this.playerZ + fwdZ * 1.25,
+        0.4,
+        obstacles,
+        halfSize,
+      );
+      if (this.activeTripmines.length >= spec.maxActive) {
+        const oldest = this.activeTripmines.shift();
+        if (oldest) this.scene.remove(oldest.root);
+      }
+      const root = buildLaserTripmine(this.shadowTex);
+      root.position.set(pos.x, 0, pos.z);
+      root.rotation.y = this.playerAimAngle;
+      this.scene.add(root);
+      this.activeTripmines.push({
+        root,
+        x: pos.x,
+        z: pos.z,
+        armTimer: 0.4,
+        life: 55,
+      });
+      this.sound.playGadgetDeploy('tripmine');
+      this.pickupToast = 'LASER TRIPMINE SET';
+      this.pickupToastTimer = 1.4;
+    } else if (gadgetId === 'decoy') {
+      const pos = resolveArenaCollisions(
+        this.playerX + fwdX * 4.5,
+        this.playerZ + fwdZ * 4.5,
+        0.45,
+        obstacles,
+        halfSize,
+      );
+      if (this.activeDecoys.length >= spec.maxActive) {
+        const oldest = this.activeDecoys.shift();
+        if (oldest) this.scene.remove(oldest.root);
+      }
+      const root = buildDecoyFlare(this.shadowTex);
+      root.position.set(pos.x, 0, pos.z);
+      this.scene.add(root);
+      const dur = spec.durationSec ?? 5.0;
+      this.activeDecoys.push({
+        root,
+        x: pos.x,
+        z: pos.z,
+        life: dur,
+        maxLife: dur,
+      });
+      this.sound.playGadgetDeploy('decoy');
+      this.pickupToast = 'DECOY FLARE LIT · 5s LURE';
+      this.pickupToastTimer = 1.6;
+      this.spawnBurstParticles(pos.x, 0.3, pos.z, 12, 0xf59e0b, 4.2);
+    } else if (gadgetId === 'wire') {
+      const pos = resolveArenaCollisions(
+        this.playerX + fwdX * 1.8,
+        this.playerZ + fwdZ * 1.8,
+        0.55,
+        obstacles,
+        halfSize,
+      );
+      if (this.activeWires.length >= spec.maxActive) {
+        const oldest = this.activeWires.shift();
+        if (oldest) this.scene.remove(oldest.root);
+      }
+      const root = buildBarbedWireMesh(this.shadowTex);
+      root.position.set(pos.x, 0, pos.z);
+      root.rotation.y = this.playerAimAngle;
+      this.scene.add(root);
+      this.activeWires.push({
+        root,
+        x: pos.x,
+        z: pos.z,
+        life: spec.durationSec ?? 14.0,
+        tickTimer: 0,
+      });
+      this.sound.playGadgetDeploy('wire');
+      this.pickupToast = 'BARBED WIRE DEPLOYED';
+      this.pickupToastTimer = 1.5;
+    } else {
+      // Mortar Strike 7.5m along aim vector
+      const pos = resolveArenaCollisions(
+        this.playerX + fwdX * 7.5,
+        this.playerZ + fwdZ * 7.5,
+        0.8,
+        obstacles,
+        halfSize,
+      );
+      const ringRig = buildMortarTargetRing(spec.radius);
+      ringRig.group.position.set(pos.x, 0, pos.z);
+      this.scene.add(ringRig.group);
+      this.activeMortars.push({
+        group: ringRig.group,
+        fillMat: ringRig.fillMat,
+        x: pos.x,
+        z: pos.z,
+        age: 0,
+        duration: spec.durationSec ?? 1.05,
+      });
+      this.sound.playGadgetDeploy('mortar');
+      this.pickupToast = 'MORTAR STRIKE INBOUND';
+      this.pickupToastTimer = 1.4;
+    }
+
+    this.emitHudSnapshot(true);
+  }
+
   public triggerGear(): void {
-    if (this.phase !== 'playing' || this.uiSimulationPaused) return;
+    if (
+      this.phase !== 'playing' ||
+      this.uiSimulationPaused ||
+      this.perkDraftChoices
+    ) {
+      return;
+    }
     if (this.gearCooldownTimer > 0) return;
 
     const gearId = this.equippedGear;
@@ -1612,12 +2134,16 @@ export class GameEngine {
 
     const fwdX = -Math.sin(this.playerAimAngle);
     const fwdZ = -Math.cos(this.playerAimAngle);
+    const obstacles = this.getObstacles();
+    const halfSize = this.getHalfSize();
 
     if (gearId === 'mine') {
       const pos = resolveArenaCollisions(
         this.playerX + fwdX * 1.15,
         this.playerZ + fwdZ * 1.15,
         0.4,
+        obstacles,
+        halfSize,
       );
       const maxMines = spec.maxActive + classSpec.bonusMineCap;
       if (this.activeMines.length >= maxMines) {
@@ -1643,6 +2169,8 @@ export class GameEngine {
         this.playerX + fwdX * 1.3,
         this.playerZ + fwdZ * 1.3,
         0.55,
+        obstacles,
+        halfSize,
       );
       if (this.activeTurrets.length >= spec.maxActive) {
         const oldest = this.activeTurrets.shift();
@@ -1662,9 +2190,18 @@ export class GameEngine {
       });
       hapticTurretDeploy();
       this.sound.playGearDeploy('turret');
-      this.pickupToast = 'SENTRY TURRET DEPLOYED';
+      this.pickupToast = this.hasEvolution('tesla_coil')
+        ? 'TESLA COIL DEPLOYED'
+        : 'SENTRY TURRET DEPLOYED';
       this.pickupToastTimer = 1.6;
-      this.spawnBurstParticles(pos.x, 0.5, pos.z, 10, 0x38bdf8, 4.0);
+      this.spawnBurstParticles(
+        pos.x,
+        0.5,
+        pos.z,
+        10,
+        this.hasEvolution('tesla_coil') ? 0xf59e0b : 0x38bdf8,
+        4.0,
+      );
     } else {
       // Flashbang blast around player
       const blastR = spec.blastRadius * classSpec.blastRadiusMult;
@@ -1737,9 +2274,30 @@ export class GameEngine {
       this.uiSimulationPaused = false;
       return;
     }
-    this.uiSimulationPaused = open;
+    this.uiSimulationPaused = open || Boolean(this.perkDraftChoices);
     if (open) {
       this.clearHeldInputs();
+    }
+  }
+
+  private evaluateEvolutions(): void {
+    const newly = evaluateWeaponEvolutions(
+      this.weaponMastery,
+      this.upgradeLevels,
+      this.ownedPerks,
+      this.evolvedWeapons,
+    );
+    if (newly.length > 0) {
+      for (const evoId of newly) {
+        if (!this.evolvedWeapons.includes(evoId)) {
+          this.evolvedWeapons.push(evoId);
+        }
+      }
+      const last = newly[newly.length - 1];
+      this.evolutionBanner = `WEAPON EVOLVED · ${EVOLUTION_SPECS[last].name.toUpperCase()}`;
+      this.evolutionBannerTimer = 3.2;
+      this.sound.playWeaponEvolution();
+      this.spawnBurstParticles(this.playerX, 1.0, this.playerZ, 22, 0xf59e0b, 6.8);
     }
   }
 
@@ -1773,10 +2331,103 @@ export class GameEngine {
     this.sound.playUpgrade();
     this.pickupToast = `UPGRADED · ${UPGRADE_SPECS[id].name.toUpperCase()} LV${result.newLevel}`;
     this.pickupToastTimer = 1.8;
+    this.evaluateEvolutions();
     this.spawnBurstParticles(this.playerX, 0.9, this.playerZ, 12, 0x38bdf8, 4.5);
     this.persistCurrentProgress();
     this.emitHudSnapshot(true);
     return true;
+  }
+
+  public buyWeaponMastery(weaponId: WeaponId): boolean {
+    if (this.phase !== 'playing') return false;
+    const res = purchaseWeaponMastery(
+      this.weaponMastery,
+      this.upgradePoints,
+      weaponId,
+    );
+    if (!res.purchased) return false;
+    this.upgradePoints = res.nextPoints;
+    this.sound.playUpgrade();
+    this.pickupToast = `${WEAPON_SPECS[weaponId].shortCode} MASTERY LV${res.newLevel}`;
+    this.pickupToastTimer = 1.8;
+    this.evaluateEvolutions();
+    this.spawnBurstParticles(this.playerX, 0.9, this.playerZ, 12, 0xf59e0b, 4.5);
+    this.persistCurrentProgress();
+    this.emitHudSnapshot(true);
+    return true;
+  }
+
+  public choosePerk(perkId: PerkId): void {
+    if (this.phase !== 'playing' || !this.perkDraftChoices) return;
+    if (!this.perkDraftChoices.includes(perkId)) return;
+
+    const prevMagSizes: Partial<Record<WeaponId, number>> = {};
+    for (const wId of WEAPON_ORDER) {
+      prevMagSizes[wId] = this.getWeaponMagSize(wId);
+    }
+
+    if (!this.ownedPerks.includes(perkId)) {
+      this.ownedPerks.push(perkId);
+    }
+    this.perkDraftChoices = null;
+    this.uiSimulationPaused = false;
+    this.sound.playPerkSelect();
+    this.pickupToast = `PERK · ${PERK_SPECS[perkId].name.toUpperCase()}`;
+    this.pickupToastTimer = 2.1;
+
+    if (perkId === 'extended_drums') {
+      for (const w of this.weapons) {
+        const nextMag = this.getWeaponMagSize(w.id);
+        const delta = Math.max(0, nextMag - (prevMagSizes[w.id] ?? nextMag));
+        if (delta > 0 && w.unlocked) {
+          w.mag = Math.min(nextMag, w.mag + delta);
+        }
+      }
+    } else if (perkId === 'uv_overdrive') {
+      this.applyClassFlashlightVisuals();
+    }
+
+    this.evaluateEvolutions();
+    this.advanceToNextWave();
+  }
+
+  public setArena(arenaId: ArenaId): void {
+    if (this.arena === arenaId) return;
+    this.arena = arenaId;
+    this.rebuildArena();
+    this.emitHudSnapshot(true);
+  }
+
+  public setGameMode(modeId: GameModeId): void {
+    this.mode = modeId;
+    if (modeId !== 'daily') {
+      this.dailyDateKey = null;
+      this.dailyMutator = undefined;
+      this.dailyMutatorLabel = null;
+    }
+    if (this.phase === 'title') {
+      this.applyWeatherImmediate(
+        modeId === 'storm' ? 'storm' : (this.weatherOverride ?? 'clear'),
+      );
+    }
+    this.emitHudSnapshot(true);
+  }
+
+  public setCallsign(raw: string): string {
+    this.callsign = saveCallsign(raw);
+    this.emitHudSnapshot(true);
+    return this.callsign;
+  }
+
+  public startDailyRun(): void {
+    const cfg = getDailyChallengeConfig();
+    this.mode = 'daily';
+    this.arena = cfg.arena;
+    this.dailyDateKey = cfg.dateKey;
+    this.dailyMutator = cfg.mutator.id;
+    this.dailyMutatorLabel = `${cfg.mutator.name} · ${cfg.mutator.summary}`;
+    this.rebuildArena();
+    this.startNewGame({ fromBeginning: true });
   }
 
   // --- Settings, Career, Skins, Classes & Live 3D Preview ---
@@ -1818,8 +2469,9 @@ export class GameEngine {
   }
 
   private applyClassFlashlightVisuals(): void {
-    const mult = CLASS_SPECS[this.career.selectedClass].flashlightConeMult;
-    this.playerRig.flashlightSpot.angle = 0.56 * mult;
+    const uvMult = this.hasPerk('uv_overdrive') ? 1.32 : 1;
+    const mult = CLASS_SPECS[this.career.selectedClass].flashlightConeMult * uvMult;
+    this.playerRig.flashlightSpot.angle = Math.min(1.15, 0.56 * mult);
     this.playerRig.flashlightCone.scale.set(mult, 1, mult);
   }
 
@@ -1894,11 +2546,16 @@ export class GameEngine {
   }
 
   private getEffectiveDashCooldown(): number {
+    const mutMult =
+      this.dailyMutator === 'hyper_dash'
+        ? DAILY_MUTATOR_SPECS.hyper_dash.dashCooldownMult
+        : 1;
     return (
       DASH_COOLDOWN *
       getDashCooldownMultiplier(this.upgradeLevels) *
       getPermanentDashCooldownMultiplier(this.career.permanentUpgrades) *
-      CLASS_SPECS[this.career.selectedClass].dashCooldownMult
+      CLASS_SPECS[this.career.selectedClass].dashCooldownMult *
+      mutMult
     );
   }
 
@@ -1911,29 +2568,52 @@ export class GameEngine {
   }
 
   private getEffectiveReloadDuration(id: WeaponId): number {
+    const perkMult = this.hasPerk('extended_drums') ? 0.85 : 1;
     return (
       WEAPON_SPECS[id].reloadDuration *
       getReloadDurationMultiplier(this.upgradeLevels) *
-      getPermanentReloadMultiplier(this.career.permanentUpgrades)
+      getPermanentReloadMultiplier(this.career.permanentUpgrades) *
+      perkMult
     );
   }
 
   private getWeaponMagSize(id: WeaponId): number {
-    return getEffectiveMagSize(id, this.upgradeLevels);
+    const base = getEffectiveMagSize(id, this.upgradeLevels);
+    return this.hasPerk('extended_drums') ? Math.round(base * 1.25) : base;
   }
 
-  private persistCurrentProgress(): void {
+  private buildCurrentWavePlan(wave: number): WavePlan {
+    const rng =
+      this.mode === 'daily' && this.dailyDateKey
+        ? createSeededRng(`nightfall-daily-${this.dailyDateKey}-wave-${wave}`)
+        : Math.random;
+    return buildWavePlan(wave, rng, {
+      mode: this.mode,
+      arena: this.arena,
+      mutator: this.dailyMutator,
+    });
+  }
+
+  private persistCurrentProgress(perkDraftPending = false): void {
     saveRunProgress({
       lastWave: this.wave,
       score: this.score,
       kills: this.kills,
       upgradePoints: this.upgradePoints,
       upgradeLevels: { ...this.upgradeLevels },
+      weaponMastery: { ...this.weaponMastery },
       activeWeapon: this.activeWeapon,
       equippedGear: this.equippedGear,
+      equippedGadget: this.equippedGadget,
       weapons: this.weapons.map((w) => ({ ...w })),
       hasUsedRevive: this.hasUsedRevive,
-      mode: this.runMode,
+      mode: this.mode,
+      arena: this.arena,
+      ownedPerks: [...this.ownedPerks],
+      evolvedWeapons: [...this.evolvedWeapons],
+      dailyDateKey: this.dailyDateKey ?? undefined,
+      perkDraftPending,
+      perkDraftSeedCursor: this.perkDraftSeedCursor,
       activeInterrupted: true,
     });
     this.callbacks.onSavedProgressUpdate?.(loadRunProgress());
@@ -1960,15 +2640,22 @@ export class GameEngine {
     this.skinPreviewId = null;
     this.skinUnlockToast = null;
     this.skinUnlockToastTimer = 0;
+    this.evolutionBanner = null;
+    this.evolutionBannerTimer = 0;
+    this.perkDraftChoices = null;
     this.bossesKilledInRun = 0;
     this.lastScrapEarned = 0;
-    applyPlayerSkin(this.playerRig, this.career.equippedSkinId);
-    this.applyClassFlashlightVisuals();
+    this.minigunRemaining = 0;
+    this.vampiricKillCounter = 0;
+    this.supplyDropTimer = 18;
 
     if (saved) {
       this.wave = options?.startWaveOverride ?? saved.lastWave;
       this.upgradePoints = saved.upgradePoints;
       this.upgradeLevels = { ...saved.upgradeLevels };
+      this.weaponMastery = saved.weaponMastery
+        ? { ...saved.weaponMastery }
+        : createInitialWeaponMastery();
       this.score = saved.score;
       this.kills = saved.kills;
       this.killsTowardNextUp = 0;
@@ -1976,17 +2663,64 @@ export class GameEngine {
       if (saved.equippedGear) {
         this.equippedGear = saved.equippedGear;
       }
+      if (saved.equippedGadget) {
+        this.equippedGadget = saved.equippedGadget;
+      }
+      if (saved.arena && saved.arena !== this.arena) {
+        this.arena = saved.arena;
+      }
+      if (saved.mode && saved.mode !== 'survival') {
+        this.mode = saved.mode;
+      }
+      this.ownedPerks = saved.ownedPerks ? [...saved.ownedPerks] : [];
+      this.evolvedWeapons = saved.evolvedWeapons
+        ? [...saved.evolvedWeapons]
+        : [];
+      this.perkDraftSeedCursor = saved.perkDraftSeedCursor ?? 0;
+      if (this.mode === 'daily') {
+        const cfg = getDailyChallengeConfig(saved.dailyDateKey);
+        this.dailyDateKey = cfg.dateKey;
+        this.dailyMutator = cfg.mutator.id;
+        this.dailyMutatorLabel = `${cfg.mutator.name} · ${cfg.mutator.summary}`;
+        this.seededRng = createSeededRng(`nightfall-daily-${cfg.dateKey}-sim`);
+      } else {
+        this.dailyDateKey = null;
+        this.dailyMutator = undefined;
+        this.dailyMutatorLabel = null;
+        this.seededRng = null;
+      }
     } else {
       this.wave = options?.startWaveOverride ?? this.initialWave;
       this.upgradePoints = 1 + startingUpBonus;
       this.killsTowardNextUp = 0;
       this.upgradeLevels = createInitialUpgradeLevels();
+      this.weaponMastery = createInitialWeaponMastery();
+      this.ownedPerks = [];
+      this.evolvedWeapons = [];
+      this.perkDraftSeedCursor = 0;
       this.score = 0;
       this.kills = 0;
       this.hasUsedRevive = false;
+      if (this.mode === 'daily') {
+        const cfg = getDailyChallengeConfig();
+        this.arena = cfg.arena;
+        this.dailyDateKey = cfg.dateKey;
+        this.dailyMutator = cfg.mutator.id;
+        this.dailyMutatorLabel = `${cfg.mutator.name} · ${cfg.mutator.summary}`;
+        this.seededRng = createSeededRng(`nightfall-daily-${cfg.dateKey}-sim`);
+      } else {
+        this.dailyDateKey = null;
+        this.dailyMutator = undefined;
+        this.dailyMutatorLabel = null;
+        this.seededRng = null;
+      }
       clearRunProgress();
       this.callbacks.onSavedProgressUpdate?.(null);
     }
+
+    this.rebuildArena();
+    applyPlayerSkin(this.playerRig, this.career.equippedSkinId);
+    this.applyClassFlashlightVisuals();
 
     this.playerX = 0;
     this.playerZ = 0;
@@ -2029,6 +2763,7 @@ export class GameEngine {
     this.dashTimer = 0;
     this.dashCooldownTimer = 0;
     this.gearCooldownTimer = 0;
+    this.gadgetCooldownTimer = 0;
     this.invulnTimer = isResumingInterrupted ? REVIVE_INVULN_SEC : 0.5;
     this.camRecoilX = 0;
     this.camRecoilZ = 0;
@@ -2037,9 +2772,17 @@ export class GameEngine {
 
     // Class Starting Tactical Perks on fresh runs
     const classSpec = CLASS_SPECS[this.career.selectedClass];
+    const obstacles = this.getObstacles();
+    const halfSize = this.getHalfSize();
     if (!saved) {
       if (classSpec.startsWithFreeTurret) {
-        const turretPos = resolveArenaCollisions(1.4, -1.2, 0.55);
+        const turretPos = resolveArenaCollisions(
+          1.4,
+          -1.2,
+          0.55,
+          obstacles,
+          halfSize,
+        );
         const rig = buildDeployableTurretRig(this.shadowTex);
         rig.root.position.set(turretPos.x, 0, turretPos.z);
         this.scene.add(rig.root);
@@ -2053,7 +2796,13 @@ export class GameEngine {
         });
       }
       if (classSpec.startsWithBonusMine) {
-        const minePos = resolveArenaCollisions(-1.3, -1.3, 0.4);
+        const minePos = resolveArenaCollisions(
+          -1.3,
+          -1.3,
+          0.4,
+          obstacles,
+          halfSize,
+        );
         const rig = buildProximityMineMesh(this.shadowTex);
         rig.root.position.set(minePos.x, 0, minePos.z);
         this.scene.add(rig.root);
@@ -2067,23 +2816,35 @@ export class GameEngine {
       }
     }
 
-    this.wavePlan = buildWavePlan(this.wave);
+    this.wavePlan = this.buildCurrentWavePlan(this.wave);
     this.spawnTimer = 0.2;
     this.wavePauseTimer = 0;
     this.bloodSplatter = 0;
-    this.applyWeatherImmediate(
-      this.weatherOverride ?? getWeatherForWaveStart(this.wave),
-    );
-    this.waveBanner = isBossWaveNumber(this.wave)
+    const startWeather: WeatherKind =
+      this.weatherOverride ??
+      (this.mode === 'storm' || this.dailyMutator === 'acid_rain'
+        ? 'storm'
+        : this.mode === 'blackout' || this.dailyMutator === 'blackout_surge'
+          ? 'mist'
+          : getWeatherForWaveStart(this.wave));
+    this.applyWeatherImmediate(startWeather);
+
+    this.waveBanner = isBossWaveNumber(this.wave, this.mode)
       ? `BOSS WAVE ${this.wave} · ${getBossTitle(this.wave)}`
       : isResumingInterrupted
         ? `RESUMED WAVE ${this.wave} · 75% HP`
-        : this.wave > 1
-          ? `RESUMED WAVE ${this.wave} · SURVIVE THE NIGHT`
-          : `WAVE ${this.wave} · SURVIVE THE NIGHT`;
+        : this.mode === 'daily' && this.dailyDateKey
+          ? `DAILY SEED ${this.dailyDateKey} · WAVE ${this.wave}`
+          : this.wave > 1
+            ? `RESUMED WAVE ${this.wave} · SURVIVE THE NIGHT`
+            : `WAVE ${this.wave} · SURVIVE THE NIGHT`;
     this.waveBannerTimer = 2.4;
-    this.pickupToast = isResumingInterrupted ? 'RUN RESTORED · 3S SHIELD' : null;
-    this.pickupToastTimer = isResumingInterrupted ? 2.2 : 0;
+    this.pickupToast = isResumingInterrupted
+      ? 'RUN RESTORED · 3S SHIELD'
+      : this.dailyMutatorLabel
+        ? `MUTATOR · ${DAILY_MUTATOR_SPECS[this.dailyMutator!].name.toUpperCase()}`
+        : null;
+    this.pickupToastTimer = isResumingInterrupted || this.dailyMutatorLabel ? 2.4 : 0;
 
     this.playerRig.root.position.set(0, 0, 0);
     this.playerRig.root.rotation.y = 0;
@@ -2095,7 +2856,19 @@ export class GameEngine {
     this.camLook.set(0, 0.5, 0);
 
     this.setPhase('playing');
-    this.persistCurrentProgress();
+    if (saved?.perkDraftPending) {
+      const draftRng =
+        this.mode === 'daily' && this.dailyDateKey
+          ? createSeededRng(
+              `nightfall-daily-${this.dailyDateKey}-perk-${this.perkDraftSeedCursor}`,
+            )
+          : Math.random;
+      this.perkDraftChoices = rollPerkDraftChoices(this.ownedPerks, draftRng);
+      this.uiSimulationPaused = true;
+      this.persistCurrentProgress(true);
+    } else {
+      this.persistCurrentProgress(false);
+    }
     this.emitHudSnapshot(true);
   }
 
@@ -2216,6 +2989,7 @@ export class GameEngine {
 
   private finalizeGameOver(): void {
     this.uiSimulationPaused = false;
+    this.perkDraftChoices = null;
     this.sound.setBossIntensity(false);
     const prevBest = this.highScore;
     this.highScore = saveHighScore(this.score);
@@ -2227,6 +3001,7 @@ export class GameEngine {
       wave: this.wave,
       kills: this.kills,
       bossesKilledInRun: this.bossesKilledInRun,
+      rewardMultiplier: GAME_MODE_SPECS[this.mode].rewardMultiplier,
     });
     this.lastScrapEarned = scrapReward;
     this.career.bestWave = Math.max(this.career.bestWave, this.wave);
@@ -2248,7 +3023,7 @@ export class GameEngine {
     if (this.phase !== 'playing') return;
     this.uiSimulationPaused = false;
     this.clearHeldInputs();
-    this.persistCurrentProgress();
+    this.persistCurrentProgress(Boolean(this.perkDraftChoices));
     this.setPhase('paused');
     this.emitHudSnapshot(true);
   }
@@ -2268,8 +3043,11 @@ export class GameEngine {
       this.phase === 'paused' ||
       this.phase === 'revive'
     ) {
-      this.persistCurrentProgress();
+      this.persistCurrentProgress(Boolean(this.perkDraftChoices));
     }
+    this.perkDraftChoices = null;
+    this.evolutionBanner = null;
+    this.evolutionBannerTimer = 0;
     this.clearEntities();
     this.clearHeldInputs();
     this.bloodSplatter = 0;
@@ -2281,6 +3059,10 @@ export class GameEngine {
     this.playerRig.root.visible = true;
     updateDiegeticFootArcs(this.playerRig, false, 0, 1);
     applyPlayerSkin(this.playerRig, this.career.equippedSkinId);
+    this.rebuildArena();
+    this.applyWeatherImmediate(
+      this.mode === 'storm' ? 'storm' : (this.weatherOverride ?? 'clear'),
+    );
     this.setPhase('title');
     this.emitHudSnapshot(true);
   }
@@ -2350,6 +3132,26 @@ export class GameEngine {
       this.scene.remove(turret.rig.root);
     }
     this.activeTurrets = [];
+    for (const tm of this.activeTripmines) {
+      this.scene.remove(tm.root);
+    }
+    this.activeTripmines = [];
+    for (const dec of this.activeDecoys) {
+      this.scene.remove(dec.root);
+    }
+    this.activeDecoys = [];
+    for (const wire of this.activeWires) {
+      this.scene.remove(wire.root);
+    }
+    this.activeWires = [];
+    for (const m of this.activeMortars) {
+      this.scene.remove(m.group);
+    }
+    this.activeMortars = [];
+    if (this.supplyCrate) {
+      this.scene.remove(this.supplyCrate.mesh);
+      this.supplyCrate = null;
+    }
     for (const ring of this.flashRings) {
       this.scene.remove(ring.mesh);
     }
@@ -2500,13 +3302,13 @@ export class GameEngine {
       return;
     }
     this.titleOrbitAngle += dt * 0.16;
-    const radius = 19.5;
+    const radius = 14.2;
     this.camera.position.set(
       Math.cos(this.titleOrbitAngle) * radius,
-      11.5,
+      10.2,
       Math.sin(this.titleOrbitAngle) * radius,
     );
-    this.camera.lookAt(0, 1.0, 0);
+    this.camera.lookAt(0, 0.8, 0);
     this.laserBeam.visible = false;
     this.laserDot.visible = false;
   }
@@ -2520,9 +3322,15 @@ export class GameEngine {
     if (this.gearCooldownTimer > 0) {
       this.gearCooldownTimer = Math.max(0, this.gearCooldownTimer - dt);
     }
+    if (this.gadgetCooldownTimer > 0) {
+      this.gadgetCooldownTimer = Math.max(0, this.gadgetCooldownTimer - dt);
+    }
     if (this.invulnTimer > 0) this.invulnTimer = Math.max(0, this.invulnTimer - dt);
     if (this.rapidFireRemaining > 0) {
       this.rapidFireRemaining = Math.max(0, this.rapidFireRemaining - dt);
+    }
+    if (this.minigunRemaining > 0) {
+      this.minigunRemaining = Math.max(0, this.minigunRemaining - dt);
     }
     if (this.bloodSplatter > 0) {
       this.bloodSplatter = Math.max(0, this.bloodSplatter - dt * 0.72);
@@ -2535,9 +3343,18 @@ export class GameEngine {
       this.pickupToastTimer -= dt;
       if (this.pickupToastTimer <= 0) this.pickupToast = null;
     }
+    if (this.evolutionBannerTimer > 0) {
+      this.evolutionBannerTimer -= dt;
+      if (this.evolutionBannerTimer <= 0) this.evolutionBanner = null;
+    }
 
     // Dynamic Weather Progression
-    if (!this.weatherOverride) {
+    const forcedWeather =
+      this.weatherOverride ??
+      (this.mode === 'storm' || this.dailyMutator === 'acid_rain'
+        ? 'storm'
+        : null);
+    if (!forcedWeather) {
       this.weatherTimer -= dt;
       if (this.weatherTimer <= 0) {
         this.setWeatherKind(getNextWeatherKind(this.weatherKind, this.wave));
@@ -2583,6 +3400,8 @@ export class GameEngine {
       this.playerX,
       this.playerZ,
       PLAYER_RADIUS,
+      this.getObstacles(),
+      this.getHalfSize(),
     );
     this.playerX = resolved.x;
     this.playerZ = resolved.z;
@@ -2663,7 +3482,11 @@ export class GameEngine {
     this.updateLaserSight();
 
     // Firing
-    if (wantsToFire && !this.isReloading && this.fireCooldown <= 0) {
+    if (
+      wantsToFire &&
+      (this.minigunRemaining > 0 || !this.isReloading) &&
+      this.fireCooldown <= 0
+    ) {
       this.tryFireWeapon();
     }
 
@@ -2712,6 +3535,8 @@ export class GameEngine {
   private findAutoFireTarget(): ActiveZombie | null {
     const maxRange = WEAPON_SPECS[this.activeWeapon].range;
     const maxDistSq = maxRange * maxRange;
+    const obstacles = this.getObstacles();
+    const halfSize = this.getHalfSize();
     let best: ActiveZombie | null = null;
     let bestDistSq = maxDistSq;
     for (let i = 0; i < this.zombies.length; i++) {
@@ -2728,6 +3553,8 @@ export class GameEngine {
         dx / d,
         dz / d,
         d,
+        obstacles,
+        halfSize,
       );
       if (wallDist >= d - z.radius * 0.5) {
         bestDistSq = dSq;
@@ -2769,6 +3596,8 @@ export class GameEngine {
       dirX,
       dirZ,
       maxRange,
+      this.getObstacles(),
+      this.getHalfSize(),
     );
 
     for (let i = 0; i < this.zombies.length; i++) {
@@ -2802,18 +3631,94 @@ export class GameEngine {
     );
   }
 
+  private detonateBarrel(b: ActiveBarrel): void {
+    if (!b.active) return;
+    b.active = false;
+    b.respawnTimer = 28;
+    b.rig.root.visible = false;
+
+    const blastR = 6.2;
+    this.sound.playBarrelExplosion();
+    this.hitstopTimer = Math.max(this.hitstopTimer, 0.02);
+    this.trauma = Math.min(1.0, this.trauma + 0.65);
+    this.spawnFlashRing(b.x, b.z, blastR, 0xf97316, 0.34);
+    this.spawnBurstParticles(b.x, 0.65, b.z, 28, 0xfbbf24, 9.5);
+
+    const dmg = Math.round(360 * getDamageMultiplier(this.upgradeLevels));
+    for (let j = this.zombies.length - 1; j >= 0; j--) {
+      const z = this.zombies[j];
+      if (z.dying) continue;
+      const dx = z.x - b.x;
+      const dz = z.z - b.z;
+      const dist = Math.hypot(dx, dz) || 0.001;
+      if (dist <= blastR + z.radius) {
+        const falloff = Math.max(0.5, 1 - (dist / (blastR + 1)) * 0.5);
+        z.burnTimer = Math.max(z.burnTimer, 2.5);
+        z.burnDps = Math.max(z.burnDps, 24);
+        if (this.hasPerk('shockwave_coil')) {
+          z.stunTimer = Math.max(z.stunTimer, z.kind === 'boss' ? 0.5 : 1.0);
+        }
+        this.damageZombie(
+          z,
+          Math.round(dmg * falloff),
+          true,
+          dx / dist,
+          dz / dist,
+          10.5,
+          true,
+        );
+      }
+    }
+  }
+
+  private triggerChainLightning(
+    originZombie: ActiveZombie,
+    baseDmg: number,
+    maxJumps: number,
+    colorHex: number,
+  ): void {
+    let curr = originZombie;
+    const hitIds = new Set<number>([curr.id]);
+    for (let jump = 0; jump < maxJumps; jump++) {
+      let nearest: ActiveZombie | null = null;
+      let bestDistSq = 6.5 * 6.5;
+      for (let i = 0; i < this.zombies.length; i++) {
+        const z = this.zombies[i];
+        if (z.dying || hitIds.has(z.id)) continue;
+        const dx = z.x - curr.x;
+        const dz = z.z - curr.z;
+        const dSq = dx * dx + dz * dz;
+        if (dSq < bestDistSq) {
+          bestDistSq = dSq;
+          nearest = z;
+        }
+      }
+      if (!nearest) break;
+      hitIds.add(nearest.id);
+      const dx = nearest.x - curr.x;
+      const dz = nearest.z - curr.z;
+      const dist = Math.sqrt(bestDistSq) || 0.1;
+      const arcAngle = Math.atan2(-dx, -dz);
+      this.spawnTracer(curr.x, 1.0, curr.z, arcAngle, dist, colorHex);
+      this.sound.playTeslaArc();
+      const arcDmg = Math.max(6, Math.round(baseDmg * 0.6));
+      this.damageZombie(nearest, arcDmg, false, dx / dist, dz / dist, 1.2, true);
+      curr = nearest;
+    }
+  }
+
   private tryFireWeapon(): void {
+    const isMinigun = this.minigunRemaining > 0;
     const state = this.getActiveWeaponState();
     const spec = WEAPON_SPECS[state.id];
     const magSize = this.getWeaponMagSize(state.id);
 
-    if (!canFireWeapon(state)) {
+    if (!isMinigun && !canFireWeapon(state)) {
       if (canStartReload(state, magSize)) {
         this.triggerReload();
       } else {
         this.fireCooldown = 0.25;
         this.sound.playEmptyClick();
-        // Auto fallback to pistol if finite weapon is completely dry
         if (state.id !== 'pistol' && state.reserve <= 0) {
           this.selectWeapon('pistol');
         }
@@ -2821,15 +3726,26 @@ export class GameEngine {
       return;
     }
 
-    consumeAmmoOnFire(state);
-    this.fireCooldown =
-      getEffectiveFireInterval(state.id, this.rapidFireRemaining) *
-      getFireRateMultiplier(this.upgradeLevels);
-    this.recoilOffset = Math.min(0.18, this.recoilOffset + 0.085);
-    this.trauma = Math.min(0.85, this.trauma + spec.screenShake);
+    if (!isMinigun) {
+      consumeAmmoOnFire(state);
+    }
 
-    // Directional camera recoil kick opposite firing vector
-    const kickMag = Math.min(0.55, spec.screenShake * 1.15);
+    const isDragonsBreath =
+      !isMinigun &&
+      state.id === 'shotgun' &&
+      this.hasEvolution('dragons_breath');
+    const isRailSmg =
+      !isMinigun && state.id === 'smg' && this.hasEvolution('rail_smg');
+
+    this.fireCooldown = isMinigun
+      ? 0.075
+      : getEffectiveFireInterval(state.id, this.rapidFireRemaining) *
+        getFireRateMultiplier(this.upgradeLevels);
+    this.recoilOffset = Math.min(0.18, this.recoilOffset + 0.085);
+    const shake = isMinigun ? 0.08 : spec.screenShake;
+    this.trauma = Math.min(0.85, this.trauma + shake);
+
+    const kickMag = Math.min(0.55, shake * 1.15);
     this.camRecoilX = THREE.MathUtils.clamp(
       this.camRecoilX + Math.sin(this.playerAimAngle) * kickMag,
       -0.65,
@@ -2841,7 +3757,7 @@ export class GameEngine {
       0.65,
     );
 
-    if (state.id === 'shotgun' || state.id === 'autoshotgun') {
+    if (!isMinigun && (state.id === 'shotgun' || state.id === 'autoshotgun')) {
       hapticShotgunBlast();
     }
 
@@ -2853,18 +3769,52 @@ export class GameEngine {
       this.playerRig.flashLight.intensity = 10;
     }
 
-    this.sound.playShoot(state.id);
+    this.sound.playShoot(isMinigun ? 'lmg' : state.id);
 
     const muzzleX = this.cachedMuzzleX;
     const muzzleZ = this.cachedMuzzleZ;
     this.spawnShellCasing(muzzleX, muzzleZ, this.playerAimAngle);
 
-    const damageMult = getDamageMultiplier(this.upgradeLevels);
-    const pierceLimit = spec.pierceCount ?? 1;
-    const armorBypass = state.id === 'railgun';
+    const masteryMult = isMinigun
+      ? 1
+      : getWeaponMasteryDamageMult(this.weaponMastery[state.id] ?? 0);
+    const damageMult = getDamageMultiplier(this.upgradeLevels) * masteryMult;
+    const pellets = isMinigun ? 1 : isDragonsBreath ? 10 : spec.pellets;
+    const spreadRad = isMinigun ? 0.09 : isDragonsBreath ? 0.34 : spec.spreadRad;
+    const range = isMinigun ? 24 : spec.range;
+    const baseDamage = isMinigun
+      ? 36
+      : isDragonsBreath
+        ? Math.round(spec.damage * 1.28)
+        : isRailSmg
+          ? Math.round(spec.damage * 1.4)
+          : spec.damage;
+    const tracerColor = isMinigun
+      ? 0xfbbf24
+      : isDragonsBreath
+        ? 0xf97316
+        : isRailSmg
+          ? 0x22d3ee
+          : spec.tracerColor;
+
+    let pierceLimit = isMinigun
+      ? 1
+      : isRailSmg
+        ? 3
+        : (spec.pierceCount ?? 1);
+    if (this.hasPerk('piercing_core') && pierceLimit === 1) {
+      pierceLimit = 2;
+    }
+
+    const armorBypass = (!isMinigun && state.id === 'railgun') || isRailSmg;
+    const critChance = 0.16 + (this.hasPerk('critical_optics') ? 0.14 : 0);
+    const critMult = this.hasPerk('critical_optics') ? 2.1 : 1.5;
+    const obstacles = this.getObstacles();
+    const halfSize = this.getHalfSize();
+
     let killedAny = false;
-    for (let p = 0; p < spec.pellets; p++) {
-      const spread = (Math.random() * 2 - 1) * spec.spreadRad;
+    for (let p = 0; p < pellets; p++) {
+      const spread = (Math.random() * 2 - 1) * spreadRad;
       const angle = this.playerAimAngle + spread;
       const dirX = -Math.sin(angle);
       const dirZ = -Math.cos(angle);
@@ -2874,8 +3824,32 @@ export class GameEngine {
         muzzleZ,
         dirX,
         dirZ,
-        spec.range,
+        range,
+        obstacles,
+        halfSize,
       );
+
+      // Check explosive barrels along shot ray
+      let hitBarrel: ActiveBarrel | null = null;
+      let hitBarrelDist = wallDist;
+      for (let b = 0; b < this.barrels.length; b++) {
+        const barrel = this.barrels[b];
+        if (!barrel.active) continue;
+        const bd = raycastCircleDistance(
+          muzzleX,
+          muzzleZ,
+          dirX,
+          dirZ,
+          hitBarrelDist,
+          barrel.x,
+          barrel.z,
+          0.56,
+        );
+        if (bd !== null && bd < hitBarrelDist) {
+          hitBarrelDist = bd;
+          hitBarrel = barrel;
+        }
+      }
 
       const hits: Array<{ z: ActiveZombie; dist: number }> = [];
       for (let i = 0; i < this.zombies.length; i++) {
@@ -2886,14 +3860,27 @@ export class GameEngine {
           muzzleZ,
           dirX,
           dirZ,
-          wallDist,
+          hitBarrelDist,
           z.x,
           z.z,
           z.radius * 1.08,
         );
-        if (d !== null && d < wallDist) {
+        if (d !== null && d < hitBarrelDist) {
           hits.push({ z, dist: d });
         }
+      }
+
+      if (hitBarrel && (hits.length === 0 || hitBarrelDist < hits[0].dist)) {
+        this.spawnTracer(
+          muzzleX,
+          0.94,
+          muzzleZ,
+          angle,
+          hitBarrelDist,
+          tracerColor,
+        );
+        this.detonateBarrel(hitBarrel);
+        continue;
       }
 
       hits.sort((a, b) => a.dist - b.dist);
@@ -2907,31 +3894,50 @@ export class GameEngine {
 
       const endX = muzzleX + dirX * tracerDist;
       const endZ = muzzleZ + dirZ * tracerDist;
-      this.spawnTracer(
-        muzzleX,
-        0.94,
-        muzzleZ,
-        angle,
-        tracerDist,
-        spec.tracerColor,
-      );
+      this.spawnTracer(muzzleX, 0.94, muzzleZ, angle, tracerDist, tracerColor);
 
       if (targets.length > 0) {
         for (const hit of targets) {
           const hitX = muzzleX + dirX * hit.dist;
           const hitZ = muzzleZ + dirZ * hit.dist;
-          const isCrit = Math.random() < 0.16;
-          const dmg = Math.round(spec.damage * damageMult * (isCrit ? 1.5 : 1));
+          const isCrit = Math.random() < critChance;
+          const dmg = Math.round(baseDamage * damageMult * (isCrit ? critMult : 1));
+
+          if (this.hasPerk('cryo_rounds')) {
+            hit.z.cryoTimer = Math.max(hit.z.cryoTimer, 2.8);
+          }
+          if (isDragonsBreath || this.hasPerk('incendiary')) {
+            hit.z.burnTimer = Math.max(
+              hit.z.burnTimer,
+              isDragonsBreath ? 2.8 : 2.5,
+            );
+            hit.z.burnDps = Math.max(
+              hit.z.burnDps,
+              Math.round(dmg * (isDragonsBreath ? 0.28 : 0.18)),
+            );
+          }
+
           const killed = this.damageZombie(
             hit.z,
             dmg,
             isCrit,
             dirX,
             dirZ,
-            spec.knockback,
+            isMinigun ? 2.8 : spec.knockback,
             armorBypass,
           );
           if (killed) killedAny = true;
+
+          if (!hit.z.dying && this.hasPerk('storm_conductor')) {
+            const isWet =
+              this.weatherKind === 'rain' ||
+              this.weatherKind === 'storm' ||
+              this.mode === 'storm';
+            if (Math.random() < (isWet ? 0.45 : 0.22)) {
+              this.triggerChainLightning(hit.z, dmg, 1, 0x60a5fa);
+            }
+          }
+
           this.spawnDirectionalBloodBurst(
             hitX,
             0.95,
@@ -2945,6 +3951,8 @@ export class GameEngine {
           if (
             isCrit ||
             killed ||
+            isDragonsBreath ||
+            isRailSmg ||
             state.id === 'shotgun' ||
             state.id === 'autoshotgun' ||
             state.id === 'sniper' ||
@@ -2958,14 +3966,14 @@ export class GameEngine {
             );
           }
         }
-      } else if (wallDist < spec.range - 0.1) {
-        // Wall / cover spark impact
+      } else if (wallDist < range - 0.1) {
         this.spawnBurstParticles(endX, 0.85, endZ, 4, 0xfbbf24, 4.0);
       }
     }
 
     if (
       killedAny &&
+      !isMinigun &&
       (state.id === 'shotgun' ||
         state.id === 'autoshotgun' ||
         state.id === 'sniper' ||
@@ -2975,7 +3983,7 @@ export class GameEngine {
     }
 
     // Auto reload if magazine hits 0 and reserve allows
-    if (state.mag === 0 && canStartReload(state, magSize)) {
+    if (!isMinigun && state.mag === 0 && canStartReload(state, magSize)) {
       this.triggerReload();
     }
 
@@ -2991,6 +3999,7 @@ export class GameEngine {
     knockback: number,
     armorBypass = false,
   ): boolean {
+    if (z.dying) return false;
     const facingX = -Math.sin(z.facingYaw);
     const facingZ = -Math.cos(z.facingYaw);
     const masteryMult = getBestiaryMasteryMultiplier(
@@ -3006,6 +4015,24 @@ export class GameEngine {
       facingZ,
       armorBypass,
     );
+
+    if (blockedByArmor && this.hasPerk('piercing_core')) {
+      finalDamage = Math.round(finalDamage * 1.12);
+    }
+
+    // Floodlight Generators weaken Shadow Stalkers inside light cone
+    if (z.kind === 'stalker') {
+      for (let g = 0; g < this.generators.length; g++) {
+        const gen = this.generators[g];
+        if (
+          gen.powered &&
+          Math.hypot(z.x - gen.x, z.z - gen.z) <= 12.5
+        ) {
+          finalDamage = Math.round(finalDamage * 1.25);
+          break;
+        }
+      }
+    }
 
     const hitRear = dirX * facingX + dirZ * facingZ > 0.25;
     const isWeakpoint =
@@ -3068,6 +4095,16 @@ export class GameEngine {
         this.upgradePoints += 1;
       }
 
+      if (this.hasPerk('vampiric_rounds')) {
+        this.vampiricKillCounter += 1;
+        if (this.vampiricKillCounter >= 5) {
+          this.vampiricKillCounter -= 5;
+          const heal = Math.max(2, Math.round(this.maxHp * 0.02));
+          this.hp = Math.min(this.maxHp, this.hp + heal);
+          this.spawnBurstParticles(this.playerX, 0.9, this.playerZ, 8, 0x22c55e, 3.8);
+        }
+      }
+
       // Career & Bestiary kill tracking
       this.career.totalKills += 1;
       this.career.killsByEnemyType[z.kind] =
@@ -3095,7 +4132,50 @@ export class GameEngine {
         );
       }
 
-      this.score += z.scoreValue;
+      // Volatile Bomber death blast damages surrounding enemies!
+      if (z.kind === 'bomber') {
+        const blastR = 4.4;
+        this.sound.playBomberExplosion();
+        this.hitstopTimer = Math.max(this.hitstopTimer, 0.02);
+        this.trauma = Math.min(1.0, this.trauma + 0.5);
+        this.spawnFlashRing(z.x, z.z, blastR, 0xf97316, 0.34);
+        this.spawnBurstParticles(z.x, 0.75, z.z, 22, 0xf97316, 8.5);
+        const splashDmg = Math.round(145 * Math.max(1, this.wavePlan.hpMultiplier * 0.6));
+        for (let j = this.zombies.length - 1; j >= 0; j--) {
+          const other = this.zombies[j];
+          if (other.dying || other.id === z.id) continue;
+          const odx = other.x - z.x;
+          const odz = other.z - z.z;
+          const od = Math.hypot(odx, odz) || 0.001;
+          if (od <= blastR + other.radius) {
+            this.damageZombie(
+              other,
+              splashDmg,
+              true,
+              odx / od,
+              odz / od,
+              8.0,
+              true,
+            );
+          }
+        }
+        const pdx = this.playerX - z.x;
+        const pdz = this.playerZ - z.z;
+        const pDist = Math.hypot(pdx, pdz) || 0.001;
+        if (pDist <= 2.6 + PLAYER_RADIUS) {
+          this.damagePlayer(z.damage * 0.85, pdx / pDist, pdz / pDist);
+        }
+      } else if (
+        this.dailyMutator === 'volatile_horde' &&
+        z.kind !== 'boss' &&
+        this.rand() < 0.35
+      ) {
+        this.spawnAcidPuddle(z.x, z.z, 12);
+      }
+
+      const scoreMult =
+        this.mode === 'blackout' ? 2 : this.dailyMutator === 'acid_rain' ? 1.25 : 1;
+      this.score += Math.round(z.scoreValue * scoreMult);
       this.career.bestScore = Math.max(this.career.bestScore, Math.round(this.score));
       if (this.score > this.highScore) {
         this.highScore = saveHighScore(this.score);
@@ -3116,15 +4196,13 @@ export class GameEngine {
             : 1.15,
       );
 
-      // Crate drop roll
-      const dropKind = rollCrateDrop(z.kind, this.hp / this.maxHp);
+      const dropKind = rollCrateDrop(z.kind, this.hp / this.maxHp, () => this.rand());
       if (dropKind) {
         this.spawnPickup(dropKind, z.x, z.z);
       }
       return true;
     }
 
-    // Update world-space HP bar above damaged zombie
     z.rig.hpBarGroup.visible = true;
     z.rig.hpBarFill.scale.x = Math.max(0.04, z.hp / z.maxHp);
 
@@ -3137,7 +4215,13 @@ export class GameEngine {
   }
 
   private spawnPickup(kind: CrateKind, x: number, z: number): void {
-    const resolved = resolveArenaCollisions(x, z, 0.55);
+    const resolved = resolveArenaCollisions(
+      x,
+      z,
+      0.55,
+      this.getObstacles(),
+      this.getHalfSize(),
+    );
     const mesh = buildPickupCrate(kind, this.shadowTex);
     mesh.position.set(resolved.x, 0, resolved.z);
     this.scene.add(mesh);
@@ -3150,6 +4234,38 @@ export class GameEngine {
       age: 0,
       life: 18,
     });
+  }
+
+  private advanceToNextWave(): void {
+    this.wave += 1;
+    this.career.bestWave = Math.max(this.career.bestWave, this.wave);
+    this.checkCareerSkinUnlocks();
+    this.career = saveCareerStats(this.career);
+    this.callbacks.onCareerUpdate?.(this.career);
+
+    const unlocked = unlockWeaponsForWave(this.weapons, this.wave, (id) =>
+      this.getWeaponMagSize(id),
+    );
+    if (unlocked.length > 0) {
+      const spec = WEAPON_SPECS[unlocked[0]];
+      this.activeWeapon = unlocked[0];
+      this.syncPlayerWeaponVisibility();
+      this.isReloading = false;
+      this.pickupToast = `UNLOCKED ${spec.name.toUpperCase()}`;
+      this.pickupToastTimer = 2.6;
+    }
+
+    this.wavePlan = this.buildCurrentWavePlan(this.wave);
+    this.spawnTimer = 0.5;
+    this.waveBanner = isBossWaveNumber(this.wave, this.mode)
+      ? `BOSS WAVE ${this.wave} · ${getBossTitle(this.wave)}`
+      : `WAVE ${this.wave} INCOMING`;
+    this.waveBannerTimer = 2.4;
+    if (!this.weatherOverride && isBossWaveNumber(this.wave, this.mode)) {
+      this.setWeatherKind('storm');
+    }
+    this.persistCurrentProgress(false);
+    this.emitHudSnapshot(true);
   }
 
   private updateWaveSpawning(dt: number): void {
@@ -3173,7 +4289,7 @@ export class GameEngine {
       if (this.wavePauseTimer <= 0) {
         this.wavePauseTimer = 2.1;
         this.sound.playWaveClear();
-        const waveUp = isBossWaveNumber(this.wave)
+        const waveUp = isBossWaveNumber(this.wave, this.mode)
           ? WAVE_CLEAR_UP_BOSS
           : WAVE_CLEAR_UP_REGULAR;
         this.upgradePoints += waveUp;
@@ -3196,56 +4312,69 @@ export class GameEngine {
       } else {
         this.wavePauseTimer -= dt;
         if (this.wavePauseTimer <= 0) {
-          this.wave += 1;
-          this.career.bestWave = Math.max(this.career.bestWave, this.wave);
-          this.checkCareerSkinUnlocks();
-          this.career = saveCareerStats(this.career);
-          this.callbacks.onCareerUpdate?.(this.career);
-
-          this.wavePlan = buildWavePlan(this.wave);
-          this.spawnTimer = 0.5;
-          this.waveBanner = isBossWaveNumber(this.wave)
-            ? `BOSS WAVE ${this.wave} · ${getBossTitle(this.wave)}`
-            : `WAVE ${this.wave} INCOMING`;
-          this.waveBannerTimer = 2.4;
-          if (!this.weatherOverride && isBossWaveNumber(this.wave)) {
-            this.setWeatherKind('storm');
+          const shouldDraftPerk =
+            this.wave % 2 === 0 ||
+            this.wavePlan.isBossWave ||
+            this.mode === 'boss_rush';
+          if (shouldDraftPerk) {
+            const draftRng =
+              this.mode === 'daily' && this.dailyDateKey
+                ? createSeededRng(
+                    `nightfall-daily-${this.dailyDateKey}-perk-${this.perkDraftSeedCursor++}`,
+                  )
+                : Math.random;
+            this.perkDraftChoices = rollPerkDraftChoices(
+              this.ownedPerks,
+              draftRng,
+            );
+            this.uiSimulationPaused = true;
+            this.clearHeldInputs();
+            this.persistCurrentProgress(true);
+            this.emitHudSnapshot(true);
+            return;
           }
-          this.persistCurrentProgress();
-          this.emitHudSnapshot(true);
+          this.advanceToNextWave();
         }
       }
     }
   }
 
-  private spawnZombie(kind: ZombieKind): void {
+  private spawnZombie(kind: ZombieKind, overridePos?: { x: number; z: number }): void {
     const spec = ZOMBIE_SPECS[kind];
     const rig = buildZombieRig(kind, this.shadowTex);
+    const halfSize = this.getHalfSize();
 
-    // Spawn around courtyard perimeter gates away from player
-    let sx = 0;
-    let sz = 0;
-    for (let attempt = 0; attempt < 8; attempt++) {
-      const edge = Math.floor(Math.random() * 4);
-      const along = (Math.random() * 2 - 1) * (ARENA_HALF_SIZE - 2.5);
-      const bound = ARENA_HALF_SIZE - 1.4;
-      if (edge === 0) {
-        sx = along;
-        sz = -bound;
-      } else if (edge === 1) {
-        sx = along;
-        sz = bound;
-      } else if (edge === 2) {
-        sx = -bound;
-        sz = along;
-      } else {
-        sx = bound;
-        sz = along;
+    let sx = overridePos?.x ?? 0;
+    let sz = overridePos?.z ?? 0;
+    if (!overridePos) {
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const edge = Math.floor(this.rand() * 4);
+        const along = (this.rand() * 2 - 1) * (halfSize - 2.5);
+        const bound = halfSize - 1.4;
+        if (edge === 0) {
+          sx = along;
+          sz = -bound;
+        } else if (edge === 1) {
+          sx = along;
+          sz = bound;
+        } else if (edge === 2) {
+          sx = -bound;
+          sz = along;
+        } else {
+          sx = bound;
+          sz = along;
+        }
+        if (Math.hypot(sx - this.playerX, sz - this.playerZ) > 9.5) break;
       }
-      if (Math.hypot(sx - this.playerX, sz - this.playerZ) > 9.5) break;
     }
 
-    const pos = resolveArenaCollisions(sx, sz, spec.radius);
+    const pos = resolveArenaCollisions(
+      sx,
+      sz,
+      spec.radius,
+      this.getObstacles(),
+      halfSize,
+    );
     const initialYaw = Math.atan2(-(this.playerX - pos.x), -(this.playerZ - pos.z));
     rig.root.position.set(pos.x, 0, pos.z);
     rig.root.rotation.y = initialYaw;
@@ -3297,6 +4426,13 @@ export class GameEngine {
       deathTimer: 0,
       walkPhase: Math.random() * Math.PI * 2,
       lastStepIndex: 0,
+      howlerBuffTimer: 0,
+      howlerCooldown: kind === 'howler' ? 1.8 + Math.random() * 1.2 : 0,
+      cryoTimer: 0,
+      burnTimer: 0,
+      burnDps: 0,
+      phase2Triggered: false,
+      bossSlamCooldown: kind === 'boss' ? 4.8 : 0,
     });
 
     if (kind === 'boss') {
@@ -3309,6 +4445,15 @@ export class GameEngine {
   }
 
   private updateZombies(dt: number): void {
+    const obstacles = this.getObstacles();
+    const halfSize = this.getHalfSize();
+    const uvOverdrive = this.hasPerk('uv_overdrive');
+    const coneRange =
+      14.5 *
+      CLASS_SPECS[this.career.selectedClass].flashlightConeMult *
+      (uvOverdrive ? 1.32 : 1);
+    const coneHalf = (Math.PI / 4.8) * (uvOverdrive ? 1.25 : 1);
+
     // Attack token pool: cap concurrent active windup attackers at 5
     let activeAttackers = 0;
     for (let i = 0; i < this.zombies.length; i++) {
@@ -3321,6 +4466,9 @@ export class GameEngine {
       if (z.stunTimer > 0) z.stunTimer = Math.max(0, z.stunTimer - dt);
       if (z.revealTimer > 0) z.revealTimer = Math.max(0, z.revealTimer - dt);
       if (z.lungeTimer > 0) z.lungeTimer = Math.max(0, z.lungeTimer - dt);
+      if (z.howlerBuffTimer > 0) z.howlerBuffTimer = Math.max(0, z.howlerBuffTimer - dt);
+      if (z.cryoTimer > 0) z.cryoTimer = Math.max(0, z.cryoTimer - dt);
+      if (z.bossSlamCooldown > 0) z.bossSlamCooldown = Math.max(0, z.bossSlamCooldown - dt);
       if (z.chargeCooldown > 0) {
         z.chargeCooldown = Math.max(0, z.chargeCooldown - dt);
       }
@@ -3328,7 +4476,7 @@ export class GameEngine {
         z.chargeTimer = Math.max(0, z.chargeTimer - dt);
       }
 
-      // Hit flash or stun dizzy tint
+      // Hit flash, stun, cryo, or incendiary burn visuals
       if (z.hitFlashTimer > 0) {
         z.hitFlashTimer -= dt;
         const flashOn = z.hitFlashTimer > 0;
@@ -3341,6 +4489,21 @@ export class GameEngine {
         for (const mat of z.rig.hitFlashMaterials) {
           mat.emissive.setHex(0x7dd3fc);
           mat.emissiveIntensity = pulse;
+        }
+      } else if (z.burnTimer > 0) {
+        for (const mat of z.rig.hitFlashMaterials) {
+          mat.emissive.setHex(0xf97316);
+          mat.emissiveIntensity = 0.35;
+        }
+      } else if (z.cryoTimer > 0) {
+        for (const mat of z.rig.hitFlashMaterials) {
+          mat.emissive.setHex(0x38bdf8);
+          mat.emissiveIntensity = 0.25;
+        }
+      } else if (z.howlerBuffTimer > 0) {
+        for (const mat of z.rig.hitFlashMaterials) {
+          mat.emissive.setHex(0xfbbf24);
+          mat.emissiveIntensity = 0.22;
         }
       }
 
@@ -3359,26 +4522,93 @@ export class GameEngine {
         continue;
       }
 
+      // Incendiary / Dragon's Breath burn DoT ticks cleanly every 0.5s
+      if (z.burnTimer > 0 && z.burnDps > 0) {
+        const prevBucket = Math.floor(z.burnTimer / 0.5);
+        z.burnTimer = Math.max(0, z.burnTimer - dt);
+        const nextBucket = Math.floor(z.burnTimer / 0.5);
+        if (nextBucket !== prevBucket) {
+          const tickDmg = Math.max(2, Math.round(z.burnDps * 0.5));
+          const killedByBurn = this.damageZombie(z, tickDmg, false, 0, 1, 0, true);
+          if (killedByBurn) continue;
+        }
+      }
+
       if (z.cooldownTimer > 0) z.cooldownTimer = Math.max(0, z.cooldownTimer - dt);
 
-      const dx = this.playerX - z.x;
-      const dz = this.playerZ - z.z;
+      // Boss Phase 2 Rage Transition at <= 50% HP
+      if (z.kind === 'boss' && !z.phase2Triggered && z.hp <= z.maxHp * 0.5) {
+        z.phase2Triggered = true;
+        applyBossPhase2Glow(z.rig);
+        this.sound.playBossPhase2Roar();
+        this.trauma = Math.min(1.0, this.trauma + 0.55);
+        this.waveBanner = `${getBossTitle(this.wave)} · ENRAGED PHASE 2`;
+        this.waveBannerTimer = 2.6;
+        z.speed *= 1.24;
+        z.rangedCooldown = Math.min(z.rangedCooldown, 0.7);
+        this.spawnFlashRing(z.x, z.z, 6.2, 0xf97316, 0.42);
+        this.spawnBurstParticles(z.x, 1.4, z.z, 26, 0xf97316, 8.8);
+        this.spawnZombie('runner', { x: z.x + 2.1, z: z.z + 1.2 });
+        this.spawnZombie('bomber', { x: z.x - 2.1, z: z.z - 1.2 });
+        this.emitHudSnapshot(true);
+      }
+
+      // Target selection: Decoy Flare lures non-boss zombies away from player
+      let targetX = this.playerX;
+      let targetZ = this.playerZ;
+      let chasingDecoy = false;
+      if (z.kind !== 'boss' && this.activeDecoys.length > 0) {
+        const dec = this.activeDecoys[0];
+        if (Math.hypot(dec.x - z.x, dec.z - z.z) <= GADGET_SPECS.decoy.radius) {
+          targetX = dec.x;
+          targetZ = dec.z;
+          chasingDecoy = true;
+        }
+      }
+
+      // Zombies near a powered Floodlight Generator may target & disable it
+      let targetGenerator: ActiveGenerator | null = null;
+      if (!chasingDecoy && z.kind !== 'spitter' && z.kind !== 'howler') {
+        const pDist = Math.hypot(this.playerX - z.x, this.playerZ - z.z);
+        for (let g = 0; g < this.generators.length; g++) {
+          const gen = this.generators[g];
+          if (!gen.powered) continue;
+          const gDist = Math.hypot(gen.x - z.x, gen.z - z.z);
+          if (gDist < pDist * 0.8 && gDist < 7.5) {
+            targetGenerator = gen;
+            targetX = gen.x;
+            targetZ = gen.z;
+            break;
+          }
+        }
+      }
+
+      const dx = targetX - z.x;
+      const dz = targetZ - z.z;
       const dist = Math.hypot(dx, dz) || 0.001;
       const toPlayerX = dx / dist;
       const toPlayerZ = dz / dist;
 
-      // Shadow Stalker stealth reveal inside player's flashlight cone + hiss cue
+      // Shadow Stalker stealth reveal inside flashlight cone OR powered generator light + UV Overdrive burn
       if (z.kind === 'stalker' && z.rig.stalkerMaterials) {
-        const inCone =
-          z.revealTimer > 0 ||
-          z.stunTimer > 0 ||
-          isPointInFlashlightCone(
-            this.playerX,
-            this.playerZ,
-            this.playerAimAngle,
-            z.x,
-            z.z,
-          );
+        let inGenLight = false;
+        for (let g = 0; g < this.generators.length; g++) {
+          const gen = this.generators[g];
+          if (gen.powered && Math.hypot(z.x - gen.x, z.z - gen.z) <= 12.5) {
+            inGenLight = true;
+            break;
+          }
+        }
+        const inFlashlightCone = isPointInFlashlightCone(
+          this.playerX,
+          this.playerZ,
+          this.playerAimAngle,
+          z.x,
+          z.z,
+          coneRange,
+          coneHalf,
+        );
+        const inCone = z.revealTimer > 0 || z.stunTimer > 0 || inGenLight || inFlashlightCone;
         if (inCone && !z.wasRevealed) {
           this.sound.playStalkerHiss();
         }
@@ -3391,6 +4621,13 @@ export class GameEngine {
           const target = m === mats.length - 1 ? targetEyeAlpha : targetBodyAlpha;
           mat.opacity += (target - mat.opacity) * Math.min(1, dt * 10);
         }
+        if (inFlashlightCone && uvOverdrive) {
+          z.burnTimer = Math.max(z.burnTimer, 0.6);
+          z.burnDps = Math.max(
+            z.burnDps,
+            Math.round(28 * getDamageMultiplier(this.upgradeLevels)),
+          );
+        }
       }
 
       // Stunned enemies hold position & decay knockback cleanly
@@ -3399,11 +4636,28 @@ export class GameEngine {
         z.z += z.knockVz * dt;
         z.knockVx *= Math.exp(-9.5 * dt);
         z.knockVz *= Math.exp(-9.5 * dt);
-        const res = resolveArenaCollisions(z.x, z.z, z.radius);
+        const res = resolveArenaCollisions(z.x, z.z, z.radius, obstacles, halfSize);
         z.x = res.x;
         z.z = res.z;
         z.rig.root.position.set(z.x, 0, z.z);
         continue;
+      }
+
+      // Howler AoE speed-buff shriek
+      if (z.kind === 'howler') {
+        z.howlerCooldown -= dt;
+        if (z.howlerCooldown <= 0 && dist < 16) {
+          z.howlerCooldown = 5.4;
+          this.sound.playHowlerScream();
+          this.spawnFlashRing(z.x, z.z, 7.2, 0xfbbf24, 0.45);
+          for (let j = 0; j < this.zombies.length; j++) {
+            const other = this.zombies[j];
+            if (other.dying || other.id === z.id) continue;
+            if (Math.hypot(other.x - z.x, other.z - z.z) <= 7.2) {
+              other.howlerBuffTimer = Math.max(other.howlerBuffTimer, 4.2);
+            }
+          }
+        }
       }
 
       // Movement policy per zombie archetype
@@ -3421,22 +4675,18 @@ export class GameEngine {
         const angle = Math.atan2(toPlayerZ, toPlayerX) + z.flankSide * 0.48;
         desiredX = Math.cos(angle);
         desiredZ = Math.sin(angle);
-      } else if (z.kind === 'spitter') {
-        // Acid Spitters maintain mid-range distance (7.5..11.5m), kiting if crowded
+      } else if (z.kind === 'spitter' || z.kind === 'howler') {
         if (dist < 5.6) {
           desiredX = -toPlayerX;
           desiredZ = -toPlayerZ;
           moveSpeedMult = 0.72;
         } else if (dist < 9.5) {
-          const perpX = -toPlayerZ * z.flankSide;
-          const perpZ = toPlayerX * z.flankSide;
-          desiredX = perpX;
-          desiredZ = perpZ;
+          desiredX = -toPlayerZ * z.flankSide;
+          desiredZ = toPlayerX * z.flankSide;
           moveSpeedMult = 0.65;
         }
       } else if (z.kind === 'stalker') {
         if (dist > 5.0) {
-          // Ambush curve toward flanks
           const angle = Math.atan2(toPlayerZ, toPlayerX) + z.flankSide * 0.58;
           desiredX = Math.cos(angle);
           desiredZ = Math.sin(angle);
@@ -3453,16 +4703,47 @@ export class GameEngine {
         moveSpeedMult = 2.3;
       }
 
+      if (z.cryoTimer > 0) moveSpeedMult *= 0.7;
+      if (z.howlerBuffTimer > 0) moveSpeedMult *= 1.35;
+      for (let w = 0; w < this.activeWires.length; w++) {
+        const wire = this.activeWires[w];
+        if (Math.hypot(z.x - wire.x, z.z - wire.z) <= GADGET_SPECS.wire.radius) {
+          moveSpeedMult *= 0.5;
+          break;
+        }
+      }
+
       const dLen = Math.hypot(desiredX, desiredZ) || 1;
       desiredX /= dLen;
       desiredZ /= dLen;
 
-      // Boss ranged plasma barrage when player kites at mid-range
+      // Boss ranged plasma barrage & Phase 2 shock slam
       if (z.kind === 'boss' && !z.isWindingUp) {
         z.rangedCooldown -= dt;
-        if (z.rangedCooldown <= 0 && dist > 3.6 && dist < 17.5) {
-          this.fireBossBarrage(z.x, z.z, Math.atan2(toPlayerZ, toPlayerX));
-          z.rangedCooldown = getBossRangedCooldown(this.wave);
+        const pDist = Math.hypot(this.playerX - z.x, this.playerZ - z.z);
+        if (z.rangedCooldown <= 0 && pDist > 3.6 && pDist < 17.5) {
+          this.fireBossBarrage(
+            z.x,
+            z.z,
+            Math.atan2(this.playerZ - z.z, this.playerX - z.x),
+          );
+          z.rangedCooldown =
+            getBossRangedCooldown(this.wave) * (z.phase2Triggered ? 0.75 : 1);
+        }
+        if (z.phase2Triggered && z.bossSlamCooldown <= 0 && pDist < 7.2) {
+          z.bossSlamCooldown = 5.4;
+          this.spawnFlashRing(z.x, z.z, 5.2, 0xf43f5e, 0.36);
+          this.spawnBurstParticles(z.x, 0.4, z.z, 18, 0xf97316, 7.6);
+          this.trauma = Math.min(1.0, this.trauma + 0.4);
+          this.sound.playBruteTelegraph();
+          if (pDist <= 4.8) {
+            const px = (this.playerX - z.x) / (pDist || 1);
+            const pz = (this.playerZ - z.z) / (pDist || 1);
+            this.damagePlayer(z.damage * 0.8, px, pz);
+          }
+          if (this.zombies.length < 14) {
+            this.spawnZombie('runner', { x: z.x + 1.8, z: z.z - 1.4 });
+          }
         }
       }
 
@@ -3520,12 +4801,31 @@ export class GameEngine {
               z.chargeDirZ = toPlayerZ;
             } else {
               z.cooldownTimer = z.attackCooldown;
-              const slamRadius =
-                z.kind === 'boss'
-                  ? z.attackRange + 0.5
-                  : z.attackRange + PLAYER_RADIUS + 0.35;
-              if (dist <= slamRadius) {
-                this.damagePlayer(z.damage, toPlayerX, toPlayerZ);
+              if (targetGenerator && targetGenerator.powered) {
+                targetGenerator.hp = Math.max(0, targetGenerator.hp - z.damage * 1.4);
+                this.spawnBurstParticles(targetGenerator.x, 1.0, targetGenerator.z, 6, 0x38bdf8, 4.2);
+                if (targetGenerator.hp <= 0) {
+                  targetGenerator.powered = false;
+                  targetGenerator.activeRemaining = 0;
+                  targetGenerator.chargeProgress = 0;
+                  this.sound.playGeneratorDisable();
+                  this.pickupToast = `${targetGenerator.id} DISABLED — BLACKOUT`;
+                  this.pickupToastTimer = 2.4;
+                }
+              } else if (!chasingDecoy) {
+                const pDist = Math.hypot(this.playerX - z.x, this.playerZ - z.z);
+                const slamRadius =
+                  z.kind === 'boss'
+                    ? z.attackRange + 0.5
+                    : z.attackRange + PLAYER_RADIUS + 0.35;
+                if (pDist <= slamRadius) {
+                  const pLen = pDist || 1;
+                  this.damagePlayer(
+                    z.damage,
+                    (this.playerX - z.x) / pLen,
+                    (this.playerZ - z.z) / pLen,
+                  );
+                }
               }
               if (z.kind === 'boss') {
                 this.trauma = Math.min(1.0, this.trauma + 0.35);
@@ -3534,7 +4834,7 @@ export class GameEngine {
             }
           }
         }
-      } else if (z.kind === 'spitter') {
+      } else if (z.kind === 'spitter' && !chasingDecoy) {
         if (
           dist >= 3.2 &&
           dist <= z.attackRange &&
@@ -3549,6 +4849,8 @@ export class GameEngine {
         }
       } else if (
         z.kind === 'breacher' &&
+        !chasingDecoy &&
+        !targetGenerator &&
         dist >= 3.0 &&
         dist <= 7.2 &&
         z.chargeCooldown <= 0 &&
@@ -3561,7 +4863,8 @@ export class GameEngine {
         activeAttackers++;
         this.sound.playBruteTelegraph();
       } else if (
-        dist <= z.attackRange + PLAYER_RADIUS * 0.6 &&
+        !chasingDecoy &&
+        dist <= z.attackRange + (targetGenerator ? 0.95 : PLAYER_RADIUS * 0.6) &&
         z.cooldownTimer <= 0 &&
         activeAttackers < 5
       ) {
@@ -3601,7 +4904,13 @@ export class GameEngine {
       z.knockVx *= Math.exp(-9.5 * dt);
       z.knockVz *= Math.exp(-9.5 * dt);
 
-      const resolved = resolveArenaCollisions(z.x, z.z, z.radius);
+      const resolved = resolveArenaCollisions(
+        z.x,
+        z.z,
+        z.radius,
+        obstacles,
+        halfSize,
+      );
       z.x = resolved.x;
       z.z = resolved.z;
 
@@ -3667,7 +4976,13 @@ export class GameEngine {
   }
 
   private spawnAcidPuddle(x: number, z: number, damage: number): void {
-    const pos = resolveArenaCollisions(x, z, 0.8);
+    const pos = resolveArenaCollisions(
+      x,
+      z,
+      0.8,
+      this.getObstacles(),
+      this.getHalfSize(),
+    );
     let slot = this.acidPuddles.find((p) => !p.active);
     if (!slot) {
       // Recycle oldest active acid pool from fixed pool
@@ -3804,6 +5119,11 @@ export class GameEngine {
   private updateTacticalGear(dt: number): void {
     const mineSpec = TACTICAL_GEAR_SPECS.mine;
     const turretSpec = TACTICAL_GEAR_SPECS.turret;
+    const obstacles = this.getObstacles();
+    const halfSize = this.getHalfSize();
+    const hasShockwaveCoil = this.hasPerk('shockwave_coil');
+    const hasTwinTurrets = this.hasPerk('twin_turrets');
+    const hasTeslaCoil = this.hasEvolution('tesla_coil');
 
     // Proximity Mines
     for (let i = this.activeMines.length - 1; i >= 0; i--) {
@@ -3833,14 +5153,19 @@ export class GameEngine {
         this.scene.remove(m.rig.root);
         this.activeMines.splice(i, 1);
         if (m.life > 0) {
-          // Detonate high-damage shrapnel blast (bypasses front armor!)
           const blastRadius =
             mineSpec.blastRadius *
             CLASS_SPECS[this.career.selectedClass].blastRadiusMult;
           this.sound.playGearExplosion();
           this.hitstopTimer = Math.max(this.hitstopTimer, 0.02);
           this.trauma = Math.min(1.0, this.trauma + 0.58);
-          this.spawnFlashRing(m.x, m.z, blastRadius, 0xf97316, 0.3);
+          this.spawnFlashRing(
+            m.x,
+            m.z,
+            blastRadius,
+            hasShockwaveCoil ? 0x38bdf8 : 0xf97316,
+            0.3,
+          );
           this.spawnBurstParticles(m.x, 0.45, m.z, 26, 0xfbbf24, 9.0);
           const dmg = Math.round(
             mineSpec.damage * getDamageMultiplier(this.upgradeLevels),
@@ -3852,6 +5177,9 @@ export class GameEngine {
             const dz = z.z - m.z;
             const dist = Math.hypot(dx, dz) || 0.001;
             if (dist <= blastRadius + z.radius) {
+              if (hasShockwaveCoil) {
+                z.stunTimer = Math.max(z.stunTimer, z.kind === 'boss' ? 0.5 : 1.0);
+              }
               const falloff = Math.max(0.55, 1 - (dist / (blastRadius + 1)) * 0.45);
               this.damageZombie(
                 z,
@@ -3868,7 +5196,7 @@ export class GameEngine {
       }
     }
 
-    // Deployable Sentry Turrets
+    // Deployable Sentry Turrets (Supports Twin-Barrel Turrets & Tesla Coil evolution)
     const turretRange = turretSpec.range ?? 13.5;
     const turretDmgMult = getDamageMultiplier(this.upgradeLevels);
     const turretRateMult = CLASS_SPECS[this.career.selectedClass].turretFireRateMult;
@@ -3901,7 +5229,15 @@ export class GameEngine {
         const dSq = dx * dx + dz * dz;
         if (dSq < bestDistSq) {
           const d = Math.sqrt(dSq) || 1;
-          const wallDist = raycastObstaclesAndWalls(t.x, t.z, dx / d, dz / d, d);
+          const wallDist = raycastObstaclesAndWalls(
+            t.x,
+            t.z,
+            dx / d,
+            dz / d,
+            d,
+            obstacles,
+            halfSize,
+          );
           if (wallDist >= d - z.radius * 0.5) {
             bestDistSq = dSq;
             bestTarget = z;
@@ -3925,10 +5261,32 @@ export class GameEngine {
           const dirZ = dz / dist;
           const mx = t.x + dirX * 0.72;
           const mz = t.z + dirZ * 0.72;
-          this.spawnTracer(mx, 0.74, mz, targetYaw, dist, 0x38bdf8);
-          this.sound.playShoot('smg');
-          const dmg = Math.round(turretSpec.damage * turretDmgMult);
-          this.damageZombie(bestTarget, dmg, false, dirX, dirZ, 2.2, false);
+          const tracerColor = hasTeslaCoil ? 0xf59e0b : 0x38bdf8;
+          this.spawnTracer(mx, 0.74, mz, targetYaw, dist, tracerColor);
+          if (hasTeslaCoil) {
+            this.sound.playTeslaArc();
+          } else {
+            this.sound.playShoot('smg');
+          }
+          const dmg = Math.round(
+            turretSpec.damage *
+              turretDmgMult *
+              (hasTwinTurrets ? 1.35 : 1) *
+              (hasTeslaCoil ? 1.2 : 1),
+          );
+          this.damageZombie(bestTarget, dmg, hasTeslaCoil, dirX, dirZ, 2.2, hasTeslaCoil);
+          if (hasTeslaCoil && !bestTarget.dying) {
+            this.triggerChainLightning(bestTarget, dmg, 2, 0xf59e0b);
+          } else if (hasTwinTurrets && !bestTarget.dying) {
+            this.spawnTracer(
+              mx + 0.14 * dirZ,
+              0.74,
+              mz - 0.14 * dirX,
+              targetYaw,
+              dist,
+              0x22c55e,
+            );
+          }
           this.spawnDirectionalBloodBurst(
             bestTarget.x,
             0.85,
@@ -3942,6 +5300,254 @@ export class GameEngine {
         }
       } else {
         t.rig.headGroup.rotation.y += dt * 0.85;
+      }
+    }
+
+    // Tactical Gadget: Laser Tripmines
+    for (let i = this.activeTripmines.length - 1; i >= 0; i--) {
+      const tm = this.activeTripmines[i];
+      tm.life -= dt;
+      if (tm.armTimer > 0) tm.armTimer -= dt;
+      let triggered = tm.life <= 0;
+      if (tm.armTimer <= 0 && !triggered) {
+        for (let j = 0; j < this.zombies.length; j++) {
+          const z = this.zombies[j];
+          if (z.dying) continue;
+          if (Math.hypot(z.x - tm.x, z.z - tm.z) <= 1.7 + z.radius * 0.5) {
+            triggered = true;
+            break;
+          }
+        }
+      }
+      if (triggered) {
+        this.scene.remove(tm.root);
+        this.activeTripmines.splice(i, 1);
+        if (tm.life > 0) {
+          const r =
+            GADGET_SPECS.tripmine.radius *
+            CLASS_SPECS[this.career.selectedClass].blastRadiusMult;
+          this.sound.playGearExplosion();
+          this.hitstopTimer = Math.max(this.hitstopTimer, 0.02);
+          this.trauma = Math.min(1.0, this.trauma + 0.55);
+          this.spawnFlashRing(tm.x, tm.z, r, 0xef4444, 0.32);
+          this.spawnBurstParticles(tm.x, 0.45, tm.z, 24, 0xef4444, 8.8);
+          const dmg = Math.round(
+            GADGET_SPECS.tripmine.damage * getDamageMultiplier(this.upgradeLevels),
+          );
+          for (let j = this.zombies.length - 1; j >= 0; j--) {
+            const z = this.zombies[j];
+            if (z.dying) continue;
+            const dx = z.x - tm.x;
+            const dz = z.z - tm.z;
+            const dist = Math.hypot(dx, dz) || 0.001;
+            if (dist <= r + z.radius) {
+              if (hasShockwaveCoil) {
+                z.stunTimer = Math.max(z.stunTimer, z.kind === 'boss' ? 0.5 : 1.0);
+              }
+              this.damageZombie(z, dmg, true, dx / dist, dz / dist, 10, true);
+            }
+          }
+        }
+      }
+    }
+
+    // Tactical Gadget: Decoy Flares
+    for (let i = this.activeDecoys.length - 1; i >= 0; i--) {
+      const dec = this.activeDecoys[i];
+      dec.life -= dt;
+      dec.root.rotation.y += dt * 3.5;
+      if (dec.life <= 0) {
+        this.scene.remove(dec.root);
+        this.activeDecoys.splice(i, 1);
+      }
+    }
+
+    // Tactical Gadget: Barbed Wire Snares
+    for (let i = this.activeWires.length - 1; i >= 0; i--) {
+      const wire = this.activeWires[i];
+      wire.life -= dt;
+      if (wire.life <= 0) {
+        this.scene.remove(wire.root);
+        this.activeWires.splice(i, 1);
+        continue;
+      }
+      wire.tickTimer -= dt;
+      if (wire.tickTimer <= 0) {
+        wire.tickTimer = 0.7;
+        const dmg = Math.round(
+          GADGET_SPECS.wire.damage * getDamageMultiplier(this.upgradeLevels),
+        );
+        for (let j = this.zombies.length - 1; j >= 0; j--) {
+          const z = this.zombies[j];
+          if (z.dying) continue;
+          if (Math.hypot(z.x - wire.x, z.z - wire.z) <= GADGET_SPECS.wire.radius) {
+            this.damageZombie(z, dmg, false, 0, 1, 0, true);
+          }
+        }
+      }
+    }
+
+    // Tactical Gadget: Mortar Strikes
+    for (let i = this.activeMortars.length - 1; i >= 0; i--) {
+      const m = this.activeMortars[i];
+      m.age += dt;
+      const p = Math.min(1, m.age / m.duration);
+      m.fillMat.opacity = 0.25 + p * 0.58;
+      m.group.scale.setScalar(0.85 + p * 0.15);
+      if (m.age >= m.duration) {
+        this.scene.remove(m.group);
+        this.activeMortars.splice(i, 1);
+        const r =
+          GADGET_SPECS.mortar.radius *
+          CLASS_SPECS[this.career.selectedClass].blastRadiusMult;
+        this.sound.playMortarImpact();
+        this.hitstopTimer = Math.max(this.hitstopTimer, 0.025);
+        this.trauma = Math.min(1.0, this.trauma + 0.72);
+        this.spawnFlashRing(m.x, m.z, r, 0xf97316, 0.36);
+        this.spawnBurstParticles(m.x, 0.65, m.z, 30, 0xfbbf24, 10.5);
+        const dmg = Math.round(
+          GADGET_SPECS.mortar.damage * getDamageMultiplier(this.upgradeLevels),
+        );
+        for (let j = this.zombies.length - 1; j >= 0; j--) {
+          const z = this.zombies[j];
+          if (z.dying) continue;
+          const dx = z.x - m.x;
+          const dz = z.z - m.z;
+          const dist = Math.hypot(dx, dz) || 0.001;
+          if (dist <= r + z.radius) {
+            if (hasShockwaveCoil) {
+              z.stunTimer = Math.max(z.stunTimer, z.kind === 'boss' ? 0.65 : 1.15);
+            }
+            const falloff = Math.max(0.6, 1 - (dist / (r + 1)) * 0.4);
+            this.damageZombie(
+              z,
+              Math.round(dmg * falloff),
+              true,
+              dx / dist,
+              dz / dist,
+              11.5,
+              true,
+            );
+          }
+        }
+      }
+    }
+
+    // Respawning Explosive Barrels
+    for (let i = 0; i < this.barrels.length; i++) {
+      const b = this.barrels[i];
+      if (b.active) continue;
+      b.respawnTimer -= dt;
+      if (b.respawnTimer <= 0) {
+        if (Math.hypot(this.playerX - b.x, this.playerZ - b.z) > 1.8) {
+          b.active = true;
+          b.rig.root.visible = true;
+          this.spawnBurstParticles(b.x, 0.4, b.z, 8, 0xef4444, 3.6);
+        }
+      }
+    }
+
+    // Floodlight Generators (4s capture ring -> 45s illumination)
+    for (let i = 0; i < this.generators.length; i++) {
+      const gen = this.generators[i];
+      const dist = Math.hypot(this.playerX - gen.x, this.playerZ - gen.z);
+      gen.playerInside = dist <= 2.65;
+      if (gen.powered) {
+        gen.activeRemaining -= dt;
+        if (gen.activeRemaining <= 0) {
+          gen.powered = false;
+          gen.activeRemaining = 0;
+          gen.chargeProgress = 0;
+          this.sound.playGeneratorDisable();
+        }
+      } else if (gen.playerInside) {
+        gen.chargeProgress = Math.min(1, gen.chargeProgress + dt / 4.0);
+        if (gen.chargeProgress >= 1) {
+          gen.powered = true;
+          gen.activeRemaining = 45;
+          gen.hp = gen.maxHp;
+          this.sound.playGeneratorOnline();
+          this.pickupToast = `${gen.id} FLOODLIGHT ONLINE (45s)`;
+          this.pickupToastTimer = 2.4;
+          this.spawnFlashRing(gen.x, gen.z, 4.2, 0x38bdf8, 0.35);
+          this.emitHudSnapshot(true);
+        }
+      } else if (gen.chargeProgress > 0) {
+        gen.chargeProgress = Math.max(0, gen.chargeProgress - dt * 0.25);
+      }
+
+      gen.rig.beaconMat.emissive.setHex(gen.powered ? 0xbae6fd : 0x38bdf8);
+      gen.rig.beaconMat.emissiveIntensity = gen.powered
+        ? 3.4
+        : gen.playerInside
+          ? 1.9
+          : 0.4;
+      gen.rig.poolMat.opacity = gen.powered ? 0.55 : 0;
+      if (gen.rig.spotLight) {
+        gen.rig.spotLight.intensity = gen.powered ? 28 : 0;
+      }
+      gen.rig.ringMat.color.setHex(
+        gen.powered ? 0x22c55e : gen.playerInside ? 0xfbbf24 : 0x38bdf8,
+      );
+      gen.rig.ringMat.opacity = gen.powered ? 0.52 : gen.playerInside ? 0.78 : 0.38;
+    }
+
+    // Risk-Reward Corner Supply Crate Spawns & Pickups
+    if (!this.supplyCrate) {
+      this.supplyDropTimer -= dt;
+      if (this.supplyDropTimer <= 0) {
+        const coords = ARENA_SPECS[this.arena].supplyDropCoords;
+        let chosen = coords[0];
+        let bestDist = -1;
+        for (const c of coords) {
+          const d = Math.hypot(c.x - this.playerX, c.z - this.playerZ);
+          if (d > bestDist && this.rand() > 0.2) {
+            bestDist = d;
+            chosen = c;
+          }
+        }
+        const mesh = buildRiskSupplyCrate(this.shadowTex);
+        mesh.position.set(chosen.x, 0, chosen.z);
+        this.scene.add(mesh);
+        this.supplyCrate = {
+          id: this.nextEntityId++,
+          mesh,
+          x: chosen.x,
+          z: chosen.z,
+          age: 0,
+          life: 24,
+        };
+        this.supplyDropTimer = 28;
+        this.pickupToast = 'SUPPLY DROP IN CORNER CRATE';
+        this.pickupToastTimer = 2.4;
+        this.emitHudSnapshot(true);
+      }
+    } else {
+      const sc = this.supplyCrate;
+      sc.age += dt;
+      sc.mesh.rotation.y += dt * 1.15;
+      if (Math.hypot(this.playerX - sc.x, this.playerZ - sc.z) <= 1.35) {
+        this.scene.remove(sc.mesh);
+        this.supplyCrate = null;
+        this.sound.playPickup('rapidfire');
+        const roll = this.rand();
+        if (roll < 0.36) {
+          this.minigunRemaining = 15;
+          this.pickupToast = 'SUPPLY CRATE · MINIGUN OVERDRIVE (15s)';
+        } else if (roll < 0.7) {
+          this.upgradePoints += 2;
+          this.pickupToast = 'SUPPLY CRATE · +2 UPGRADE POINTS';
+        } else {
+          grantAmmoCrate(this.weapons, (id) => this.getWeaponMagSize(id));
+          this.hp = Math.min(this.maxHp, this.hp + 30);
+          this.pickupToast = 'SUPPLY CRATE · FULL AMMO + 30 HP';
+        }
+        this.pickupToastTimer = 2.6;
+        this.spawnBurstParticles(this.playerX, 0.9, this.playerZ, 18, 0xf59e0b, 6.4);
+        this.emitHudSnapshot(true);
+      } else if (sc.age >= sc.life) {
+        this.scene.remove(sc.mesh);
+        this.supplyCrate = null;
       }
     }
 
@@ -4001,6 +5607,8 @@ export class GameEngine {
         p.vx / speed,
         p.vz / speed,
         step + 0.15,
+        this.getObstacles(),
+        this.getHalfSize(),
       );
       if (blockedDist <= step + 0.05) {
         this.spawnBurstParticles(p.x, 1.0, p.z, 5, 0xf43f5e, 4.2);
@@ -4044,6 +5652,8 @@ export class GameEngine {
       this.playerX + dirX * 0.55,
       this.playerZ + dirZ * 0.55,
       PLAYER_RADIUS,
+      this.getObstacles(),
+      this.getHalfSize(),
     );
     this.playerX = resolved.x;
     this.playerZ = resolved.z;
@@ -4378,18 +5988,29 @@ export class GameEngine {
     }
     const flashBoost = this.lightningFlash * this.lightningFlash;
 
+    const isBlackoutLighting =
+      this.mode === 'blackout' || this.dailyMutator === 'blackout_surge';
+    const baseMoon = isBlackoutLighting ? 0.22 : 1.42;
+    const baseHemi = isBlackoutLighting ? 0.26 : 1.02;
+
     if (this.moonLight) {
-      this.moonLight.intensity = 1.42 + flashBoost * 2.8;
+      this.moonLight.intensity = baseMoon + flashBoost * 2.8;
     }
     if (this.hemiLight) {
-      this.hemiLight.intensity = 1.02 + flashBoost * 1.15;
+      this.hemiLight.intensity = baseHemi + flashBoost * 1.15;
     }
     if (this.scene.fog instanceof THREE.FogExp2) {
-      this.scene.fog.density = this.weatherFogDensity;
-      this.scene.fog.color.copy(this.fogColorCurrent).lerp(this.lightningColor, flashBoost * 0.45);
+      this.scene.fog.density = isBlackoutLighting
+        ? Math.max(this.weatherFogDensity, 0.022)
+        : this.weatherFogDensity;
+      this.scene.fog.color
+        .copy(this.fogColorCurrent)
+        .lerp(this.lightningColor, flashBoost * 0.45);
     }
     if (this.scene.background instanceof THREE.Color) {
-      this.scene.background.copy(this.fogColorCurrent).lerp(this.lightningColor, flashBoost * 0.45);
+      this.scene.background
+        .copy(this.fogColorCurrent)
+        .lerp(this.lightningColor, flashBoost * 0.45);
     }
 
     // Rain InstancedMesh animation (modulated by Graphics Quality setting)
@@ -4436,6 +6057,7 @@ export class GameEngine {
 
     // Ambient drifting night dust motes
     if (this.ambientDust) {
+      const half = this.getHalfSize();
       const attr = this.ambientDust.geometry.getAttribute(
         'position',
       ) as THREE.BufferAttribute;
@@ -4446,10 +6068,10 @@ export class GameEngine {
           dt;
         arr[i + 1] += 0.12 * dt;
         arr[i + 2] += this.weatherWindZ * 0.25 * dt;
-        if (arr[i] > ARENA_HALF_SIZE) arr[i] = -ARENA_HALF_SIZE;
-        if (arr[i] < -ARENA_HALF_SIZE) arr[i] = ARENA_HALF_SIZE;
-        if (arr[i + 2] > ARENA_HALF_SIZE) arr[i + 2] = -ARENA_HALF_SIZE;
-        if (arr[i + 2] < -ARENA_HALF_SIZE) arr[i + 2] = ARENA_HALF_SIZE;
+        if (arr[i] > half) arr[i] = -half;
+        if (arr[i] < -half) arr[i] = half;
+        if (arr[i + 2] > half) arr[i + 2] = -half;
+        if (arr[i + 2] < -half) arr[i + 2] = half;
         if (arr[i + 1] > 5.2) arr[i + 1] = 0.4;
       }
       attr.needsUpdate = true;
@@ -4784,6 +6406,15 @@ export class GameEngine {
         : 1;
     const gearCooldownRemaining = Math.max(0, this.gearCooldownTimer);
 
+    const gadgetCd =
+      GADGET_SPECS[this.equippedGadget].cooldownSec *
+      CLASS_SPECS[this.career.selectedClass].gearCooldownMult;
+    const gadgetCooldownProgress =
+      this.gadgetCooldownTimer > 0
+        ? 1 - Math.min(1, this.gadgetCooldownTimer / gadgetCd)
+        : 1;
+    const gadgetCooldownRemaining = Math.max(0, this.gadgetCooldownTimer);
+
     const aliveEnemies: Array<{
       x: number;
       z: number;
@@ -4818,6 +6449,54 @@ export class GameEngine {
       const t = this.activeTurrets[i];
       hazards.push({ x: t.x, z: t.z, kind: 'turret' });
     }
+    for (let i = 0; i < this.activeTripmines.length; i++) {
+      const tm = this.activeTripmines[i];
+      hazards.push({ x: tm.x, z: tm.z, kind: 'tripmine' });
+    }
+    for (let i = 0; i < this.activeDecoys.length; i++) {
+      const dec = this.activeDecoys[i];
+      hazards.push({ x: dec.x, z: dec.z, kind: 'decoy' });
+    }
+    for (let i = 0; i < this.activeWires.length; i++) {
+      const w = this.activeWires[i];
+      hazards.push({ x: w.x, z: w.z, kind: 'wire' });
+    }
+    let barrelsReady = 0;
+    for (let i = 0; i < this.barrels.length; i++) {
+      const b = this.barrels[i];
+      if (b.active) {
+        barrelsReady++;
+        hazards.push({ x: b.x, z: b.z, kind: 'barrel' });
+      }
+    }
+    const generatorStatuses: GeneratorHudStatus[] = this.generators.map((g) => {
+      hazards.push({
+        x: g.x,
+        z: g.z,
+        kind: g.powered ? 'generator_on' : 'generator_off',
+      });
+      return {
+        id: g.id,
+        x: g.x,
+        z: g.z,
+        powered: g.powered,
+        progress: g.powered ? Math.max(0, g.activeRemaining / 45) : g.chargeProgress,
+        playerInside: g.playerInside,
+      };
+    });
+
+    const minimapPickups: MinimapPickup[] = this.pickups.map((p) => ({
+      x: p.x,
+      z: p.z,
+      kind: p.kind,
+    }));
+    if (this.supplyCrate) {
+      minimapPickups.push({
+        x: this.supplyCrate.x,
+        z: this.supplyCrate.z,
+        kind: 'supply',
+      });
+    }
 
     this.callbacks.onHudUpdate({
       phase: this.phase,
@@ -4836,11 +6515,16 @@ export class GameEngine {
       equippedGear: this.equippedGear,
       gearCooldownProgress,
       gearCooldownRemaining,
+      equippedGadget: this.equippedGadget,
+      gadgetCooldownProgress,
+      gadgetCooldownRemaining,
       rapidFireRemaining: this.rapidFireRemaining,
+      minigunRemaining: this.minigunRemaining,
       muted: this.sound.isMuted(),
       waveBanner: this.waveBanner,
       pickupToast: this.pickupToast,
       skinUnlockToast: this.skinUnlockToast,
+      evolutionBanner: this.evolutionBanner,
       kills: this.kills,
       damageTaken: Math.round(this.damageTaken),
       isNewHighScore: this.isNewHighScore,
@@ -4848,12 +6532,26 @@ export class GameEngine {
       killsTowardNextUp: this.killsTowardNextUp,
       killsPerUp: KILLS_PER_UPGRADE_POINT,
       upgradeLevels: { ...this.upgradeLevels },
+      weaponMastery: { ...this.weaponMastery },
+      ownedPerks: [...this.ownedPerks],
+      perkDraftChoices: this.perkDraftChoices ? [...this.perkDraftChoices] : null,
+      evolvedWeapons: [...this.evolvedWeapons],
+      arena: this.arena,
+      mode: this.mode,
+      dailyDateKey: this.dailyDateKey,
+      dailyMutatorLabel: this.dailyMutatorLabel,
+      generators: generatorStatuses,
+      barrelsReady,
+      bossPhase2Active: Boolean(boss?.phase2Triggered),
+      bossesKilledInRun: this.bossesKilledInRun,
+      callsign: this.callsign,
       activeBoss: boss
         ? {
             name: getBossTitle(this.wave),
             hp: Math.max(0, Math.ceil(boss.hp)),
             maxHp: boss.maxHp,
             wave: this.wave,
+            phase2: boss.phase2Triggered,
           }
         : null,
       weather: this.weatherKind,
@@ -4871,7 +6569,7 @@ export class GameEngine {
         playerZ: this.playerZ,
         playerAimAngle: this.playerAimAngle,
         enemies: aliveEnemies,
-        pickups: this.pickups.map((p) => ({ x: p.x, z: p.z, kind: p.kind })),
+        pickups: minimapPickups,
         hazards,
       },
     });

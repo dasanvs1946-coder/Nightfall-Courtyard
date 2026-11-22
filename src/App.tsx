@@ -1,11 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { User } from 'firebase/auth';
 import { HudOverlay } from './components/HudOverlay';
+import { LeaderboardModal } from './components/LeaderboardModal';
+import { PerkDraftModal } from './components/PerkDraftModal';
 import { SettingsModal } from './components/SettingsModal';
 import { StatusModal } from './components/StatusModal';
 import { TitleScreen } from './components/TitleScreen';
+import {
+  signInWithGoogle,
+  signOutFirebase,
+  subscribeToAuthState,
+} from './firebase';
 import { loadCareerStats } from './game/career';
 import { loadSettings } from './game/settings';
-import { loadHighScore, loadRunProgress } from './game/storage';
+import { loadCallsign, loadHighScore, loadRunProgress } from './game/storage';
 import {
   CareerStats,
   FloatingDamage,
@@ -17,18 +25,21 @@ import {
 } from './game/types';
 import {
   createInitialUpgradeLevels,
+  createInitialWeaponMastery,
   KILLS_PER_UPGRADE_POINT,
 } from './game/upgrades';
 import { APP_VERSION } from './game/version';
 import { createInitialWeapons } from './game/weapons';
 import { parseWeatherParam } from './game/weather';
 import { GameEngine } from './scene/GameEngine';
+import { submitLeaderboardRun } from './services/leaderboardService';
 import { checkForAndroidUpdate } from './services/updateChecker';
 
 function createDefaultHudSnapshot(): HudSnapshot {
   const saved = loadRunProgress();
   const initialCareer = loadCareerStats();
   const initialSettings = loadSettings();
+  const initialCallsign = loadCallsign();
   return {
     phase: 'title',
     hp: 100,
@@ -46,11 +57,16 @@ function createDefaultHudSnapshot(): HudSnapshot {
     equippedGear: saved?.equippedGear ?? 'mine',
     gearCooldownProgress: 1,
     gearCooldownRemaining: 0,
+    equippedGadget: saved?.equippedGadget ?? 'tripmine',
+    gadgetCooldownProgress: 1,
+    gadgetCooldownRemaining: 0,
     rapidFireRemaining: 0,
+    minigunRemaining: 0,
     muted: false,
     waveBanner: null,
     pickupToast: null,
     skinUnlockToast: null,
+    evolutionBanner: null,
     kills: 0,
     damageTaken: 0,
     isNewHighScore: false,
@@ -58,6 +74,19 @@ function createDefaultHudSnapshot(): HudSnapshot {
     killsTowardNextUp: 0,
     killsPerUp: KILLS_PER_UPGRADE_POINT,
     upgradeLevels: createInitialUpgradeLevels(),
+    weaponMastery: createInitialWeaponMastery(),
+    ownedPerks: [],
+    perkDraftChoices: null,
+    evolvedWeapons: [],
+    arena: 'courtyard',
+    mode: 'normal',
+    dailyDateKey: null,
+    dailyMutatorLabel: null,
+    generators: [],
+    barrelsReady: 0,
+    bossPhase2Active: false,
+    bossesKilledInRun: 0,
+    callsign: initialCallsign,
     activeBoss: null,
     weather: 'clear',
     bloodSplatter: 0,
@@ -83,6 +112,7 @@ function createDefaultHudSnapshot(): HudSnapshot {
 export default function App() {
   const canvasMountRef = useRef<HTMLDivElement | null>(null);
   const engineRef = useRef<GameEngine | null>(null);
+  const submittedRunKeyRef = useRef<string | null>(null);
   const [hud, setHud] = useState<HudSnapshot>(() => createDefaultHudSnapshot());
   const [savedProgress, setSavedProgress] = useState<SavedRunProgress | null>(() =>
     loadRunProgress(),
@@ -90,10 +120,19 @@ export default function App() {
   const [career, setCareer] = useState<CareerStats>(() => loadCareerStats());
   const [settings, setSettings] = useState<GameSettings>(() => loadSettings());
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [leaderboardOpen, setLeaderboardOpen] = useState(false);
+  const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
+  const [leaderboardStatus, setLeaderboardStatus] = useState<string | null>(null);
   const [androidUpdate, setAndroidUpdate] = useState<RemoteAppConfig | null>(null);
   const [floatingDamages, setFloatingDamages] = useState<FloatingDamage[]>([]);
   const [upgradesOpen, setUpgradesOpen] = useState(false);
   const [webglError, setWebglError] = useState<string | null>(null);
+
+  useEffect(() => {
+    return subscribeToAuthState((user) => {
+      setFirebaseUser(user);
+    });
+  }, []);
 
   useEffect(() => {
     if (hud.phase !== 'playing' && upgradesOpen) {
@@ -119,7 +158,68 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (hud.phase !== 'gameover') {
+      submittedRunKeyRef.current = null;
+      setLeaderboardStatus(null);
+      return;
+    }
+    const runKey = `${hud.wave}-${hud.score}-${hud.kills}-${hud.mode}-${hud.arena}-${firebaseUser?.uid ?? 'anon'}`;
+    if (submittedRunKeyRef.current === runKey) return;
+    submittedRunKeyRef.current = runKey;
+
+    if (!firebaseUser) {
+      setLeaderboardStatus('Sign in via Top 20 to publish runs globally.');
+      return;
+    }
+
+    setLeaderboardStatus('Submitting score to Top 20...');
+    submitLeaderboardRun({
+      callsign: hud.callsign,
+      wave: hud.wave,
+      kills: hud.kills,
+      score: hud.score,
+      mode: hud.mode,
+      arena: hud.arena,
+      skinId: hud.equippedSkinId,
+      dailyDateKey: hud.dailyDateKey,
+    })
+      .then((res) => {
+        if (res.submittedGlobal || res.submittedDaily) {
+          setLeaderboardStatus(
+            res.submittedDaily
+              ? 'Published new Global & Daily Top 20 record!'
+              : 'Published new Personal Best to Global Top 20!',
+          );
+        } else if (res.reason === 'not_verified') {
+          setLeaderboardStatus('Verified Google account required to post scores.');
+        } else if (res.reason === 'not_personal_best') {
+          setLeaderboardStatus('Existing Top 20 personal best kept.');
+        }
+      })
+      .catch(() => {
+        setLeaderboardStatus('Offline — run saved locally.');
+      });
+  }, [
+    hud.phase,
+    hud.wave,
+    hud.score,
+    hud.kills,
+    hud.mode,
+    hud.arena,
+    hud.callsign,
+    hud.equippedSkinId,
+    hud.dailyDateKey,
+    firebaseUser,
+  ]);
+
+  useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement
+      ) {
+        return;
+      }
       if (e.code === 'KeyU' && hud.phase === 'playing') {
         setUpgradesOpen((prev) => {
           const next = !prev;
@@ -210,10 +310,19 @@ export default function App() {
           highScore={hud.highScore}
           savedProgress={savedProgress}
           equippedGear={hud.equippedGear}
+          equippedGadget={hud.equippedGadget}
+          arena={hud.arena}
+          mode={hud.mode}
+          callsign={hud.callsign}
           career={career}
           androidUpdate={androidUpdate}
+          onChangeCallsign={(raw) => engineRef.current?.setCallsign(raw)}
+          onSelectArena={(id) => engineRef.current?.setArena(id)}
+          onSelectMode={(id) => engineRef.current?.setGameMode(id)}
           onEquipGear={(id) => engineRef.current?.equipGear(id)}
+          onEquipGadget={(id) => engineRef.current?.equipGadget(id)}
           onOpenSettings={() => setSettingsOpen(true)}
+          onOpenLeaderboard={() => setLeaderboardOpen(true)}
           onSkinPreviewChange={handleSkinPreviewChange}
           onEquipSkin={(skinId) => engineRef.current?.equipSkin(skinId)}
           onSelectClass={(classId) => engineRef.current?.selectClass(classId)}
@@ -222,11 +331,19 @@ export default function App() {
           }
           onStartFromBeginning={() => {
             setSettingsOpen(false);
+            setLeaderboardOpen(false);
             setUpgradesOpen(false);
             engineRef.current?.startNewGame({ fromBeginning: true });
           }}
+          onStartDailyRun={() => {
+            setSettingsOpen(false);
+            setLeaderboardOpen(false);
+            setUpgradesOpen(false);
+            engineRef.current?.startDailyRun();
+          }}
           onResumeInterrupted={() => {
             setSettingsOpen(false);
+            setLeaderboardOpen(false);
             setUpgradesOpen(false);
             engineRef.current?.startNewGame({
               fromBeginning: false,
@@ -261,7 +378,9 @@ export default function App() {
           onReload={() => engineRef.current?.triggerReload()}
           onSwitchWeapon={() => engineRef.current?.switchWeapon()}
           onTriggerGear={() => engineRef.current?.triggerGear()}
+          onTriggerGadget={() => engineRef.current?.triggerGadget()}
           onEquipGear={(id) => engineRef.current?.equipGear(id)}
+          onEquipGadget={(id) => engineRef.current?.equipGadget(id)}
           onPrevWeapon={() => engineRef.current?.prevWeapon()}
           onNextWeapon={() => engineRef.current?.switchWeapon()}
           onSelectWeapon={(id) => engineRef.current?.selectWeapon(id)}
@@ -272,12 +391,25 @@ export default function App() {
           }}
           onToggleUpgrades={handleToggleUpgrades}
           onBuyUpgrade={(id) => engineRef.current?.buyUpgrade(id)}
+          onBuyMastery={(weaponId) =>
+            engineRef.current?.buyWeaponMastery(weaponId)
+          }
+        />
+      )}
+
+      {!webglError && hud.phase === 'playing' && hud.perkDraftChoices && (
+        <PerkDraftModal
+          wave={hud.wave}
+          choices={hud.perkDraftChoices}
+          ownedCount={hud.ownedPerks.length}
+          onSelectPerk={(perkId) => engineRef.current?.choosePerk(perkId)}
         />
       )}
 
       {!webglError && (
         <StatusModal
           hud={hud}
+          leaderboardStatus={leaderboardStatus}
           onResume={() => engineRef.current?.resumeGame()}
           onRevive={() => engineRef.current?.triggerRevive()}
           onEndRun={() => engineRef.current?.confirmEndRun()}
@@ -289,6 +421,22 @@ export default function App() {
             setUpgradesOpen(false);
             engineRef.current?.returnToTitle();
           }}
+          onOpenLeaderboard={() => setLeaderboardOpen(true)}
+        />
+      )}
+
+      {!webglError && (
+        <LeaderboardModal
+          open={leaderboardOpen}
+          user={firebaseUser}
+          currentCallsign={hud.callsign}
+          onSignIn={async () => {
+            await signInWithGoogle();
+          }}
+          onSignOut={async () => {
+            await signOutFirebase();
+          }}
+          onClose={() => setLeaderboardOpen(false)}
         />
       )}
     </main>

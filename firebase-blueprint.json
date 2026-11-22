@@ -2,7 +2,7 @@
   "entities": {
     "LeaderboardEntry": {
       "title": "LeaderboardEntry",
-      "description": "Public personal-best survival run record for a verified player on the Nightfall Courtyard global leaderboard.",
+      "description": "Public personal-best survival run record for a verified player on the Nightfall Courtyard global Top 20 leaderboard.",
       "type": "object",
       "properties": {
         "uid": {
@@ -12,16 +12,12 @@
           "pattern": "^[a-zA-Z0-9_\\-]+$",
           "description": "Authenticated Firebase UID matching the document ID."
         },
-        "playerName": {
+        "callsign": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 24,
-          "pattern": "^[a-zA-Z0-9 _\\-\\.]+$",
-          "description": "Sanitized public survivor callsign (zero PII)."
-        },
-        "score": {
-          "type": "integer",
-          "description": "Best run score achieved (non-negative integer, <= 100000000)."
+          "minLength": 3,
+          "maxLength": 12,
+          "pattern": "^[A-Za-z0-9_]{3,12}$",
+          "description": "Public survivor callsign (3-12 alphanumeric/underscore characters, zero PII)."
         },
         "wave": {
           "type": "integer",
@@ -31,14 +27,40 @@
           "type": "integer",
           "description": "Total infected eliminated in the recorded run (0..1000000)."
         },
-        "equippedGear": {
+        "score": {
+          "type": "integer",
+          "description": "Best run score achieved (0..100000000)."
+        },
+        "mode": {
           "type": "string",
-          "enum": ["mine", "turret", "flashbang"],
-          "description": "Tactical gear equipped during the run."
+          "enum": ["normal", "storm", "blackout", "boss_rush", "daily"],
+          "description": "Game mode played during the recorded run."
+        },
+        "arena": {
+          "type": "string",
+          "enum": ["courtyard", "parking_deck", "helipad"],
+          "description": "Arena map selected during the recorded run."
+        },
+        "skinId": {
+          "type": "string",
+          "enum": [
+            "nightwatch",
+            "crimson_recon",
+            "hazmat_breacher",
+            "cyber_ronin",
+            "storm_phantom",
+            "golden_sovereign"
+          ],
+          "description": "Equipped operative skin ID for badge rendering."
+        },
+        "platform": {
+          "type": "string",
+          "enum": ["Web", "APK"],
+          "description": "Client runtime platform tag."
         },
         "isPublic": {
           "type": "boolean",
-          "description": "Always true; enables rule-enforced public leaderboard list queries."
+          "description": "Always true; marks entry visible on public leaderboard."
         },
         "createdAt": {
           "type": "string",
@@ -53,11 +75,117 @@
       },
       "required": [
         "uid",
-        "playerName",
-        "score",
+        "callsign",
         "wave",
         "kills",
-        "equippedGear",
+        "score",
+        "mode",
+        "arena",
+        "skinId",
+        "platform",
+        "isPublic",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "DailyLeaderboardEntry": {
+      "title": "DailyLeaderboardEntry",
+      "description": "Public personal-best survival run record for a UTC Daily Seeded Challenge.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Authenticated Firebase UID matching the document ID."
+        },
+        "callsign": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 12,
+          "pattern": "^[A-Za-z0-9_]{3,12}$",
+          "description": "Public survivor callsign."
+        },
+        "dateKey": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^20[0-9]{2}-[0-9]{2}-[0-9]{2}$",
+          "description": "UTC date key YYYY-MM-DD matching the daily challenge."
+        },
+        "mutator": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 48,
+          "description": "Daily mutator identifier for the UTC seed."
+        },
+        "wave": {
+          "type": "integer",
+          "description": "Wave reached in the Daily Run (1..999)."
+        },
+        "kills": {
+          "type": "integer",
+          "description": "Total infected eliminated in the Daily Run (0..1000000)."
+        },
+        "score": {
+          "type": "integer",
+          "description": "Best score achieved on this UTC day (0..100000000)."
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["daily"],
+          "description": "Always 'daily' for daily seeded runs."
+        },
+        "arena": {
+          "type": "string",
+          "enum": ["courtyard", "parking_deck", "helipad"],
+          "description": "Deterministic arena for this UTC date."
+        },
+        "skinId": {
+          "type": "string",
+          "enum": [
+            "nightwatch",
+            "crimson_recon",
+            "hazmat_breacher",
+            "cyber_ronin",
+            "storm_phantom",
+            "golden_sovereign"
+          ],
+          "description": "Equipped operative skin ID."
+        },
+        "platform": {
+          "type": "string",
+          "enum": ["Web", "APK"],
+          "description": "Client runtime platform tag."
+        },
+        "isPublic": {
+          "type": "boolean",
+          "description": "Always true."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when entry was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when entry was updated."
+        }
+      },
+      "required": [
+        "uid",
+        "callsign",
+        "dateKey",
+        "mutator",
+        "wave",
+        "kills",
+        "score",
+        "mode",
+        "arena",
+        "skinId",
+        "platform",
         "isPublic",
         "createdAt",
         "updatedAt"
@@ -70,7 +198,7 @@
       "properties": {
         "latestVersion": {
           "type": "string",
-          "description": "Semantic version string (e.g. '1.2.1' or 'v1.2.1')."
+          "description": "Semantic version string (e.g. '2.0.0' or 'v2.0.0')."
         },
         "downloadUrl": {
           "type": "string",
@@ -90,7 +218,13 @@
       "schema": {
         "$ref": "#/entities/LeaderboardEntry"
       },
-      "description": "Global personal-best high score entries keyed by the verified player UID."
+      "description": "Global Top 20 personal-best high score entries keyed by verified player UID."
+    },
+    "/daily_leaderboard/{dateKey}/entries/{entryId}": {
+      "schema": {
+        "$ref": "#/entities/DailyLeaderboardEntry"
+      },
+      "description": "Daily Seeded Challenge leaderboard entries keyed by UTC date and verified player UID."
     },
     "/config/{configId}": {
       "schema": {

@@ -18,6 +18,8 @@ export const ZOMBIE_KIND_ORDER: ZombieKind[] = [
   'spitter',
   'stalker',
   'breacher',
+  'bomber',
+  'howler',
   'boss',
 ];
 
@@ -528,6 +530,14 @@ export const BESTIARY_ENTRIES: BestiaryEntrySpec[] = [
     accentHex: '#f97316',
   },
   {
+    kind: 'bomber',
+    name: 'Volatile Bomber',
+    threatLevel: 'High',
+    firstWave: 'Wave 3+',
+    intelNote: 'Pressurized volatile pustules detonate on death—snipe inside packs to chain-clear hordes.',
+    accentHex: '#fb923c',
+  },
+  {
     kind: 'spitter',
     name: 'Acid Spitter',
     threatLevel: 'High',
@@ -536,11 +546,19 @@ export const BESTIARY_ENTRIES: BestiaryEntrySpec[] = [
     accentHex: '#84cc16',
   },
   {
+    kind: 'howler',
+    name: 'Howler',
+    threatLevel: 'High',
+    firstWave: 'Wave 6+',
+    intelNote: 'Bio-acoustic screamer whose pulsing roar accelerates nearby infected by 35%. Eliminate fast.',
+    accentHex: '#fbbf24',
+  },
+  {
     kind: 'stalker',
     name: 'Shadow Stalker',
     threatLevel: 'Severe',
     firstWave: 'Wave 7+',
-    intelNote: 'Cloaked ambusher revealed cleanly inside your tactical flashlight cone.',
+    intelNote: 'Cloaked ambusher revealed cleanly inside your flashlight cone or active floodlights.',
     accentHex: '#a855f7',
   },
   {
@@ -548,7 +566,7 @@ export const BESTIARY_ENTRIES: BestiaryEntrySpec[] = [
     name: 'Riot Breacher',
     threatLevel: 'Severe',
     firstWave: 'Wave 10+',
-    intelNote: 'Ballistic shield blocks 65% frontal bullet damage. Flank, dash behind, or blast.',
+    intelNote: 'Ballistic shield blocks 65% frontal bullet damage. Flank, dash behind, or detonate barrels.',
     accentHex: '#38bdf8',
   },
   {
@@ -556,7 +574,7 @@ export const BESTIARY_ENTRIES: BestiaryEntrySpec[] = [
     name: 'Iron Warden',
     threatLevel: 'Apex',
     firstWave: 'Every 5th Wave',
-    intelNote: 'Siege colossus with glowing red furnace weak points and plasma barrages.',
+    intelNote: 'Siege colossus that enrages below 50% HP with shock slams and minion summons.',
     accentHex: '#f43f5e',
   },
 ];
@@ -588,6 +606,8 @@ export function createDefaultKillsByEnemyType(): KillsByEnemyType {
     spitter: 0,
     stalker: 0,
     breacher: 0,
+    bomber: 0,
+    howler: 0,
     boss: 0,
   };
 }
@@ -715,11 +735,13 @@ export function computeRunScrapReward(params: {
   wave: number;
   kills: number;
   bossesKilledInRun: number;
+  rewardMultiplier?: number;
 }): number {
   const w = Math.max(1, Math.floor(params.wave));
   const k = Math.max(0, Math.floor(params.kills));
   const b = Math.max(0, Math.floor(params.bossesKilledInRun));
-  return Math.max(5, Math.round(w * 6 + k * 0.35 + b * 20));
+  const mult = Math.max(1, params.rewardMultiplier ?? 1);
+  return Math.max(5, Math.round((w * 6 + k * 0.35 + b * 20) * mult));
 }
 
 export function purchasePermanentUpgrade(

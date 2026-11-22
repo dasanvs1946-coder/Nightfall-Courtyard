@@ -1,9 +1,11 @@
 import React from 'react';
-import { Bomb, Crosshair, Sparkles } from 'lucide-react';
+import { Bomb, Crosshair, Flame, Radio, ShieldAlert, Sparkles, Target } from 'lucide-react';
+import { GADGET_SPECS } from '../game/gadgets';
 import { TACTICAL_GEAR_SPECS } from '../game/tacticalGear';
-import { WEAPON_SPECS } from '../game/weapons';
 import { getEffectiveMagSize } from '../game/upgrades';
+import { WEAPON_SPECS } from '../game/weapons';
 import {
+  GadgetId,
   TacticalGearId,
   UpgradeLevels,
   WeaponId,
@@ -18,12 +20,16 @@ interface ActionControlsProps {
   equippedGear: TacticalGearId;
   gearCooldownProgress: number; // 1 = ready
   gearCooldownRemaining: number;
+  equippedGadget: GadgetId;
+  gadgetCooldownProgress: number; // 1 = ready
+  gadgetCooldownRemaining: number;
   isReloading: boolean;
   reloadProgress: number; // 0..1
   onDash: () => void;
   onReload: () => void;
   onSwitchWeapon: () => void;
   onTriggerGear: () => void;
+  onTriggerGadget: () => void;
 }
 
 export const ActionControls: React.FC<ActionControlsProps> = ({
@@ -34,16 +40,22 @@ export const ActionControls: React.FC<ActionControlsProps> = ({
   equippedGear,
   gearCooldownProgress,
   gearCooldownRemaining,
+  equippedGadget,
+  gadgetCooldownProgress,
+  gadgetCooldownRemaining,
   isReloading,
   reloadProgress,
   onDash,
   onReload,
   onSwitchWeapon,
   onTriggerGear,
+  onTriggerGadget,
 }) => {
   const dashReady = dashCooldownProgress >= 0.999;
   const gearReady = gearCooldownProgress >= 0.999;
+  const gadgetReady = gadgetCooldownProgress >= 0.999;
   const gearSpec = TACTICAL_GEAR_SPECS[equippedGear];
+  const gadgetSpec = GADGET_SPECS[equippedGadget];
   const activeState = weapons.find((w) => w.id === activeWeapon);
   const spec = WEAPON_SPECS[activeWeapon];
   const magCapacity = getEffectiveMagSize(activeWeapon, upgradeLevels);
@@ -61,52 +73,107 @@ export const ActionControls: React.FC<ActionControlsProps> = ({
         ? Crosshair
         : Sparkles;
 
+  const GadgetIcon =
+    equippedGadget === 'tripmine'
+      ? Radio
+      : equippedGadget === 'decoy'
+        ? Flame
+        : equippedGadget === 'wire'
+          ? ShieldAlert
+          : Target;
+
   return (
     <div className="pointer-events-auto flex flex-col items-end gap-2">
-      {/* Tactical Gear Trigger Pill/Tile (anchored cleanly above bottom action row) */}
-      <button
-        type="button"
-        tabIndex={-1}
-        data-testid="tactical-gear-btn"
-        aria-label={`Deploy ${gearSpec.name}`}
-        onPointerDown={(e) => {
-          e.stopPropagation();
-          onTriggerGear();
-          e.currentTarget.blur();
-        }}
-        className="relative flex h-10 min-w-[104px] items-center justify-center gap-1.5 overflow-hidden rounded-xl border px-2.5 text-white transition-transform active:scale-95"
-        style={{
-          backgroundColor: gearReady
-            ? 'rgba(8, 145, 178, 0.34)'
-            : 'rgba(15, 23, 42, 0.88)',
-          borderColor: gearReady
-            ? 'rgba(34, 211, 238, 0.88)'
-            : 'rgba(148, 163, 184, 0.35)',
-        }}
-      >
-        {!gearReady && (
-          <div
-            aria-hidden="true"
-            className="absolute inset-y-0 left-0 bg-cyan-500/28"
-            style={{ width: `${Math.round(gearCooldownProgress * 100)}%` }}
-          />
-        )}
-        <GearIcon
-          className={`relative z-10 h-4 w-4 shrink-0 ${
-            gearReady ? 'text-cyan-300' : 'text-slate-400'
-          }`}
-        />
-        <span className="relative z-10 text-[10px] font-bold tracking-wider uppercase">
-          {gearSpec.shortLabel}
-        </span>
-        <span
-          className={`font-mono-tabular relative z-10 text-[10px] font-bold ${
-            gearReady ? 'text-cyan-300' : 'text-slate-300'
-          }`}
+      {/* Tactical Gear & Dedicated Gadget Row */}
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          tabIndex={-1}
+          data-testid="gadget-btn"
+          aria-label={`Deploy ${gadgetSpec.name}`}
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            onTriggerGadget();
+            e.currentTarget.blur();
+          }}
+          className="relative flex h-9 min-w-[82px] items-center justify-center gap-1 overflow-hidden rounded-xl border px-2 text-white transition-transform active:scale-95 sm:h-10 sm:min-w-[92px]"
+          style={{
+            backgroundColor: gadgetReady
+              ? 'rgba(245, 158, 11, 0.24)'
+              : 'rgba(15, 23, 42, 0.88)',
+            borderColor: gadgetReady
+              ? 'rgba(245, 158, 11, 0.85)'
+              : 'rgba(148, 163, 184, 0.35)',
+          }}
         >
-          {gearReady ? 'RDY' : `${Math.ceil(gearCooldownRemaining)}s`}
-        </span>
-      </button>
+          {!gadgetReady && (
+            <div
+              aria-hidden="true"
+              className="absolute inset-y-0 left-0 bg-amber-500/28"
+              style={{ width: `${Math.round(gadgetCooldownProgress * 100)}%` }}
+            />
+          )}
+          <GadgetIcon
+            className={`relative z-10 h-3.5 w-3.5 shrink-0 ${
+              gadgetReady ? 'text-amber-300' : 'text-slate-400'
+            }`}
+          />
+          <span className="relative z-10 text-[9px] font-extrabold tracking-wider uppercase sm:text-[10px]">
+            {gadgetSpec.shortLabel}
+          </span>
+          <span
+            className={`font-mono-tabular relative z-10 text-[9px] font-bold sm:text-[10px] ${
+              gadgetReady ? 'text-amber-300' : 'text-slate-300'
+            }`}
+          >
+            {gadgetReady ? 'Q' : `${Math.ceil(gadgetCooldownRemaining)}s`}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          tabIndex={-1}
+          data-testid="tactical-gear-btn"
+          aria-label={`Deploy ${gearSpec.name}`}
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            onTriggerGear();
+            e.currentTarget.blur();
+          }}
+          className="relative flex h-9 min-w-[82px] items-center justify-center gap-1 overflow-hidden rounded-xl border px-2 text-white transition-transform active:scale-95 sm:h-10 sm:min-w-[96px]"
+          style={{
+            backgroundColor: gearReady
+              ? 'rgba(8, 145, 178, 0.34)'
+              : 'rgba(15, 23, 42, 0.88)',
+            borderColor: gearReady
+              ? 'rgba(34, 211, 238, 0.88)'
+              : 'rgba(148, 163, 184, 0.35)',
+          }}
+        >
+          {!gearReady && (
+            <div
+              aria-hidden="true"
+              className="absolute inset-y-0 left-0 bg-cyan-500/28"
+              style={{ width: `${Math.round(gearCooldownProgress * 100)}%` }}
+            />
+          )}
+          <GearIcon
+            className={`relative z-10 h-3.5 w-3.5 shrink-0 ${
+              gearReady ? 'text-cyan-300' : 'text-slate-400'
+            }`}
+          />
+          <span className="relative z-10 text-[9px] font-extrabold tracking-wider uppercase sm:text-[10px]">
+            {gearSpec.shortLabel}
+          </span>
+          <span
+            className={`font-mono-tabular relative z-10 text-[9px] font-bold sm:text-[10px] ${
+              gearReady ? 'text-cyan-300' : 'text-slate-300'
+            }`}
+          >
+            {gearReady ? 'G' : `${Math.ceil(gearCooldownRemaining)}s`}
+          </span>
+        </button>
+      </div>
 
       {/* Primary Action Row: Swap, Reload, Dash */}
       <div className="flex items-center gap-2">
@@ -241,4 +308,3 @@ export const ActionControls: React.FC<ActionControlsProps> = ({
     </div>
   );
 };
-

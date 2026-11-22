@@ -21,9 +21,38 @@ export type ZombieKind =
   | 'spitter'
   | 'stalker'
   | 'breacher'
+  | 'bomber'
+  | 'howler'
   | 'boss';
 
 export type TacticalGearId = 'mine' | 'turret' | 'flashbang';
+
+export type GadgetId = 'tripmine' | 'decoy' | 'wire' | 'mortar';
+
+export type ArenaId = 'courtyard' | 'parking_deck' | 'helipad';
+
+export type GameModeId = 'normal' | 'storm' | 'blackout' | 'boss_rush' | 'daily';
+
+export type DailyMutatorId =
+  | 'acid_rain'
+  | 'hyper_dash'
+  | 'volatile_horde'
+  | 'blackout_surge';
+
+export type PerkId =
+  | 'cryo_rounds'
+  | 'storm_conductor'
+  | 'uv_overdrive'
+  | 'vampiric_rounds'
+  | 'twin_turrets'
+  | 'incendiary'
+  | 'piercing_core'
+  | 'shockwave_coil'
+  | 'extended_drums'
+  | 'critical_optics'
+  | 'dash_shockwave';
+
+export type EvolutionId = 'dragons_breath' | 'rail_smg' | 'tesla_coil';
 
 export type CrateKind = 'health' | 'ammo' | 'rapidfire';
 
@@ -35,6 +64,8 @@ export type UpgradeId =
   | 'capacity';
 
 export type UpgradeLevels = Record<UpgradeId, number>;
+
+export type WeaponMasteryLevels = Record<WeaponId, number>;
 
 export type GraphicsQuality = 'low' | 'medium' | 'high';
 
@@ -124,17 +155,25 @@ export interface SavedRunProgress {
   kills: number;
   upgradePoints: number;
   upgradeLevels: UpgradeLevels;
+  weaponMastery?: WeaponMasteryLevels;
   activeWeapon: WeaponId;
   equippedGear?: TacticalGearId;
+  equippedGadget?: GadgetId;
   weapons?: WeaponRuntimeState[];
   hasUsedRevive?: boolean;
-  mode?: 'survival';
+  mode?: GameModeId | 'survival';
+  arena?: ArenaId;
+  ownedPerks?: PerkId[];
+  evolvedWeapons?: EvolutionId[];
+  dailyDateKey?: string;
+  perkDraftPending?: boolean;
+  perkDraftSeedCursor?: number;
   activeInterrupted?: boolean;
 }
 
 export interface ObstacleBox {
   id: string;
-  kind: 'car' | 'crate' | 'lamp' | 'planter';
+  kind: 'car' | 'crate' | 'lamp' | 'planter' | 'pillar';
   x: number;
   z: number;
   halfW: number;
@@ -162,6 +201,7 @@ export interface BossHudState {
   hp: number;
   maxHp: number;
   wave: number;
+  phase2?: boolean;
 }
 
 export type WeatherKind = 'clear' | 'mist' | 'rain' | 'storm';
@@ -176,13 +216,22 @@ export interface MinimapEnemy {
 export interface MinimapPickup {
   x: number;
   z: number;
-  kind: CrateKind;
+  kind: CrateKind | 'supply';
 }
 
 export interface MinimapHazard {
   x: number;
   z: number;
-  kind: 'acid' | 'mine' | 'turret';
+  kind:
+    | 'acid'
+    | 'mine'
+    | 'turret'
+    | 'barrel'
+    | 'generator_on'
+    | 'generator_off'
+    | 'decoy'
+    | 'wire'
+    | 'tripmine';
 }
 
 export interface MinimapSnapshot {
@@ -192,6 +241,15 @@ export interface MinimapSnapshot {
   enemies: MinimapEnemy[];
   pickups: MinimapPickup[];
   hazards?: MinimapHazard[];
+}
+
+export interface GeneratorHudStatus {
+  id: string;
+  x: number;
+  z: number;
+  powered: boolean;
+  progress: number; // 0..1
+  playerInside: boolean;
 }
 
 export interface HudSnapshot {
@@ -211,11 +269,16 @@ export interface HudSnapshot {
   equippedGear: TacticalGearId;
   gearCooldownProgress: number; // 1 = ready, 0..1 recharging
   gearCooldownRemaining: number; // seconds
+  equippedGadget: GadgetId;
+  gadgetCooldownProgress: number; // 1 = ready, 0..1 recharging
+  gadgetCooldownRemaining: number; // seconds
   rapidFireRemaining: number; // seconds
+  minigunRemaining: number; // seconds
   muted: boolean;
   waveBanner: string | null;
   pickupToast: string | null;
   skinUnlockToast: string | null;
+  evolutionBanner: string | null;
   kills: number;
   damageTaken: number;
   isNewHighScore: boolean;
@@ -223,6 +286,19 @@ export interface HudSnapshot {
   killsTowardNextUp: number;
   killsPerUp: number;
   upgradeLevels: UpgradeLevels;
+  weaponMastery: WeaponMasteryLevels;
+  ownedPerks: PerkId[];
+  perkDraftChoices: PerkId[] | null;
+  evolvedWeapons: EvolutionId[];
+  arena: ArenaId;
+  mode: GameModeId;
+  dailyDateKey: string | null;
+  dailyMutatorLabel: string | null;
+  generators: GeneratorHudStatus[];
+  barrelsReady: number;
+  bossPhase2Active: boolean;
+  bossesKilledInRun: number;
+  callsign: string;
   activeBoss: BossHudState | null;
   weather: WeatherKind;
   bloodSplatter: number; // 0..1 screen blood splatter intensity

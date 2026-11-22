@@ -1,24 +1,32 @@
-import React from 'react';
-import { ShieldCheck } from 'lucide-react';
+import React, { useState } from 'react';
+import { Download, Share2, ShieldCheck, Trophy } from 'lucide-react';
+import { ARENA_SPECS, GAME_MODE_SPECS } from '../game/arenas';
 import { HudSnapshot } from '../game/types';
+import { shareOrDownloadBattleCard } from '../services/battleCard';
 
 interface StatusModalProps {
   hud: HudSnapshot;
+  leaderboardStatus: string | null;
   onResume: () => void;
   onRevive: () => void;
   onEndRun: () => void;
   onRestartFromBeginning: () => void;
   onTitle: () => void;
+  onOpenLeaderboard: () => void;
 }
 
 export const StatusModal: React.FC<StatusModalProps> = ({
   hud,
+  leaderboardStatus,
   onResume,
   onRevive,
   onEndRun,
   onRestartFromBeginning,
   onTitle,
+  onOpenLeaderboard,
 }) => {
+  const [cardState, setCardState] = useState<'idle' | 'saving' | 'done'>('idle');
+
   if (
     hud.phase !== 'paused' &&
     hud.phase !== 'revive' &&
@@ -115,21 +123,43 @@ export const StatusModal: React.FC<StatusModalProps> = ({
   }
 
   const isGameOver = hud.phase === 'gameover';
+  const arenaName = ARENA_SPECS[hud.arena].shortLabel;
+  const modeName = GAME_MODE_SPECS[hud.mode].shortLabel;
+
+  const handleBattleCard = async () => {
+    if (cardState === 'saving') return;
+    setCardState('saving');
+    const res = await shareOrDownloadBattleCard({
+      callsign: hud.callsign,
+      skinId: hud.equippedSkinId,
+      mode: hud.mode,
+      arena: hud.arena,
+      wave: hud.wave,
+      kills: hud.kills,
+      bossesKilled: hud.bossesKilledInRun,
+      score: hud.score,
+      isNewHighScore: hud.isNewHighScore,
+    });
+    setCardState(res === 'failed' ? 'idle' : 'done');
+    setTimeout(() => setCardState('idle'), 2600);
+  };
 
   return (
     <div
       className="fixed inset-0 z-40 flex items-center justify-center p-3 sm:p-4"
-      style={{ backgroundColor: 'rgba(7, 10, 16, 0.8)' }}
+      style={{ backgroundColor: 'rgba(7, 10, 16, 0.84)' }}
     >
       <div
         role="dialog"
         aria-modal="true"
         aria-labelledby="modal-heading"
-        className="w-full max-w-sm rounded-2xl border border-slate-700/80 p-6 shadow-2xl"
-        style={{ backgroundColor: 'rgba(13, 19, 30, 0.95)' }}
+        className="max-h-[92dvh] w-full max-w-sm overflow-y-auto rounded-2xl border border-slate-700/80 p-5 shadow-2xl sm:p-6"
+        style={{ backgroundColor: 'rgba(13, 19, 30, 0.96)' }}
       >
-        <div className="text-xs font-semibold tracking-widest text-amber-400 uppercase">
-          {isGameOver ? 'Overrun in Courtyard' : 'Simulation Paused'}
+        <div className="text-[11px] font-semibold tracking-widest text-amber-400 uppercase">
+          {isGameOver
+            ? `${hud.callsign} · ${arenaName} · ${modeName}`
+            : 'Simulation Paused'}
         </div>
 
         <h2
@@ -160,7 +190,7 @@ export const StatusModal: React.FC<StatusModalProps> = ({
               Score
             </div>
             <div className="font-mono-tabular mt-0.5 text-xl font-bold text-amber-400">
-              {hud.score}
+              {hud.score.toLocaleString()}
             </div>
           </div>
           <div>
@@ -168,14 +198,15 @@ export const StatusModal: React.FC<StatusModalProps> = ({
               Best
             </div>
             <div className="font-mono-tabular mt-0.5 text-xl font-bold text-slate-200">
-              {hud.highScore}
+              {hud.highScore.toLocaleString()}
             </div>
           </div>
         </div>
 
         <div className="mt-2.5 flex items-center justify-between text-xs text-slate-400">
-          <span>Infected Eliminated · {hud.kills}</span>
-          <span>Damage Taken · {hud.damageTaken}</span>
+          <span>Kills · {hud.kills}</span>
+          <span>Bosses · {hud.bossesKilledInRun}</span>
+          <span>Dmg · {hud.damageTaken}</span>
         </div>
 
         {isGameOver && hud.lastScrapEarned > 0 && (
@@ -188,7 +219,16 @@ export const StatusModal: React.FC<StatusModalProps> = ({
           </div>
         )}
 
-        <div className="mt-5 flex flex-col gap-2.5">
+        {isGameOver && leaderboardStatus && (
+          <div
+            data-testid="leaderboard-submit-status"
+            className="mt-2 rounded-lg border border-slate-800 bg-slate-900/80 px-3 py-1.5 text-center text-[11px] font-semibold text-cyan-200"
+          >
+            {leaderboardStatus}
+          </div>
+        )}
+
+        <div className="mt-4 flex flex-col gap-2">
           {!isGameOver && (
             <button
               type="button"
@@ -200,6 +240,45 @@ export const StatusModal: React.FC<StatusModalProps> = ({
             >
               Resume
             </button>
+          )}
+
+          {isGameOver && (
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                data-testid="battle-card-btn"
+                onClick={(e) => {
+                  e.currentTarget.blur();
+                  void handleBattleCard();
+                }}
+                className="flex min-h-[42px] cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-amber-500/60 bg-amber-500/15 px-3 py-2 text-[11px] font-extrabold tracking-wide text-amber-200 uppercase hover:bg-amber-500/25"
+              >
+                {cardState === 'done' ? (
+                  <>
+                    <Share2 className="h-3.5 w-3.5" />
+                    <span>Card Saved!</span>
+                  </>
+                ) : (
+                  <>
+                    <Download className="h-3.5 w-3.5" />
+                    <span>{cardState === 'saving' ? 'Saving...' : 'Battle Card'}</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                data-testid="gameover-leaderboard-btn"
+                onClick={(e) => {
+                  e.currentTarget.blur();
+                  onOpenLeaderboard();
+                }}
+                className="flex min-h-[42px] cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-cyan-500/50 bg-cyan-500/15 px-3 py-2 text-[11px] font-extrabold tracking-wide text-cyan-200 uppercase hover:bg-cyan-500/25"
+              >
+                <Trophy className="h-3.5 w-3.5" />
+                <span>Top 20</span>
+              </button>
+            </div>
           )}
 
           <button
@@ -234,4 +313,3 @@ export const StatusModal: React.FC<StatusModalProps> = ({
     </div>
   );
 };
-

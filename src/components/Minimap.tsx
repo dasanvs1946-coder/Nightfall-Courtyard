@@ -1,29 +1,43 @@
 import React, { useMemo } from 'react';
+import { ARENA_SPECS } from '../game/arenas';
 import { getMinimapObstacles, worldToMinimap } from '../game/minimap';
-import { MinimapSnapshot } from '../game/types';
+import { ArenaId, MinimapSnapshot } from '../game/types';
 
 interface MinimapProps {
   minimap: MinimapSnapshot;
+  arena?: ArenaId;
 }
 
 const MAP_SIZE = 100;
 
-export const Minimap: React.FC<MinimapProps> = ({ minimap }) => {
-  const obstacles = useMemo(() => getMinimapObstacles(MAP_SIZE), []);
-  const playerPos = worldToMinimap(minimap.playerX, minimap.playerZ, MAP_SIZE);
-  // playerAimAngle = 0 points toward -Z (top of minimap = 0 deg rotation in SVG)
+export const Minimap: React.FC<MinimapProps> = ({
+  minimap,
+  arena = 'courtyard',
+}) => {
+  const arenaSpec = ARENA_SPECS[arena];
+  const halfSize = arenaSpec.halfSize;
+  const obstacles = useMemo(
+    () => getMinimapObstacles(MAP_SIZE, arenaSpec.obstacles, halfSize),
+    [arenaSpec.obstacles, halfSize],
+  );
+  const playerPos = worldToMinimap(
+    minimap.playerX,
+    minimap.playerZ,
+    MAP_SIZE,
+    halfSize,
+  );
   const playerDeg = (-minimap.playerAimAngle * 180) / Math.PI;
 
   return (
     <div
       data-testid="minimap"
-      aria-label="Courtyard Mini Map"
+      aria-label="Arena Mini Map"
       className="pointer-events-none absolute bottom-2 left-1/2 z-20 -translate-x-1/2 overflow-hidden rounded-xl border border-slate-700/80 shadow-xl sm:bottom-3"
       style={{ backgroundColor: 'rgba(8, 12, 20, 0.86)' }}
     >
       <div className="relative h-[86px] w-[86px] sm:h-[116px] sm:w-[116px]">
         <svg viewBox="0 0 100 100" className="h-full w-full">
-          {/* Courtyard ground & subtle radar grid */}
+          {/* Ground & subtle radar grid */}
           <rect
             x="4"
             y="4"
@@ -83,9 +97,9 @@ export const Minimap: React.FC<MinimapProps> = ({ minimap }) => {
             );
           })}
 
-          {/* Ground Hazards & Deployed Tactical Gear */}
+          {/* Ground Hazards, Barrels, Generators & Deployed Gear/Gadgets */}
           {(minimap.hazards ?? []).map((hz, idx) => {
-            const pos = worldToMinimap(hz.x, hz.z, MAP_SIZE);
+            const pos = worldToMinimap(hz.x, hz.z, MAP_SIZE, halfSize);
             if (hz.kind === 'acid') {
               return (
                 <circle
@@ -99,16 +113,85 @@ export const Minimap: React.FC<MinimapProps> = ({ minimap }) => {
                 />
               );
             }
-            if (hz.kind === 'mine') {
+            if (hz.kind === 'barrel') {
+              return (
+                <circle
+                  key={`hz-${idx}`}
+                  cx={pos.x}
+                  cy={pos.y}
+                  r={2.1}
+                  fill="#ef4444"
+                  stroke="#fca5a5"
+                  strokeWidth="0.5"
+                />
+              );
+            }
+            if (hz.kind === 'generator_on') {
+              return (
+                <g key={`hz-${idx}`}>
+                  <circle
+                    cx={pos.x}
+                    cy={pos.y}
+                    r={6.2}
+                    fill="rgba(34, 211, 238, 0.16)"
+                    stroke="#22d3ee"
+                    strokeWidth="0.6"
+                  />
+                  <circle cx={pos.x} cy={pos.y} r={2.2} fill="#22d3ee" />
+                </g>
+              );
+            }
+            if (hz.kind === 'generator_off') {
+              return (
+                <circle
+                  key={`hz-${idx}`}
+                  cx={pos.x}
+                  cy={pos.y}
+                  r={2.5}
+                  fill="none"
+                  stroke="#f59e0b"
+                  strokeWidth="0.9"
+                />
+              );
+            }
+            if (hz.kind === 'mine' || hz.kind === 'tripmine') {
               return (
                 <circle
                   key={`hz-${idx}`}
                   cx={pos.x}
                   cy={pos.y}
                   r={1.9}
-                  fill="#f59e0b"
+                  fill={hz.kind === 'tripmine' ? '#ef4444' : '#f59e0b'}
                   stroke="#fef3c7"
                   strokeWidth="0.5"
+                />
+              );
+            }
+            if (hz.kind === 'decoy') {
+              return (
+                <circle
+                  key={`hz-${idx}`}
+                  cx={pos.x}
+                  cy={pos.y}
+                  r={2.8}
+                  fill="rgba(245, 158, 11, 0.35)"
+                  stroke="#f59e0b"
+                  strokeWidth="0.7"
+                />
+              );
+            }
+            if (hz.kind === 'wire') {
+              return (
+                <rect
+                  key={`hz-${idx}`}
+                  x={pos.x - 2.3}
+                  y={pos.y - 2.3}
+                  width="4.6"
+                  height="4.6"
+                  rx="0.6"
+                  fill="rgba(148, 163, 184, 0.35)"
+                  stroke="#cbd5e1"
+                  strokeWidth="0.6"
                 />
               );
             }
@@ -127,9 +210,31 @@ export const Minimap: React.FC<MinimapProps> = ({ minimap }) => {
             );
           })}
 
-          {/* Supply crates */}
+          {/* Supply crates & Risk-Reward Corner Drops */}
           {minimap.pickups.map((p, idx) => {
-            const pos = worldToMinimap(p.x, p.z, MAP_SIZE);
+            const pos = worldToMinimap(p.x, p.z, MAP_SIZE, halfSize);
+            if (p.kind === 'supply') {
+              return (
+                <g key={`p-${idx}`}>
+                  <circle
+                    cx={pos.x}
+                    cy={pos.y}
+                    r={4.2}
+                    fill="rgba(245, 158, 11, 0.25)"
+                  />
+                  <rect
+                    x={pos.x - 2.2}
+                    y={pos.y - 2.2}
+                    width="4.4"
+                    height="4.4"
+                    rx="0.7"
+                    fill="#f59e0b"
+                    stroke="#fef3c7"
+                    strokeWidth="0.6"
+                  />
+                </g>
+              );
+            }
             const color =
               p.kind === 'health'
                 ? '#22c55e'
@@ -151,7 +256,7 @@ export const Minimap: React.FC<MinimapProps> = ({ minimap }) => {
 
           {/* Zombies & Bosses */}
           {minimap.enemies.map((enemy, idx) => {
-            const pos = worldToMinimap(enemy.x, enemy.z, MAP_SIZE);
+            const pos = worldToMinimap(enemy.x, enemy.z, MAP_SIZE, halfSize);
             if (enemy.kind === 'boss') {
               return (
                 <g key={`e-${idx}`}>
@@ -192,6 +297,32 @@ export const Minimap: React.FC<MinimapProps> = ({ minimap }) => {
                   height="4.4"
                   rx="0.8"
                   fill="#fb923c"
+                />
+              );
+            }
+            if (enemy.kind === 'bomber') {
+              return (
+                <circle
+                  key={`e-${idx}`}
+                  cx={pos.x}
+                  cy={pos.y}
+                  r={2.2}
+                  fill="#fb923c"
+                  stroke="#fef08a"
+                  strokeWidth="0.6"
+                />
+              );
+            }
+            if (enemy.kind === 'howler') {
+              return (
+                <circle
+                  key={`e-${idx}`}
+                  cx={pos.x}
+                  cy={pos.y}
+                  r={2.2}
+                  fill="#fbbf24"
+                  stroke="#ffffff"
+                  strokeWidth="0.5"
                 />
               );
             }
@@ -260,7 +391,7 @@ export const Minimap: React.FC<MinimapProps> = ({ minimap }) => {
           </g>
         </svg>
         <div className="font-mono-tabular pointer-events-none absolute top-0.5 left-1.5 text-[7px] font-bold tracking-wider text-slate-400 uppercase sm:text-[8px]">
-          Map
+          {arenaSpec.shortLabel.split(' ')[0]}
         </div>
       </div>
     </div>

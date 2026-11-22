@@ -26,25 +26,54 @@ service cloud.firestore {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function isValidDateKey(dateKey) {
+      return dateKey is string && dateKey.size() == 10 && dateKey.matches('^20[0-9]{2}-[0-9]{2}-[0-9]{2}$');
+    }
+
+    function isValidArena(arena) {
+      return arena is string && arena in ['courtyard', 'parking_deck', 'helipad'];
+    }
+
+    function isValidSkin(skinId) {
+      return skinId is string && skinId in [
+        'nightwatch',
+        'crimson_recon',
+        'hazmat_breacher',
+        'cyber_ronin',
+        'storm_phantom',
+        'golden_sovereign'
+      ];
+    }
+
+    function isValidPlatform(platform) {
+      return platform is string && platform in ['Web', 'APK'];
+    }
+
     function isValidLeaderboardEntry(data) {
       return data.keys().hasAll([
           'uid',
-          'playerName',
-          'score',
+          'callsign',
           'wave',
           'kills',
-          'equippedGear',
+          'score',
+          'mode',
+          'arena',
+          'skinId',
+          'platform',
           'isPublic',
           'createdAt',
           'updatedAt'
         ])
         && data.keys().hasOnly([
           'uid',
-          'playerName',
-          'score',
+          'callsign',
           'wave',
           'kills',
-          'equippedGear',
+          'score',
+          'mode',
+          'arena',
+          'skinId',
+          'platform',
           'isPublic',
           'createdAt',
           'updatedAt'
@@ -54,21 +83,91 @@ service cloud.firestore {
         && data.uid.size() <= 128
         && data.uid.matches('^[a-zA-Z0-9_\\-]+$')
         && data.uid == request.auth.uid
-        && data.playerName is string
-        && data.playerName.size() >= 1
-        && data.playerName.size() <= 24
-        && data.playerName.matches('^[a-zA-Z0-9 _\\-\\.]+$')
-        && data.score is int
-        && data.score >= 0
-        && data.score <= 100000000
+        && data.callsign is string
+        && data.callsign.size() >= 3
+        && data.callsign.size() <= 12
+        && data.callsign.matches('^[A-Za-z0-9_]{3,12}$')
         && data.wave is int
         && data.wave >= 1
         && data.wave <= 999
         && data.kills is int
         && data.kills >= 0
         && data.kills <= 1000000
-        && data.equippedGear is string
-        && data.equippedGear in ['mine', 'turret', 'flashbang']
+        && data.score is int
+        && data.score >= 0
+        && data.score <= 100000000
+        && data.mode is string
+        && data.mode in ['normal', 'storm', 'blackout', 'boss_rush', 'daily']
+        && isValidArena(data.arena)
+        && isValidSkin(data.skinId)
+        && isValidPlatform(data.platform)
+        && data.isPublic is bool
+        && data.isPublic == true
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidDailyLeaderboardEntry(data, dateKey) {
+      return data.keys().hasAll([
+          'uid',
+          'callsign',
+          'dateKey',
+          'mutator',
+          'wave',
+          'kills',
+          'score',
+          'mode',
+          'arena',
+          'skinId',
+          'platform',
+          'isPublic',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid',
+          'callsign',
+          'dateKey',
+          'mutator',
+          'wave',
+          'kills',
+          'score',
+          'mode',
+          'arena',
+          'skinId',
+          'platform',
+          'isPublic',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.uid is string
+        && data.uid.size() >= 1
+        && data.uid.size() <= 128
+        && data.uid.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.uid == request.auth.uid
+        && data.callsign is string
+        && data.callsign.size() >= 3
+        && data.callsign.size() <= 12
+        && data.callsign.matches('^[A-Za-z0-9_]{3,12}$')
+        && data.dateKey is string
+        && data.dateKey == dateKey
+        && data.mutator is string
+        && data.mutator.size() >= 1
+        && data.mutator.size() <= 48
+        && data.wave is int
+        && data.wave >= 1
+        && data.wave <= 999
+        && data.kills is int
+        && data.kills >= 0
+        && data.kills <= 1000000
+        && data.score is int
+        && data.score >= 0
+        && data.score <= 100000000
+        && data.mode is string
+        && data.mode == 'daily'
+        && isValidArena(data.arena)
+        && isValidSkin(data.skinId)
+        && isValidPlatform(data.platform)
         && data.isPublic is bool
         && data.isPublic == true
         && data.createdAt is timestamp
@@ -82,10 +181,10 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
-    // Global personal-best high score leaderboard (zero PII stored)
+    // Global Top 20 personal-best high score leaderboard (zero PII stored)
     match /leaderboard/{entryId} {
-      allow get: if isValidId(entryId) && existing().isPublic == true;
-      allow list: if existing().score >= 0;
+      allow get: if isValidId(entryId) && (resource == null || existing().isPublic == true);
+      allow list: if resource == null || existing().score >= 0;
 
       allow create: if isVerifiedUser()
         && isValidId(entryId)
@@ -102,33 +201,40 @@ service cloud.firestore {
         && incoming().isPublic == existing().isPublic
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && (
-          // Action 1: Record a new personal best survival run
-          (
-            incoming().score >= existing().score
-            && incoming().diff(existing()).affectedKeys().hasOnly([
-              'playerName',
-              'score',
-              'wave',
-              'kills',
-              'equippedGear',
-              'updatedAt'
-            ])
-          )
-          // Action 2: Update survivor callsign without changing stats
-          || (
-            incoming().score == existing().score
-            && incoming().wave == existing().wave
-            && incoming().kills == existing().kills
-            && incoming().equippedGear == existing().equippedGear
-            && incoming().diff(existing()).affectedKeys().hasOnly([
-              'playerName',
-              'updatedAt'
-            ])
-          )
-        );
+        && incoming().score >= existing().score;
 
       allow delete: if isVerifiedUser()
+        && isValidId(entryId)
+        && entryId == request.auth.uid;
+    }
+
+    // Daily Seeded Challenge leaderboard partitioned by UTC YYYY-MM-DD
+    match /daily_leaderboard/{dateKey}/entries/{entryId} {
+      allow get: if isValidDateKey(dateKey) && isValidId(entryId) && (resource == null || existing().isPublic == true);
+      allow list: if isValidDateKey(dateKey) && (resource == null || existing().score >= 0);
+
+      allow create: if isVerifiedUser()
+        && isValidDateKey(dateKey)
+        && isValidId(entryId)
+        && entryId == request.auth.uid
+        && isValidDailyLeaderboardEntry(incoming(), dateKey)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidDateKey(dateKey)
+        && isValidId(entryId)
+        && entryId == request.auth.uid
+        && isValidDailyLeaderboardEntry(incoming(), dateKey)
+        && incoming().uid == existing().uid
+        && incoming().dateKey == existing().dateKey
+        && incoming().isPublic == existing().isPublic
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().score >= existing().score;
+
+      allow delete: if isVerifiedUser()
+        && isValidDateKey(dateKey)
         && isValidId(entryId)
         && entryId == request.auth.uid;
     }

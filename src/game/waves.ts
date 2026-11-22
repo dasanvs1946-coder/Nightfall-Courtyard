@@ -1,4 +1,11 @@
-import { CrateKind, ZombieKind } from './types';
+import { ARENA_SPECS } from './arenas';
+import {
+  ArenaId,
+  CrateKind,
+  DailyMutatorId,
+  GameModeId,
+  ZombieKind,
+} from './types';
 
 export interface ZombieArchetypeSpec {
   kind: ZombieKind;
@@ -100,6 +107,34 @@ export const ZOMBIE_SPECS: Record<ZombieKind, ZombieArchetypeSpec> = {
     scoreValue: 420,
     dropChance: 0.56,
   },
+  bomber: {
+    kind: 'bomber',
+    label: 'Volatile Bomber',
+    maxHp: 94,
+    speed: 3.15,
+    radius: 0.54,
+    damage: 32,
+    attackRange: 1.55,
+    attackWindup: 0.42,
+    attackCooldown: 1.1,
+    knockbackResist: 0.22,
+    scoreValue: 290,
+    dropChance: 0.34,
+  },
+  howler: {
+    kind: 'howler',
+    label: 'Howler',
+    maxHp: 88,
+    speed: 2.45,
+    radius: 0.48,
+    damage: 14,
+    attackRange: 10.5,
+    attackWindup: 0.65,
+    attackCooldown: 3.4,
+    knockbackResist: 0.12,
+    scoreValue: 270,
+    dropChance: 0.34,
+  },
   boss: {
     kind: 'boss',
     label: 'Iron Warden',
@@ -127,7 +162,17 @@ export interface WavePlan {
   damageMultiplier: number;
 }
 
-export function isBossWaveNumber(wave: number): boolean {
+export interface BuildWavePlanOptions {
+  mode?: GameModeId;
+  arena?: ArenaId;
+  mutator?: DailyMutatorId;
+}
+
+export function isBossWaveNumber(
+  wave: number,
+  mode: GameModeId = 'normal',
+): boolean {
+  if (mode === 'boss_rush') return wave >= 1;
   return wave >= 5 && wave % 5 === 0;
 }
 
@@ -156,41 +201,71 @@ export function getBossTitle(wave: number): string {
   return `${titles[idx]} · W${wave}`;
 }
 
-export function buildWavePlan(wave: number, rng: () => number = Math.random): WavePlan {
-  const isBossWave = isBossWaveNumber(wave);
+export function buildWavePlan(
+  wave: number,
+  rng: () => number = Math.random,
+  options: BuildWavePlanOptions = {},
+): WavePlan {
+  const mode = options.mode ?? 'normal';
+  const arena = options.arena ?? 'courtyard';
+  const mutator = options.mutator;
+
+  const isBossWave = isBossWaveNumber(wave, mode);
   const waves1To14 = Math.min(14, wave);
   const wavesPost14 = Math.max(0, wave - 14);
-  const totalCount = Math.min(
+  const baseTotal = Math.min(
     62,
     Math.round(6 + waves1To14 * 2.4 + wavesPost14 * 0.65),
   );
+  const totalCount =
+    mode === 'boss_rush'
+      ? Math.min(22, 6 + Math.round(wave * 1.2))
+      : baseTotal;
+
   const queue: ZombieKind[] = [];
 
   for (let i = 0; i < totalCount; i++) {
     const roll = rng();
-    if (wave === 1) {
+    if (wave === 1 && mode !== 'boss_rush') {
       queue.push(i >= totalCount - 2 && roll < 0.65 ? 'runner' : 'walker');
-    } else if (wave === 2) {
+    } else if (wave === 2 && mode !== 'boss_rush') {
       if (roll < 0.34) queue.push('runner');
       else if (i === totalCount - 1 || roll > 0.9) queue.push('brute');
       else queue.push('walker');
-    } else if (wave === 3) {
-      const bruteProb = 0.14;
-      const runnerProb = 0.3;
+    } else if (wave === 3 && mode !== 'boss_rush') {
+      const bomberProb = mutator === 'volatile_horde' ? 0.24 : 0.14;
+      const bruteProb = 0.12;
+      const runnerProb = 0.28;
       if (roll < bruteProb) queue.push('brute');
-      else if (roll < bruteProb + runnerProb) queue.push('runner');
+      else if (roll < bruteProb + bomberProb) queue.push('bomber');
+      else if (roll < bruteProb + bomberProb + runnerProb) queue.push('runner');
       else queue.push('walker');
     } else {
-      // Wave 4+: Acid Spitters; Wave 7+: Shadow Stalkers; Wave 10+: Riot Breachers
-      const spitterProb = wave >= 4 ? Math.min(0.16, 0.11 + (wave - 4) * 0.008) : 0;
-      const stalkerProb = wave >= 7 ? Math.min(0.14, 0.09 + (wave - 7) * 0.008) : 0;
+      // Wave 3+: Volatile Bomber; Wave 4+: Acid Spitter; Wave 6+: Howler; Wave 7+: Shadow Stalker; Wave 10+: Riot Breacher
+      const spitterProb = wave >= 4 ? Math.min(0.15, 0.1 + (wave - 4) * 0.008) : 0;
+      const bomberProb =
+        wave >= 3
+          ? Math.min(0.16, (mutator === 'volatile_horde' ? 0.18 : 0.09) + (wave - 3) * 0.006)
+          : 0;
+      const howlerProb = wave >= 6 ? Math.min(0.11, 0.07 + (wave - 6) * 0.006) : 0;
+      const stalkerProb = wave >= 7 ? Math.min(0.14, 0.09 + (wave - 7) * 0.007) : 0;
       const breacherProb = wave >= 10 ? Math.min(0.12, 0.07 + (wave - 10) * 0.006) : 0;
-      const bruteProb = Math.min(0.16, 0.1 + (wave - 3) * 0.01);
-      const runnerProb = Math.min(0.26, 0.22 + (wave - 3) * 0.006);
+      const bruteProb = Math.min(0.14, 0.09 + Math.max(0, wave - 3) * 0.008);
+      const runnerProb = Math.min(0.24, 0.2 + Math.max(0, wave - 3) * 0.005);
 
       let cursor = spitterProb;
       if (roll < cursor) {
         queue.push('spitter');
+        continue;
+      }
+      cursor += bomberProb;
+      if (roll < cursor) {
+        queue.push('bomber');
+        continue;
+      }
+      cursor += howlerProb;
+      if (roll < cursor) {
+        queue.push('howler');
         continue;
       }
       cursor += stalkerProb;
@@ -217,9 +292,15 @@ export function buildWavePlan(wave: number, rng: () => number = Math.random): Wa
     }
   }
 
-  // Ensure new signature archetypes visibly debut at their milestone waves
+  // Ensure new signature archetypes visibly debut at their milestone waves without clobbering one another
+  if (wave >= 3 && !queue.includes('bomber')) {
+    queue[Math.min(queue.length - 1, 1)] = 'bomber';
+  }
   if (wave >= 4 && !queue.includes('spitter')) {
     queue[Math.min(queue.length - 1, 2)] = 'spitter';
+  }
+  if (wave >= 6 && !queue.includes('howler')) {
+    queue[Math.min(queue.length - 1, 5)] = 'howler';
   }
   if (wave >= 7 && !queue.includes('stalker')) {
     queue[Math.min(queue.length - 1, 3)] = 'stalker';
@@ -229,12 +310,9 @@ export function buildWavePlan(wave: number, rng: () => number = Math.random): Wa
   }
 
   if (isBossWave) {
-    // Spawn boss immediately at the start of the wave alongside supporting horde
     queue.unshift('boss');
   }
 
-  // Waves 1-5: +2.5% HP / +0.5% damage per round
-  // Waves 6-14: moderate mid-game ramp; Wave 15+: flattened scaling to prevent extreme bullet sponges
   const baseWaves = Math.min(4, Math.max(0, wave - 1));
   const midWaves = Math.min(9, Math.max(0, wave - 5));
   const lateWaves = Math.max(0, wave - 14);
@@ -247,19 +325,38 @@ export function buildWavePlan(wave: number, rng: () => number = Math.random): Wa
     Math.pow(1.005, baseWaves) *
     Math.pow(1.018, midWaves) *
     Math.pow(1.008, lateWaves);
-  const speedMultiplier =
+
+  let speedMultiplier =
     1 +
     Math.min(0.18, Math.max(0, wave - 1) * 0.03) +
     Math.min(0.16, Math.max(0, wave - 6) * 0.006);
+
+  if (mutator === 'acid_rain') speedMultiplier *= 1.12;
+  else if (mutator === 'hyper_dash') speedMultiplier *= 1.06;
+  else if (mutator === 'volatile_horde') speedMultiplier *= 1.1;
+  else if (mutator === 'blackout_surge') speedMultiplier *= 1.04;
+
+  const arenaSpawnMult = ARENA_SPECS[arena].spawnIntervalMultiplier;
+  const mutatorSpawnMult =
+    mutator === 'hyper_dash'
+      ? 0.85
+      : mutator === 'volatile_horde'
+        ? 0.92
+        : mutator === 'acid_rain'
+          ? 0.95
+          : 1.0;
+
+  const baseInterval = Math.max(
+    0.38,
+    1.35 - Math.min(4, Math.max(0, wave - 1)) * 0.1 - midWaves * 0.035 - lateWaves * 0.012,
+  );
+  const spawnInterval = Math.max(0.32, baseInterval * arenaSpawnMult * mutatorSpawnMult);
 
   return {
     wave,
     isBossWave,
     queue,
-    spawnInterval: Math.max(
-      0.38,
-      1.35 - Math.min(4, Math.max(0, wave - 1)) * 0.1 - midWaves * 0.035 - lateWaves * 0.012,
-    ),
+    spawnInterval,
     maxConcurrent: Math.min(
       26,
       Math.round(7 + Math.min(12, wave) * 1.4 + Math.max(0, wave - 12) * 0.25),
@@ -304,7 +401,6 @@ export function computeZombieHitDamage(
     return { finalDamage: Math.max(1, Math.round(rawDamage)), blockedByArmor: false };
   }
   const dot = bulletDirX * zombieFacingX + bulletDirZ * zombieFacingZ;
-  // Bullet traveling opposite to Breacher's front shield normal strikes front armor
   if (dot < -0.25) {
     return {
       finalDamage: Math.max(1, Math.round(rawDamage * 0.35)),

@@ -58,6 +58,9 @@ export interface ZombieRig {
   rightArm: THREE.Mesh;
   hitFlashMaterials: THREE.MeshStandardMaterial[];
   stalkerMaterials?: THREE.MeshStandardMaterial[];
+  auraRing?: THREE.Mesh | null;
+  bossCoreMat?: THREE.MeshStandardMaterial;
+  bossAuraMat?: THREE.MeshBasicMaterial;
   telegraphRing: THREE.Mesh | null;
   telegraphLine: THREE.Mesh | null;
   hpBarGroup: THREE.Group;
@@ -756,13 +759,15 @@ export function buildZombieRig(
         ? 1.48
         : kind === 'breacher'
           ? 1.32
-          : kind === 'spitter'
-            ? 1.04
-            : kind === 'stalker'
-              ? 0.96
-              : kind === 'runner'
-                ? 0.94
-                : 1.0;
+          : kind === 'bomber'
+            ? 1.1
+            : kind === 'spitter' || kind === 'howler'
+              ? 1.04
+              : kind === 'stalker'
+                ? 0.96
+                : kind === 'runner'
+                  ? 0.94
+                  : 1.0;
   root.add(buildContactShadow(shadowTex, 0.54 * scale, 0.62));
 
   const skinColor =
@@ -774,11 +779,15 @@ export function buildZombieRig(
           ? 0x4b5563
           : kind === 'spitter'
             ? 0x4d7c0f
-            : kind === 'stalker'
-              ? 0x1e1b4b
-              : kind === 'breacher'
-                ? 0x475569
-                : 0x6b7f5e;
+            : kind === 'bomber'
+              ? 0x431407
+              : kind === 'howler'
+                ? 0x713f12
+                : kind === 'stalker'
+                  ? 0x1e1b4b
+                  : kind === 'breacher'
+                    ? 0x475569
+                    : 0x6b7f5e;
   const clothesColor =
     kind === 'boss'
       ? 0x18181b
@@ -788,11 +797,15 @@ export function buildZombieRig(
           ? 0x1f2937
           : kind === 'spitter'
             ? 0x1a2e05
-            : kind === 'stalker'
-              ? 0x09090f
-              : kind === 'breacher'
-                ? 0x0f172a
-                : 0x2f3b33;
+            : kind === 'bomber'
+              ? 0x27272a
+              : kind === 'howler'
+                ? 0x422006
+                : kind === 'stalker'
+                  ? 0x09090f
+                  : kind === 'breacher'
+                    ? 0x0f172a
+                    : 0x2f3b33;
   const eyeColor =
     kind === 'boss'
       ? 0xf43f5e
@@ -802,11 +815,15 @@ export function buildZombieRig(
           ? 0xff7b00
           : kind === 'spitter'
             ? 0xa3e635
-            : kind === 'stalker'
-              ? 0xc084fc
-              : kind === 'breacher'
-                ? 0x38bdf8
-                : 0xd9f99d;
+            : kind === 'bomber'
+              ? 0xf97316
+              : kind === 'howler'
+                ? 0xfbbf24
+                : kind === 'stalker'
+                  ? 0xc084fc
+                  : kind === 'breacher'
+                    ? 0x38bdf8
+                    : 0xd9f99d;
 
   const isStalker = kind === 'stalker';
   const skinMat = new THREE.MeshStandardMaterial({
@@ -906,6 +923,87 @@ export function buildZombieRig(
     jawSac.scale.set(0.85, 0.65, 0.85);
     jawSac.position.set(0, 1.14, -0.18);
     bodyGroup.add(bellySac, shoulderSacL, shoulderSacR, jawSac);
+  }
+
+  let auraRing: THREE.Mesh | null = null;
+
+  // Volatile Bomber: glowing volatile orange tanks & pressurized pustules
+  if (kind === 'bomber') {
+    const emberMat = new THREE.MeshStandardMaterial({
+      color: 0xf97316,
+      emissive: 0xea580c,
+      emissiveIntensity: 2.35,
+      roughness: 0.25,
+    });
+    hitFlashMaterials.push(emberMat);
+    const bellyBomb = new THREE.Mesh(
+      getSharedGeo('z-bomber-core', () => new THREE.SphereGeometry(0.32, 12, 10)),
+      emberMat,
+    );
+    bellyBomb.position.set(0, 0.86, -0.16);
+    const tankBack = new THREE.Mesh(
+      getSharedGeo('z-bomber-tank', () => new THREE.CylinderGeometry(0.18, 0.2, 0.56, 10)),
+      emberMat,
+    );
+    tankBack.position.set(0, 0.92, 0.22);
+    bodyGroup.add(bellyBomb, tankBack);
+
+    const warnRing = new THREE.Mesh(
+      getSharedGeo('z-bomber-ring', () => new THREE.RingGeometry(0.62, 0.72, 24)),
+      new THREE.MeshBasicMaterial({
+        color: 0xf97316,
+        transparent: true,
+        opacity: 0.45,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    warnRing.rotation.x = -Math.PI / 2;
+    warnRing.position.y = 0.03;
+    root.add(warnRing);
+    auraRing = warnRing;
+  }
+
+  // Howler: acoustic horn crests & pulsing amber buff aura ring
+  if (kind === 'howler') {
+    const howlMat = new THREE.MeshStandardMaterial({
+      color: 0xfbbf24,
+      emissive: 0xd97706,
+      emissiveIntensity: 2.1,
+      roughness: 0.25,
+    });
+    hitFlashMaterials.push(howlMat);
+    const hornGeo = getSharedGeo(
+      'z-howler-crest',
+      () => new THREE.ConeGeometry(0.09, 0.42, 6),
+    );
+    const crestL = new THREE.Mesh(hornGeo, howlMat);
+    crestL.position.set(-0.22, 1.44, 0.02);
+    crestL.rotation.z = 0.45;
+    const crestR = new THREE.Mesh(hornGeo, howlMat);
+    crestR.position.set(0.22, 1.44, 0.02);
+    crestR.rotation.z = -0.45;
+    const throatGlow = new THREE.Mesh(
+      getSharedGeo('z-howler-throat', () => new THREE.SphereGeometry(0.17, 10, 8)),
+      howlMat,
+    );
+    throatGlow.position.set(0, 1.06, -0.18);
+    bodyGroup.add(crestL, crestR, throatGlow);
+
+    const buffRing = new THREE.Mesh(
+      getSharedGeo('z-howler-ring', () => new THREE.RingGeometry(1.15, 1.32, 32)),
+      new THREE.MeshBasicMaterial({
+        color: 0xfbbf24,
+        transparent: true,
+        opacity: 0.42,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    buffRing.rotation.x = -Math.PI / 2;
+    buffRing.position.y = 0.03;
+    root.add(buffRing);
+    auraRing = buffRing;
   }
 
   // Shadow Stalker: ragged cloak shoulders & long razor claws
@@ -1046,6 +1144,9 @@ export function buildZombieRig(
     bodyGroup.add(rebarShaft, concreteHead);
   }
 
+  let bossCoreMat: THREE.MeshStandardMaterial | undefined;
+  let bossAuraMat: THREE.MeshBasicMaterial | undefined;
+
   // Boss Iron Warden Dread Armor, Furnace Core, Spiked Pauldrons & Siege Gauntlets
   if (kind === 'boss') {
     const bossArmorMat = new THREE.MeshStandardMaterial({
@@ -1064,6 +1165,7 @@ export function buildZombieRig(
       emissiveIntensity: 2.5,
       roughness: 0.2,
     });
+    bossCoreMat = coreMat;
     hitFlashMaterials.push(bossArmorMat, bossTrimMat);
 
     const breastplate = new THREE.Mesh(
@@ -1138,19 +1240,22 @@ export function buildZombieRig(
     gR.position.set(0.62, 1.56, -0.88);
     bodyGroup.add(gL, gR);
 
+    const bAuraMat = new THREE.MeshBasicMaterial({
+      color: 0xf43f5e,
+      transparent: true,
+      opacity: 0.42,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    bossAuraMat = bAuraMat;
     const aura = new THREE.Mesh(
       getSharedGeo('z-boss-aura', () => new THREE.RingGeometry(1.12, 1.28, 36)),
-      new THREE.MeshBasicMaterial({
-        color: 0xf43f5e,
-        transparent: true,
-        opacity: 0.42,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-      }),
+      bAuraMat,
     );
     aura.rotation.x = -Math.PI / 2;
     aura.position.y = 0.03;
     root.add(aura);
+    auraRing = aura;
   }
 
   // Head + glowing eyes (facing -Z)
@@ -1312,11 +1417,27 @@ export function buildZombieRig(
     rightArm,
     hitFlashMaterials,
     stalkerMaterials: isStalker ? stalkerMaterials : undefined,
+    auraRing,
+    bossCoreMat,
+    bossAuraMat,
     telegraphRing,
     telegraphLine,
     hpBarGroup,
     hpBarFill,
   };
+}
+
+export function applyBossPhase2Glow(rig: ZombieRig): void {
+  if (rig.bossCoreMat) {
+    rig.bossCoreMat.color.setHex(0xff7b00);
+    rig.bossCoreMat.emissive.setHex(0xf97316);
+    rig.bossCoreMat.emissiveIntensity = 4.2;
+  }
+  if (rig.bossAuraMat) {
+    rig.bossAuraMat.color.setHex(0xf97316);
+    rig.bossAuraMat.opacity = 0.72;
+  }
+  rig.bodyGroup.scale.set(1.09, 1.07, 1.09);
 }
 
 export function buildCarMesh(
@@ -2168,3 +2289,371 @@ export function buildAcidPuddleMesh(): {
   mesh.add(pool, rim);
   return { mesh, mat, ringMat };
 }
+
+export function buildConcretePillar(
+  halfW: number,
+  halfD: number,
+  height: number,
+  shadowTex: THREE.CanvasTexture,
+  hazardTex?: THREE.CanvasTexture,
+): THREE.Group {
+  const group = new THREE.Group();
+  group.add(buildContactShadow(shadowTex, Math.max(halfW, halfD) * 1.28, 0.65));
+
+  const concreteMat = new THREE.MeshStandardMaterial({
+    color: 0x334155,
+    roughness: 0.88,
+    metalness: 0.08,
+  });
+  const baseMat = new THREE.MeshStandardMaterial({
+    color: 0x1e293b,
+    roughness: 0.9,
+    metalness: 0.12,
+  });
+
+  const col = new THREE.Mesh(
+    new THREE.BoxGeometry(halfW * 1.9, height, halfD * 1.9),
+    concreteMat,
+  );
+  col.position.y = height / 2;
+  col.castShadow = true;
+  col.receiveShadow = true;
+  group.add(col);
+
+  const plinth = new THREE.Mesh(
+    new THREE.BoxGeometry(halfW * 2.02, 0.42, halfD * 2.02),
+    baseMat,
+  );
+  plinth.position.y = 0.21;
+  group.add(plinth);
+
+  if (hazardTex) {
+    const band = new THREE.Mesh(
+      new THREE.BoxGeometry(halfW * 1.96, 0.28, halfD * 1.96),
+      new THREE.MeshStandardMaterial({ map: hazardTex, roughness: 0.65 }),
+    );
+    band.position.y = 1.15;
+    group.add(band);
+  }
+
+  return group;
+}
+
+export interface ExplosiveBarrelRig {
+  root: THREE.Group;
+  bodyGroup: THREE.Group;
+  capMat: THREE.MeshStandardMaterial;
+  ringMat: THREE.MeshBasicMaterial;
+}
+
+export function buildExplosiveBarrel(
+  shadowTex: THREE.CanvasTexture,
+  hazardTex?: THREE.CanvasTexture,
+): ExplosiveBarrelRig {
+  const root = new THREE.Group();
+  root.add(buildContactShadow(shadowTex, 0.56, 0.55));
+
+  const bodyGroup = new THREE.Group();
+  root.add(bodyGroup);
+
+  const drumMat = new THREE.MeshStandardMaterial({
+    color: 0xdc2626,
+    roughness: 0.38,
+    metalness: 0.55,
+  });
+  const capMat = new THREE.MeshStandardMaterial({
+    color: 0xf97316,
+    emissive: 0xea580c,
+    emissiveIntensity: 1.5,
+    roughness: 0.3,
+  });
+
+  const drum = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.42, 0.44, 1.12, 14),
+    drumMat,
+  );
+  drum.position.y = 0.56;
+  drum.castShadow = true;
+  bodyGroup.add(drum);
+
+  const hazardBand = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.45, 0.45, 0.24, 14),
+    hazardTex
+      ? new THREE.MeshStandardMaterial({ map: hazardTex, roughness: 0.45 })
+      : capMat,
+  );
+  hazardBand.position.y = 0.62;
+  bodyGroup.add(hazardBand);
+
+  const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 0.08, 10), capMat);
+  cap.position.y = 1.14;
+  bodyGroup.add(cap);
+
+  const ringMat = new THREE.MeshBasicMaterial({
+    color: 0xef4444,
+    transparent: true,
+    opacity: 0.42,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.6, 0.72, 22), ringMat);
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.03;
+  root.add(ring);
+
+  return { root, bodyGroup, capMat, ringMat };
+}
+
+export interface FloodlightGeneratorRig {
+  root: THREE.Group;
+  beaconMat: THREE.MeshStandardMaterial;
+  ringMat: THREE.MeshBasicMaterial;
+  spotLight: THREE.PointLight | null;
+  poolMat: THREE.MeshBasicMaterial;
+}
+
+export function buildFloodlightGenerator(
+  shadowTex: THREE.CanvasTexture,
+  lightPoolTex: THREE.CanvasTexture,
+  enablePointLight: boolean,
+): FloodlightGeneratorRig {
+  const root = new THREE.Group();
+  root.add(buildContactShadow(shadowTex, 0.8, 0.6));
+
+  const chassisMat = new THREE.MeshStandardMaterial({
+    color: 0x334155,
+    roughness: 0.55,
+    metalness: 0.65,
+  });
+  const accentMat = new THREE.MeshStandardMaterial({
+    color: 0xf59e0b,
+    roughness: 0.4,
+    metalness: 0.45,
+  });
+  const beaconMat = new THREE.MeshStandardMaterial({
+    color: 0x64748b,
+    emissive: 0x475569,
+    emissiveIntensity: 0.5,
+    roughness: 0.25,
+  });
+
+  const unit = new THREE.Mesh(new THREE.BoxGeometry(1.05, 0.76, 0.78), chassisMat);
+  unit.position.y = 0.38;
+  unit.castShadow = true;
+  root.add(unit);
+
+  const cage = new THREE.Mesh(new THREE.BoxGeometry(1.12, 0.14, 0.84), accentMat);
+  cage.position.y = 0.74;
+  root.add(cage);
+
+  const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 2.7, 8), chassisMat);
+  mast.position.set(0, 1.9, 0);
+  mast.castShadow = true;
+  root.add(mast);
+
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.26, 0.24), beaconMat);
+  head.position.set(0, 3.25, 0);
+  root.add(head);
+
+  const ringMat = new THREE.MeshBasicMaterial({
+    color: 0x38bdf8,
+    transparent: true,
+    opacity: 0.42,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const ring = new THREE.Mesh(new THREE.RingGeometry(2.35, 2.55, 36), ringMat);
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.032;
+  root.add(ring);
+
+  const poolMat = new THREE.MeshBasicMaterial({
+    map: lightPoolTex,
+    color: 0xbae6fd,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  const pool = new THREE.Mesh(new THREE.PlaneGeometry(24, 24), poolMat);
+  pool.rotation.x = -Math.PI / 2;
+  pool.position.y = 0.025;
+  root.add(pool);
+
+  let spotLight: THREE.PointLight | null = null;
+  if (enablePointLight) {
+    spotLight = new THREE.PointLight(0xe0f2fe, 0, 24, 1.45);
+    spotLight.position.set(0, 3.6, 0);
+    root.add(spotLight);
+  }
+
+  return { root, beaconMat, ringMat, spotLight, poolMat };
+}
+
+export function buildRiskSupplyCrate(
+  shadowTex: THREE.CanvasTexture,
+): THREE.Group {
+  const group = new THREE.Group();
+  group.add(buildContactShadow(shadowTex, 0.85, 0.62));
+
+  const crateMat = new THREE.MeshStandardMaterial({
+    color: 0x1e293b,
+    roughness: 0.45,
+    metalness: 0.55,
+  });
+  const amberGlow = new THREE.MeshStandardMaterial({
+    color: 0xf59e0b,
+    emissive: 0xf59e0b,
+    emissiveIntensity: 2.2,
+    roughness: 0.2,
+  });
+
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.62, 0.95), crateMat);
+  body.position.y = 0.38;
+  body.castShadow = true;
+  const trim = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.12, 1.0), amberGlow);
+  trim.position.y = 0.42;
+
+  const beaconPole = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.04, 0.09, 2.2, 8),
+    new THREE.MeshBasicMaterial({
+      color: 0xf59e0b,
+      transparent: true,
+      opacity: 0.36,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    }),
+  );
+  beaconPole.position.y = 1.4;
+
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(0.75, 0.95, 24),
+    new THREE.MeshBasicMaterial({
+      color: 0xf59e0b,
+      transparent: true,
+      opacity: 0.72,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    }),
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.032;
+
+  group.add(body, trim, beaconPole, ring);
+  return group;
+}
+
+export function buildLaserTripmine(
+  shadowTex: THREE.CanvasTexture,
+): THREE.Group {
+  const root = new THREE.Group();
+  root.add(buildContactShadow(shadowTex, 0.38, 0.45));
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(0.32, 0.2, 0.22),
+    new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.4, metalness: 0.7 }),
+  );
+  body.position.y = 0.14;
+  const laserMat = new THREE.MeshBasicMaterial({
+    color: 0xef4444,
+    transparent: true,
+    opacity: 0.85,
+  });
+  const laserBeam = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.045, 0.045), laserMat);
+  laserBeam.position.y = 0.22;
+  root.add(body, laserBeam);
+  return root;
+}
+
+export function buildDecoyFlare(shadowTex: THREE.CanvasTexture): THREE.Group {
+  const root = new THREE.Group();
+  root.add(buildContactShadow(shadowTex, 0.44, 0.5));
+  const canister = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.11, 0.11, 0.42, 10),
+    new THREE.MeshStandardMaterial({
+      color: 0xf59e0b,
+      emissive: 0xf59e0b,
+      emissiveIntensity: 2.6,
+    }),
+  );
+  canister.position.y = 0.22;
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(0.68, 0.82, 24),
+    new THREE.MeshBasicMaterial({
+      color: 0xfbbf24,
+      transparent: true,
+      opacity: 0.65,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    }),
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.03;
+  root.add(canister, ring);
+  return root;
+}
+
+export function buildBarbedWireMesh(
+  shadowTex: THREE.CanvasTexture,
+): THREE.Group {
+  const root = new THREE.Group();
+  root.add(buildContactShadow(shadowTex, 1.4, 0.35));
+  const steelMat = new THREE.MeshStandardMaterial({
+    color: 0x94a3b8,
+    roughness: 0.38,
+    metalness: 0.85,
+  });
+  for (let i = -2; i <= 2; i++) {
+    const coil = new THREE.Mesh(new THREE.TorusGeometry(0.45, 0.035, 6, 14), steelMat);
+    coil.position.set(i * 0.42, 0.28, (i % 2) * 0.14);
+    coil.rotation.y = 0.3 * i;
+    root.add(coil);
+  }
+  const zoneRing = new THREE.Mesh(
+    new THREE.RingGeometry(2.55, 2.75, 28),
+    new THREE.MeshBasicMaterial({
+      color: 0x94a3b8,
+      transparent: true,
+      opacity: 0.32,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    }),
+  );
+  zoneRing.rotation.x = -Math.PI / 2;
+  zoneRing.position.y = 0.028;
+  root.add(zoneRing);
+  return root;
+}
+
+export function buildMortarTargetRing(radius: number): {
+  group: THREE.Group;
+  fillMat: THREE.MeshBasicMaterial;
+} {
+  const group = new THREE.Group();
+  const outer = new THREE.Mesh(
+    new THREE.RingGeometry(radius * 0.92, radius, 32),
+    new THREE.MeshBasicMaterial({
+      color: 0xef4444,
+      transparent: true,
+      opacity: 0.88,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    }),
+  );
+  outer.rotation.x = -Math.PI / 2;
+  outer.position.y = 0.04;
+
+  const fillMat = new THREE.MeshBasicMaterial({
+    color: 0xf97316,
+    transparent: true,
+    opacity: 0.3,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const fill = new THREE.Mesh(new THREE.CircleGeometry(radius * 0.9, 32), fillMat);
+  fill.rotation.x = -Math.PI / 2;
+  fill.position.y = 0.035;
+
+  group.add(outer, fill);
+  return { group, fillMat };
+}
+

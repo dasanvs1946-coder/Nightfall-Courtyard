@@ -1,11 +1,49 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import {
+  getAuth,
+  GoogleAuthProvider,
+  onAuthStateChanged,
+  signInWithPopup,
+  signOut,
+  User,
+} from 'firebase/auth';
+import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
+const googleProvider = new GoogleAuthProvider();
+
+export async function signInWithGoogle(): Promise<User | null> {
+  const cred = await signInWithPopup(auth, googleProvider);
+  return cred.user;
+}
+
+export async function signOutFirebase(): Promise<void> {
+  await signOut(auth);
+}
+
+export function subscribeToAuthState(
+  cb: (user: User | null) => void,
+): () => void {
+  return onAuthStateChanged(auth, cb);
+}
+
+export async function testFirestoreConnection(): Promise<boolean> {
+  try {
+    await getDocFromServer(doc(db, 'test', 'connection'));
+    return true;
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.message.includes('the client is offline')
+    ) {
+      return false;
+    }
+    return true;
+  }
+}
 
 export enum OperationType {
   CREATE = 'create',

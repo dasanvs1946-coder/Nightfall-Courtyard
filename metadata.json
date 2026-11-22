@@ -1,6 +1,6 @@
 {
   "name": "Nightfall Courtyard",
-  "description": "Playable 3D top-down twin-stick zombie survival shooter built with Three.js for mobile touchscreens and desktop.",
+  "description": "3D twin-stick zombie survival shooter with 3 interactive arenas, roguelite perk drafts, weapon evolutions, daily seeded challenges, and a global Top 20 leaderboard.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
