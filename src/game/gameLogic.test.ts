@@ -9,7 +9,10 @@ import {
   getNextUnlockedWeapon,
   getPrevUnlockedWeapon,
   grantAmmoCrate,
+  PHASE1_ARMORY_WEAPONS,
+  rollWeaponSupplyDraftChoices,
   unlockWeaponsForWave,
+  WAVE_WEAPON_ORDER,
   WEAPON_ORDER,
   WEAPON_SPECS,
 } from './weapons';
@@ -107,8 +110,12 @@ import {
   SKIN_ORDER,
 } from './career';
 import {
+  CURSED_PERK_ORDER,
   evaluateWeaponEvolutions,
+  getEvolvedWeaponDisplay,
+  getWeaponEvolutionHint,
   PERK_ORDER,
+  rollCursedPerkChoice,
   rollPerkDraftChoices,
 } from './perks';
 import { GADGET_ORDER, GADGET_SPECS, getNextGadget } from './gadgets';
@@ -125,22 +132,44 @@ import {
   MAX_WEAPON_MASTERY_LEVEL,
   purchaseWeaponMastery,
 } from './upgrades';
+import {
+  gainUltimateCharge,
+  isUltimateReady,
+  ULTIMATE_MAX_CHARGE,
+  ULTIMATE_SPECS,
+} from './ultimates';
+import { evaluateActiveSynergies, SYNERGY_ORDER } from './synergies';
+import { DRONE_ORDER, DRONE_SPECS } from './drones';
+import { unlockArmoryWeapon, unlockOrEquipDrone } from './career';
+import {
+  COMBO_DECAY_SEC,
+  createInitialComboState,
+  getComboCallout,
+  getComboMultiplier,
+  registerComboKill,
+  tickComboState,
+} from './combo';
+import { canExecuteDashTarget, computeExecutionRewards } from './revive';
 
-test('weapon progression has 12 distinct weapons unlocking across waves 1 to 20 with next/prev cycling', () => {
-  assert.equal(WEAPON_ORDER.length, 12);
+test('weapon progression has 12 wave weapons + 7 armory weapons with next/prev cycling', () => {
+  assert.equal(WAVE_WEAPON_ORDER.length, 12);
+  assert.equal(PHASE1_ARMORY_WEAPONS.length, 7);
+  assert.equal(WEAPON_ORDER.length, 19);
   const weapons = createInitialWeapons();
-  assert.equal(weapons.length, 12);
+  assert.equal(weapons.length, 19);
 
   const pistol = weapons.find((w) => w.id === 'pistol')!;
   const smg = weapons.find((w) => w.id === 'smg')!;
   const shotgun = weapons.find((w) => w.id === 'shotgun')!;
   const railgun = weapons.find((w) => w.id === 'railgun')!;
+  const twin9 = weapons.find((w) => w.id === 'twin9')!;
 
   assert.equal(pistol.unlocked, true);
   assert.equal(pistol.mag, 12);
   assert.equal(smg.unlocked, false);
   assert.equal(shotgun.unlocked, false);
   assert.equal(railgun.unlocked, false);
+  assert.equal(twin9.unlocked, false);
 
   // Fire pistol and reload infinitely
   assert.equal(consumeAmmoOnFire(pistol), true);
@@ -163,13 +192,18 @@ test('weapon progression has 12 distinct weapons unlocking across waves 1 to 20 
   assert.equal(getNextUnlockedWeapon(weapons, 'smg'), 'shotgun');
   assert.equal(getPrevUnlockedWeapon(weapons, 'pistol'), 'shotgun');
 
-  // Wave 20 unlocks all 12 weapons including XR-9 Railgun
+  // Wave 20 unlocks all 12 wave weapons; armory weapons unlock via Scrap or supply drops
   unlockWeaponsForWave(weapons, 20);
   assert.equal(weapons.filter((w) => w.unlocked).length, 12);
   assert.equal(railgun.unlocked, true);
+  assert.equal(twin9.unlocked, false);
   assert.equal(WEAPON_SPECS.railgun.pierceCount, 4);
   assert.equal(getNextUnlockedWeapon(weapons, 'railgun'), 'pistol');
   assert.equal(getPrevUnlockedWeapon(weapons, 'pistol'), 'railgun');
+
+  // Career-unlocked armory weapon starts unlocked on Wave 1
+  const withArmory = createInitialWeapons(['cryo_carbine']);
+  assert.equal(withArmory.find((w) => w.id === 'cryo_carbine')?.unlocked, true);
 });
 
 test('finite reserve weapons consume reserve on reload and gain ammo from crates', () => {
@@ -761,6 +795,146 @@ test('dedicated tactical gadgets, 3 arenas, 5 modes, 9-enemy bestiary, daily see
   assert.deepEqual(restored.ownedPerks, ['incendiary', 'uv_overdrive']);
   assert.deepEqual(restored.evolvedWeapons, ['dragons_breath']);
 });
+
+test('v3.0.0 Phase 1 weapons, evolutions, ultimates, cursed perks, synergies, drones, combo & execution dash work cleanly', () => {
+  // Weapon supply draft returns 3 unique armory weapons & vulcan spin-up accelerates fire rate
+  const weapons = createInitialWeapons();
+  const draft = rollWeaponSupplyDraftChoices(weapons, createSeededRng('wep-draft-1'));
+  assert.equal(draft.length, 3);
+  assert.equal(new Set(draft).size, 3);
+  for (const wId of draft) {
+    assert.equal(PHASE1_ARMORY_WEAPONS.includes(wId), true);
+  }
+  const vulcanCold = getEffectiveFireInterval('vulcan_minigun', 0, 0);
+  const vulcanSpun = getEffectiveFireInterval('vulcan_minigun', 0, 1);
+  assert.ok(vulcanSpun < vulcanCold * 0.5);
+
+  // All 10 weapon/turret Tier-2 evolutions unlock and update display labels
+  const mastery = createInitialWeaponMastery();
+  for (const k of Object.keys(mastery) as Array<keyof typeof mastery>) {
+    mastery[k] = 5;
+  }
+  const upgrades = createInitialUpgradeLevels();
+  upgrades.handling = 5;
+  const allEvos = evaluateWeaponEvolutions(
+    mastery,
+    upgrades,
+    [
+      'incendiary',
+      'piercing_core',
+      'shockwave_coil',
+      'cryo_rounds',
+      'dash_shockwave',
+      'extended_drums',
+      'critical_optics',
+    ],
+    [],
+  );
+  assert.equal(allEvos.length, 10);
+  assert.equal(getEvolvedWeaponDisplay('cryo_carbine', 'Cryo-Carbine', allEvos).name, 'Absolute Zero Beam');
+  assert.equal(getEvolvedWeaponDisplay('pulse_katana', 'Pulse Katana', allEvos).isEvolved, true);
+  assert.ok(getWeaponEvolutionHint('gauss_carbine')?.includes('Singularity Railgun'));
+
+  // Class ultimates
+  for (const c of CLASS_ORDER) {
+    assert.ok(ULTIMATE_SPECS[c].name.length > 0);
+  }
+  let ultCharge = 0;
+  ultCharge = gainUltimateCharge(ultCharge, 400, true);
+  assert.ok(ultCharge > 10 && ultCharge < ULTIMATE_MAX_CHARGE);
+  assert.equal(isUltimateReady(ultCharge), false);
+  ultCharge = gainUltimateCharge(99, 100, false);
+  assert.equal(ultCharge, ULTIMATE_MAX_CHARGE);
+  assert.equal(isUltimateReady(ultCharge), true);
+
+  // Cursed perks
+  assert.equal(CURSED_PERK_ORDER.length, 3);
+  const pickedCursed = rollCursedPerkChoice([], () => 0.1, 0.25);
+  assert.ok(pickedCursed !== null);
+  assert.equal(rollCursedPerkChoice([], () => 0.9, 0.25), null);
+  assert.equal(rollCursedPerkChoice([...CURSED_PERK_ORDER], () => 0.0, 1.0), null);
+
+  // Gadget-Perk synergies
+  assert.equal(SYNERGY_ORDER.length, 4);
+  const syn = evaluateActiveSynergies(['cryo_rounds', 'incendiary'], 'mortar');
+  assert.equal(syn.includes('frost_mortar'), true);
+  assert.equal(syn.includes('nuke_decoy'), true);
+
+  // Scrap Armory weapons & Autonomous Drones
+  assert.equal(DRONE_ORDER.length, 4);
+  const career = createDefaultCareerStats();
+  career.scrap = 300;
+  const droneBuy = unlockOrEquipDrone(career, 'scrap_magnet');
+  assert.equal(droneBuy.purchased, true);
+  assert.equal(droneBuy.career.equippedDrone, 'scrap_magnet');
+  assert.ok(droneBuy.career.scrap < 300);
+  // Toggling equipped drone un-equips cleanly
+  const droneOff = unlockOrEquipDrone(droneBuy.career, 'scrap_magnet');
+  assert.equal(droneOff.purchased, false);
+  assert.equal(droneOff.career.equippedDrone, 'none');
+
+  const wepBuy = unlockArmoryWeapon(droneOff.career, 'pulse_katana');
+  assert.equal(wepBuy.unlocked, true);
+  assert.equal(wepBuy.career.unlockedWeapons.includes('pulse_katana'), true);
+  assert.equal(DRONE_SPECS.laser_scout.scrapCost, 50);
+
+  // Killstreak Combo System
+  let combo = createInitialComboState();
+  const k1 = registerComboKill(combo);
+  combo = k1.next;
+  assert.equal(combo.count, 1);
+  assert.equal(k1.multiplier, 1.0);
+  const k2 = registerComboKill(combo);
+  combo = k2.next;
+  assert.equal(k2.newCallout, 'DOUBLE KILL');
+  assert.ok(k2.multiplier > 1.0);
+  assert.equal(getComboCallout(8), 'RAMPAGE');
+  assert.equal(getComboMultiplier(50), 5.0);
+  combo = tickComboState(combo, COMBO_DECAY_SEC + 0.1);
+  assert.equal(combo.count, 0);
+
+  // Execution Dash
+  assert.equal(canExecuteDashTarget(20, 100), true);
+  assert.equal(canExecuteDashTarget(30, 100), false);
+  const execRewards = computeExecutionRewards(100, 30);
+  assert.equal(execRewards.hpRestore, 10);
+  assert.equal(execRewards.ammoRestore, 3);
+
+  // Run snapshot persistence with Phase 1 fields
+  const map = new Map<string, string>();
+  const mockStorage: StorageLike = {
+    getItem: (k) => map.get(k) ?? null,
+    setItem: (k, v) => {
+      map.set(k, v);
+    },
+    removeItem: (k) => {
+      map.delete(k);
+    },
+  };
+  saveRunProgress(
+    {
+      lastWave: 9,
+      score: 12000,
+      kills: 210,
+      upgradePoints: 3,
+      upgradeLevels: createInitialUpgradeLevels(),
+      activeWeapon: 'pulse_katana',
+      equippedDrone: 'cryo_drone',
+      ownedCursedPerks: ['cursed_glass_cannon'],
+      ultimateCharge: 72,
+      weaponDraftPending: true,
+      activeInterrupted: true,
+    },
+    mockStorage,
+  );
+  const restoredP1 = loadRunProgress(mockStorage)!;
+  assert.equal(restoredP1.activeWeapon, 'pulse_katana');
+  assert.equal(restoredP1.equippedDrone, 'cryo_drone');
+  assert.deepEqual(restoredP1.ownedCursedPerks, ['cursed_glass_cannon']);
+  assert.equal(restoredP1.ultimateCharge, 72);
+  assert.equal(restoredP1.weaponDraftPending, true);
+});
+
 
 
 

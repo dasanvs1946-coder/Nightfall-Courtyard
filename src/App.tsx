@@ -6,6 +6,7 @@ import { PerkDraftModal } from './components/PerkDraftModal';
 import { SettingsModal } from './components/SettingsModal';
 import { StatusModal } from './components/StatusModal';
 import { TitleScreen } from './components/TitleScreen';
+import { WeaponDraftModal } from './components/WeaponDraftModal';
 import {
   ensureAnonymousAuth,
   subscribeToAuthState,
@@ -22,6 +23,7 @@ import {
   SavedRunProgress,
   SkinId,
 } from './game/types';
+import { ULTIMATE_SPECS } from './game/ultimates';
 import {
   createInitialUpgradeLevels,
   createInitialWeaponMastery,
@@ -62,6 +64,14 @@ function createDefaultHudSnapshot(): HudSnapshot {
     equippedGadget: saved?.equippedGadget ?? 'tripmine',
     gadgetCooldownProgress: 1,
     gadgetCooldownRemaining: 0,
+    equippedDrone: initialCareer.equippedDrone,
+    ultimateCharge: 0,
+    ultimateActiveRemaining: 0,
+    ultimateName: ULTIMATE_SPECS[initialCareer.selectedClass].name,
+    comboCount: 0,
+    comboMultiplier: 1,
+    comboTimerRatio: 0,
+    comboCallout: null,
     rapidFireRemaining: 0,
     minigunRemaining: 0,
     muted: false,
@@ -78,8 +88,12 @@ function createDefaultHudSnapshot(): HudSnapshot {
     upgradeLevels: createInitialUpgradeLevels(),
     weaponMastery: createInitialWeaponMastery(),
     ownedPerks: [],
+    ownedCursedPerks: [],
     perkDraftChoices: null,
+    cursedDraftChoice: null,
+    weaponDraftChoices: null,
     evolvedWeapons: [],
+    activeSynergies: [],
     arena: 'courtyard',
     mode: 'normal',
     dailyDateKey: null,
@@ -351,6 +365,12 @@ export default function App() {
           onBuyPermanentUpgrade={(id) =>
             engineRef.current?.buyPermanentUpgrade(id)
           }
+          onUnlockArmoryWeapon={(weaponId) =>
+            engineRef.current?.unlockArmoryWeaponWithScrap(weaponId)
+          }
+          onSelectOrUnlockDrone={(droneId) =>
+            engineRef.current?.unlockOrEquipDroneWithScrap(droneId)
+          }
           onStartFromBeginning={() => {
             setSettingsOpen(false);
             setLeaderboardOpen(false);
@@ -401,6 +421,7 @@ export default function App() {
           onSwitchWeapon={() => engineRef.current?.switchWeapon()}
           onTriggerGear={() => engineRef.current?.triggerGear()}
           onTriggerGadget={() => engineRef.current?.triggerGadget()}
+          onTriggerUltimate={() => engineRef.current?.triggerUltimate()}
           onEquipGear={(id) => engineRef.current?.equipGear(id)}
           onEquipGadget={(id) => engineRef.current?.equipGadget(id)}
           onPrevWeapon={() => engineRef.current?.prevWeapon()}
@@ -423,10 +444,28 @@ export default function App() {
         <PerkDraftModal
           wave={hud.wave}
           choices={hud.perkDraftChoices}
+          cursedChoice={hud.cursedDraftChoice}
           ownedCount={hud.ownedPerks.length}
           onSelectPerk={(perkId) => engineRef.current?.choosePerk(perkId)}
+          onSelectCursedPerk={(cursedId) =>
+            engineRef.current?.chooseCursedPerk(cursedId)
+          }
         />
       )}
+
+      {!webglError &&
+        hud.phase === 'playing' &&
+        !hud.perkDraftChoices &&
+        hud.weaponDraftChoices && (
+          <WeaponDraftModal
+            wave={hud.wave}
+            choices={hud.weaponDraftChoices}
+            weapons={hud.weapons}
+            onSelectWeapon={(weaponId) =>
+              engineRef.current?.chooseWeaponDraft(weaponId)
+            }
+          />
+        )}
 
       {!webglError && (
         <StatusModal

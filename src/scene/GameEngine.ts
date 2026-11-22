@@ -19,6 +19,8 @@ import {
 } from '../game/storage';
 import {
   computeReviveShockwavePush,
+  canExecuteDashTarget,
+  computeExecutionRewards,
   getReviveRestoreHp,
   isAcidPoolClearedByRevive,
   REVIVE_INVULN_SEC,
@@ -29,7 +31,10 @@ import {
   ArenaId,
   CareerStats,
   CrateKind,
+  CursedPerkId,
   DailyMutatorId,
+  DamageNumberKind,
+  DroneId,
   EvolutionId,
   FloatingDamage,
   GadgetId,
@@ -45,6 +50,7 @@ import {
   SavedRunProgress,
   SkinId,
   SurvivorClassId,
+  SynergyId,
   TacticalGearId,
   UpgradeId,
   UpgradeLevels,
@@ -56,21 +62,40 @@ import {
 } from '../game/types';
 import { ARENA_SPECS, GAME_MODE_SPECS } from '../game/arenas';
 import {
+  COMBO_DECAY_SEC,
+  ComboState,
+  createInitialComboState,
+  getComboCallout,
+  getComboMultiplier,
+  registerComboKill,
+  tickComboState,
+} from '../game/combo';
+import {
   createSeededRng,
   DAILY_MUTATOR_SPECS,
   getDailyChallengeConfig,
 } from '../game/dailyChallenge';
+import { DRONE_SPECS } from '../game/drones';
 import { GADGET_SPECS, getNextGadget } from '../game/gadgets';
 import {
+  CURSED_PERK_SPECS,
   evaluateWeaponEvolutions,
   EVOLUTION_SPECS,
   PERK_SPECS,
+  rollCursedPerkChoice,
   rollPerkDraftChoices,
 } from '../game/perks';
+import { evaluateActiveSynergies } from '../game/synergies';
 import {
   TACTICAL_GEAR_SPECS,
   getNextTacticalGear,
 } from '../game/tacticalGear';
+import {
+  gainUltimateCharge,
+  isUltimateReady,
+  ULTIMATE_MAX_CHARGE,
+  ULTIMATE_SPECS,
+} from '../game/ultimates';
 import {
   BOSS_KILL_UP_BONUS,
   createInitialUpgradeLevels,
@@ -113,6 +138,7 @@ import {
   getNextUnlockedWeapon,
   getPrevUnlockedWeapon,
   grantAmmoCrate,
+  rollWeaponSupplyDraftChoices,
   unlockWeaponsForWave,
   WEAPON_ORDER,
   WEAPON_SPECS,
@@ -122,6 +148,7 @@ import {
   applyPlayerSkin,
   buildBarbedWireMesh,
   buildCarMesh,
+  buildCombatDroneRig,
   buildConcretePillar,
   buildCornerBrazier,
   buildCrateCluster,
@@ -133,12 +160,15 @@ import {
   buildJerseyBarrier,
   buildLaserTripmine,
   buildMortarTargetRing,
+  buildNanoShieldDomeMesh,
   buildPickupCrate,
   buildPlayerRig,
   buildProximityMineMesh,
   buildRiskSupplyCrate,
+  buildSingularityVortexMesh,
   buildStreetLamp,
   buildZombieRig,
+  CombatDroneRig,
   DeployableTurretRig,
   disposeSharedModelGeometries,
   ExplosiveBarrelRig,
@@ -162,6 +192,8 @@ import {
   purchasePermanentUpgrade,
   saveCareerStats,
   SKIN_SPECS,
+  unlockArmoryWeapon,
+  unlockOrEquipDrone,
 } from '../game/career';
 import {
   getEffectivePixelRatio,
@@ -173,10 +205,16 @@ import {
 } from '../game/settings';
 
 import {
+  hapticDash,
+  hapticExecution,
+  hapticLowHpWarning,
+  hapticMortarImpact,
   hapticPlayerDamage,
+  hapticRecoil,
   hapticReviveShockwave,
   hapticShotgunBlast,
   hapticTurretDeploy,
+  hapticUltimate,
   setHapticsEnabled,
 } from '../services/haptics';
 import {
@@ -243,6 +281,7 @@ interface ActiveZombie {
   howlerBuffTimer: number;
   howlerCooldown: number;
   cryoTimer: number;
+  cryoFreezeTimer: number;
   burnTimer: number;
   burnDps: number;
   phase2Triggered: boolean;
@@ -286,6 +325,7 @@ interface ActiveTripmine {
   z: number;
   armTimer: number;
   life: number;
+  charges: number;
 }
 
 interface ActiveDecoy {
@@ -311,6 +351,62 @@ interface ActiveMortar {
   z: number;
   age: number;
   duration: number;
+}
+
+interface ActiveHomingMissile {
+  mesh: THREE.Mesh;
+  x: number;
+  y: number;
+  z: number;
+  vx: number;
+  vz: number;
+  damage: number;
+  life: number;
+  blastRadius: number;
+  targetId: number | null;
+}
+
+interface ActiveCrescentWave {
+  mesh: THREE.Mesh;
+  x: number;
+  z: number;
+  dirX: number;
+  dirZ: number;
+  speed: number;
+  damage: number;
+  life: number;
+  hitIds: Set<number>;
+}
+
+interface ActiveSingularityVortex {
+  group: THREE.Group;
+  x: number;
+  z: number;
+  life: number;
+  tickTimer: number;
+  damage: number;
+}
+
+interface ActiveOrbitalStrike {
+  delay: number;
+  ringGroup: THREE.Group | null;
+  ringFillMat: THREE.MeshBasicMaterial | null;
+  x: number;
+  z: number;
+  detonated: boolean;
+  age: number;
+  duration: number;
+}
+
+interface ActiveNapalmZone {
+  mesh: THREE.Mesh;
+  mat: THREE.MeshBasicMaterial;
+  x: number;
+  z: number;
+  life: number;
+  maxLife: number;
+  tickTimer: number;
+  damage: number;
 }
 
 interface BossProjectile {
@@ -456,6 +552,8 @@ interface FloatingDamageInternal {
   isCrit: boolean;
   isWeakpoint?: boolean;
   blockedByArmor?: boolean;
+  kind?: DamageNumberKind;
+  label?: string;
   age: number;
   duration: number;
 }
@@ -658,14 +756,45 @@ export class GameEngine {
   private supplyDropTimer = 18;
   private minigunRemaining = 0;
 
-  // Perks, Evolutions & Weapon Mastery
+  // Perks, Evolutions, Cursed Pacts & Weapon Mastery
   private weaponMastery: WeaponMasteryLevels = createInitialWeaponMastery();
   private ownedPerks: PerkId[] = [];
+  private ownedCursedPerks: CursedPerkId[] = [];
   private perkDraftChoices: PerkId[] | null = null;
+  private cursedDraftChoice: CursedPerkId | null = null;
+  private weaponDraftChoices: WeaponId[] | null = null;
+  private weaponDraftSeedCursor = 0;
   private evolvedWeapons: EvolutionId[] = [];
   private evolutionBanner: string | null = null;
   private evolutionBannerTimer = 0;
   private vampiricKillCounter = 0;
+
+  // Ultimates, Drones, Execution Dash, Killstreak Combo & Phase 1 Projectiles
+  private ultimateCharge = 0;
+  private ultimateActiveTimer = 0;
+  private nanoShieldDome!: THREE.Group;
+  private droneRig: CombatDroneRig | null = null;
+  private droneOrbitAngle = 0;
+  private droneActionTimer = 0.8;
+  private comboState: ComboState = createInitialComboState();
+  private vulcanSpinUp = 0;
+  private lowHpHapticCooldown = 0;
+  private executedDashIds = new Set<number>();
+
+  private homingMissiles: ActiveHomingMissile[] = [];
+  private missileGeo = new THREE.ConeGeometry(0.14, 0.42, 6);
+  private missileMat = new THREE.MeshBasicMaterial({ color: 0xf97316 });
+  private crescentWaves: ActiveCrescentWave[] = [];
+  private crescentGeo = new THREE.TorusGeometry(0.9, 0.08, 6, 18, Math.PI * 0.85);
+  private crescentMat = new THREE.MeshBasicMaterial({
+    color: 0xc084fc,
+    transparent: true,
+    opacity: 0.9,
+  });
+  private singularityVortices: ActiveSingularityVortex[] = [];
+  private orbitalStrikes: ActiveOrbitalStrike[] = [];
+  private napalmZones: ActiveNapalmZone[] = [];
+  private napalmGeo = new THREE.CircleGeometry(2.2, 24);
 
   // Wave & Entities
   private wave = 1;
@@ -783,6 +912,7 @@ export class GameEngine {
     this.applyGraphicsSettings();
     applyPlayerSkin(this.playerRig, this.career.equippedSkinId);
     this.applyClassFlashlightVisuals();
+    this.syncEquippedDroneVisuals();
     setHapticsEnabled(this.settings.hapticsEnabled);
     this.resizeObserver = new ResizeObserver(() => this.updateSize());
     this.resizeObserver.observe(this.container);
@@ -793,12 +923,20 @@ export class GameEngine {
     if (this.weatherOverride) {
       this.applyWeatherImmediate(this.weatherOverride);
     }
+    this.missileGeo.rotateX(Math.PI / 2);
+    this.crescentGeo.rotateX(-Math.PI / 2);
+    this.napalmGeo.rotateX(-Math.PI / 2);
     this.disposables.push(
       this.bossProjGeo,
       this.bossProjMat,
       this.acidProjGeo,
       this.acidProjMat,
       this.flashRingGeo,
+      this.missileGeo,
+      this.missileMat,
+      this.crescentGeo,
+      this.crescentMat,
+      this.napalmGeo,
     );
 
     if (!this.isSoftwareGl) {
@@ -899,9 +1037,11 @@ export class GameEngine {
     this.scene.add(this.arenaGroup);
     this.rebuildArena();
 
-    // 5. Player Rig + Red Laser Sight
+    // 5. Player Rig + Red Laser Sight + Vanguard Nano-Shield Dome
     this.playerRig = buildPlayerRig(this.shadowTex, !this.isSoftwareGl);
     this.scene.add(this.playerRig.root);
+    this.nanoShieldDome = buildNanoShieldDomeMesh();
+    this.scene.add(this.nanoShieldDome);
 
     // Laser beam geometry pivoted at z = -0.5 scaled by length along -Z
     const laserGeo = new THREE.BoxGeometry(0.032, 0.032, 1);
@@ -1763,7 +1903,7 @@ export class GameEngine {
     }
 
     if (code === 'KeyP' || code === 'Escape') {
-      if (this.phase === 'playing' && !this.perkDraftChoices) {
+      if (this.phase === 'playing' && !this.perkDraftChoices && !this.weaponDraftChoices) {
         this.pauseGame();
         return;
       } else if (this.phase === 'paused') {
@@ -1779,6 +1919,17 @@ export class GameEngine {
 
     if (this.phase !== 'playing') return;
 
+    if (this.weaponDraftChoices) {
+      if (code === 'Digit1' && this.weaponDraftChoices[0]) {
+        this.chooseWeaponDraft(this.weaponDraftChoices[0]);
+      } else if (code === 'Digit2' && this.weaponDraftChoices[1]) {
+        this.chooseWeaponDraft(this.weaponDraftChoices[1]);
+      } else if (code === 'Digit3' && this.weaponDraftChoices[2]) {
+        this.chooseWeaponDraft(this.weaponDraftChoices[2]);
+      }
+      return;
+    }
+
     if (this.perkDraftChoices) {
       if (code === 'Digit1' && this.perkDraftChoices[0]) {
         this.choosePerk(this.perkDraftChoices[0]);
@@ -1786,6 +1937,8 @@ export class GameEngine {
         this.choosePerk(this.perkDraftChoices[1]);
       } else if (code === 'Digit3' && this.perkDraftChoices[2]) {
         this.choosePerk(this.perkDraftChoices[2]);
+      } else if (code === 'Digit4' && this.cursedDraftChoice) {
+        this.chooseCursedPerk(this.cursedDraftChoice);
       }
       return;
     }
@@ -1808,7 +1961,10 @@ export class GameEngine {
     ];
     const slotIdx = weaponHotkeys.indexOf(code);
     if (slotIdx !== -1 && slotIdx < WEAPON_ORDER.length) {
-      this.selectWeapon(WEAPON_ORDER[slotIdx]);
+      const unlocked = this.weapons.filter((w) => w.unlocked);
+      if (slotIdx < unlocked.length) {
+        this.selectWeapon(unlocked[slotIdx].id);
+      }
       return;
     }
 
@@ -1817,10 +1973,12 @@ export class GameEngine {
       this.triggerDash();
     } else if (code === 'KeyR') {
       this.triggerReload();
-    } else if (code === 'KeyG' || code === 'KeyE') {
+    } else if (code === 'KeyG') {
       this.triggerGear();
-    } else if (code === 'KeyQ') {
+    } else if (code === 'KeyE') {
       this.triggerGadget();
+    } else if (code === 'KeyQ') {
+      this.triggerUltimate();
     } else if (code === 'Tab') {
       e.preventDefault();
       this.switchWeapon();
@@ -1891,8 +2049,35 @@ export class GameEngine {
     return this.seededRng ? this.seededRng() : Math.random();
   }
 
+  private hasCursedPerk(id: CursedPerkId): boolean {
+    return this.ownedCursedPerks.includes(id);
+  }
+
+  private getEffectiveDamageMultiplier(): number {
+    return (
+      getDamageMultiplier(this.upgradeLevels) *
+      (this.hasCursedPerk('cursed_glass_cannon') ? 1.85 : 1)
+    );
+  }
+
+  private getEffectiveMaxHp(): number {
+    const raw =
+      getMaxHpForLevel(this.upgradeLevels) +
+      getPermanentBaseHpBonus(this.career.permanentUpgrades);
+    return this.hasCursedPerk('cursed_glass_cannon')
+      ? Math.max(25, Math.round(raw * 0.6))
+      : raw;
+  }
+
   public triggerDash(): void {
-    if (this.phase !== 'playing' || this.uiSimulationPaused) return;
+    if (
+      this.phase !== 'playing' ||
+      this.uiSimulationPaused ||
+      this.perkDraftChoices ||
+      this.weaponDraftChoices
+    ) {
+      return;
+    }
     if (this.dashCooldownTimer > 0 || this.dashTimer > 0) return;
 
     const moveVec = this.getDesiredMoveVector();
@@ -1906,6 +2091,8 @@ export class GameEngine {
     this.dashTimer = DASH_DURATION;
     this.dashCooldownTimer = this.getEffectiveDashCooldown();
     this.invulnTimer = Math.max(this.invulnTimer, DASH_DURATION + 0.08);
+    this.executedDashIds.clear();
+    hapticDash();
     this.sound.playDash();
     const trailColor =
       SKIN_SPECS[this.career.equippedSkinId]?.trailColor ?? 0x38bdf8;
@@ -1920,7 +2107,7 @@ export class GameEngine {
 
     if (this.hasPerk('dash_shockwave')) {
       const pulseR = 4.6;
-      const dmg = Math.round(48 * getDamageMultiplier(this.upgradeLevels));
+      const dmg = Math.round(48 * this.getEffectiveDamageMultiplier());
       this.spawnFlashRing(this.playerX, this.playerZ, pulseR, 0x38bdf8, 0.34);
       for (let i = this.zombies.length - 1; i >= 0; i--) {
         const z = this.zombies[i];
@@ -1994,7 +2181,8 @@ export class GameEngine {
     if (
       this.phase !== 'playing' ||
       this.uiSimulationPaused ||
-      this.perkDraftChoices
+      this.perkDraftChoices ||
+      this.weaponDraftChoices
     ) {
       return;
     }
@@ -2032,9 +2220,12 @@ export class GameEngine {
         z: pos.z,
         armTimer: 0.4,
         life: 55,
+        charges: this.hasPerk('piercing_core') ? 2 : 1,
       });
       this.sound.playGadgetDeploy('tripmine');
-      this.pickupToast = 'LASER TRIPMINE SET';
+      this.pickupToast = this.hasPerk('piercing_core')
+        ? 'TWIN-CHARGE TRIPMINE SET'
+        : 'LASER TRIPMINE SET';
       this.pickupToastTimer = 1.4;
     } else if (gadgetId === 'decoy') {
       const pos = resolveArenaCollisions(
@@ -2121,7 +2312,8 @@ export class GameEngine {
     if (
       this.phase !== 'playing' ||
       this.uiSimulationPaused ||
-      this.perkDraftChoices
+      this.perkDraftChoices ||
+      this.weaponDraftChoices
     ) {
       return;
     }
@@ -2205,7 +2397,7 @@ export class GameEngine {
     } else {
       // Flashbang blast around player
       const blastR = spec.blastRadius * classSpec.blastRadiusMult;
-      const dmg = Math.round(spec.damage * getDamageMultiplier(this.upgradeLevels));
+      const dmg = Math.round(spec.damage * this.getEffectiveDamageMultiplier());
       this.sound.playFlashbang();
       this.hitstopTimer = Math.max(this.hitstopTimer, 0.02);
       this.trauma = Math.min(0.95, this.trauma + 0.42);
@@ -2235,6 +2427,117 @@ export class GameEngine {
       }
       this.pickupToast = 'FLASHBANG · ENEMIES STUNNED';
       this.pickupToastTimer = 1.6;
+    }
+
+    this.emitHudSnapshot(true);
+  }
+
+  public triggerUltimate(): void {
+    if (
+      this.phase !== 'playing' ||
+      this.uiSimulationPaused ||
+      this.perkDraftChoices ||
+      this.weaponDraftChoices
+    ) {
+      return;
+    }
+    if (!isUltimateReady(this.ultimateCharge)) return;
+
+    const classId = this.career.selectedClass;
+    const spec = ULTIMATE_SPECS[classId];
+    this.ultimateCharge = 0;
+    this.ultimateActiveTimer = spec.durationSec;
+    hapticUltimate();
+    this.sound.playUltimateActivate();
+    this.pickupToast = `ULTIMATE · ${spec.name.toUpperCase()}`;
+    this.pickupToastTimer = 2.4;
+    this.trauma = Math.min(1.0, this.trauma + 0.45);
+
+    const halfBound = this.getHalfSize() - 2.2;
+    if (classId === 'demolitionist') {
+      const living = this.zombies.filter((z) => !z.dying);
+      for (let i = 0; i < 8; i++) {
+        let tx: number;
+        let tz: number;
+        if (living.length > 0 && i < living.length) {
+          const z = living[(i * 3) % living.length];
+          tx = THREE.MathUtils.clamp(
+            z.x + (Math.random() * 2 - 1) * 1.4,
+            -halfBound,
+            halfBound,
+          );
+          tz = THREE.MathUtils.clamp(
+            z.z + (Math.random() * 2 - 1) * 1.4,
+            -halfBound,
+            halfBound,
+          );
+        } else {
+          const angle = (i / 8) * Math.PI * 2 + Math.random() * 0.4;
+          const dist = 4 + Math.random() * 7;
+          tx = THREE.MathUtils.clamp(
+            this.playerX + Math.cos(angle) * dist,
+            -halfBound,
+            halfBound,
+          );
+          tz = THREE.MathUtils.clamp(
+            this.playerZ + Math.sin(angle) * dist,
+            -halfBound,
+            halfBound,
+          );
+        }
+        this.orbitalStrikes.push({
+          delay: i * 0.28,
+          ringGroup: null,
+          ringFillMat: null,
+          x: tx,
+          z: tz,
+          detonated: false,
+          age: 0,
+          duration: 0.65,
+        });
+      }
+      this.spawnFlashRing(this.playerX, this.playerZ, 4.8, 0xf97316, 0.36);
+    } else if (classId === 'recon') {
+      this.isReloading = false;
+      this.reloadTimer = 0;
+      this.spawnFlashRing(this.playerX, this.playerZ, 5.5, 0x22d3ee, 0.4);
+      this.spawnBurstParticles(this.playerX, 0.9, this.playerZ, 22, 0x22d3ee, 7.8);
+    } else if (classId === 'vanguard') {
+      if (this.nanoShieldDome) {
+        this.nanoShieldDome.visible = true;
+      }
+      const pulseR = 7.5;
+      this.spawnFlashRing(this.playerX, this.playerZ, pulseR, 0x22d3ee, 0.44);
+      this.spawnBurstParticles(this.playerX, 0.9, this.playerZ, 26, 0x38bdf8, 8.6);
+      const dmg = Math.round(95 * this.getEffectiveDamageMultiplier());
+      for (let i = this.zombies.length - 1; i >= 0; i--) {
+        const z = this.zombies[i];
+        if (z.dying) continue;
+        const dx = z.x - this.playerX;
+        const dz = z.z - this.playerZ;
+        const dist = Math.hypot(dx, dz) || 0.001;
+        if (dist <= pulseR + z.radius) {
+          z.stunTimer = Math.max(z.stunTimer, z.kind === 'boss' ? 0.6 : 1.3);
+          this.damageZombie(z, dmg, false, dx / dist, dz / dist, 13, true, 'shield');
+        }
+      }
+      for (let i = 0; i < this.acidPuddles.length; i++) {
+        const puddle = this.acidPuddles[i];
+        if (
+          puddle.active &&
+          Math.hypot(puddle.x - this.playerX, puddle.z - this.playerZ) <= pulseR
+        ) {
+          puddle.active = false;
+        }
+      }
+    } else {
+      // Engineer: Minigun Overdrive + Supercharged Sentries
+      this.minigunRemaining = Math.max(this.minigunRemaining, spec.durationSec);
+      for (const turret of this.activeTurrets) {
+        turret.life += 5.0;
+      }
+      this.spawnFlashRing(this.playerX, this.playerZ, 5.2, 0xf59e0b, 0.4);
+      this.spawnBurstParticles(this.playerX, 0.9, this.playerZ, 20, 0xf59e0b, 7.6);
     }
 
     this.emitHudSnapshot(true);
@@ -2274,7 +2577,8 @@ export class GameEngine {
       this.uiSimulationPaused = false;
       return;
     }
-    this.uiSimulationPaused = open || Boolean(this.perkDraftChoices);
+    this.uiSimulationPaused =
+      open || Boolean(this.perkDraftChoices) || Boolean(this.weaponDraftChoices);
     if (open) {
       this.clearHeldInputs();
     }
@@ -2313,9 +2617,7 @@ export class GameEngine {
     this.upgradePoints = result.nextPoints;
 
     if (id === 'vitality') {
-      this.maxHp =
-        getMaxHpForLevel(this.upgradeLevels) +
-        getPermanentBaseHpBonus(this.career.permanentUpgrades);
+      this.maxHp = this.getEffectiveMaxHp();
       this.hp = Math.min(this.maxHp, this.hp + 12);
       this.ghostHp = Math.max(this.ghostHp, this.hp);
     } else if (id === 'capacity') {
@@ -2357,6 +2659,27 @@ export class GameEngine {
     return true;
   }
 
+  private openWeaponDraftIfEligible(): boolean {
+    if (this.wave % 3 !== 0) return false;
+    const draftRng =
+      this.mode === 'daily' && this.dailyDateKey
+        ? createSeededRng(
+            `nightfall-daily-${this.dailyDateKey}-wep-${this.weaponDraftSeedCursor++}`,
+          )
+        : Math.random;
+    const choices = rollWeaponSupplyDraftChoices(
+      this.weapons,
+      draftRng,
+    );
+    if (!choices || choices.length === 0) return false;
+    this.weaponDraftChoices = choices;
+    this.uiSimulationPaused = true;
+    this.clearHeldInputs();
+    this.persistCurrentProgress(false);
+    this.emitHudSnapshot(true);
+    return true;
+  }
+
   public choosePerk(perkId: PerkId): void {
     if (this.phase !== 'playing' || !this.perkDraftChoices) return;
     if (!this.perkDraftChoices.includes(perkId)) return;
@@ -2370,6 +2693,7 @@ export class GameEngine {
       this.ownedPerks.push(perkId);
     }
     this.perkDraftChoices = null;
+    this.cursedDraftChoice = null;
     this.uiSimulationPaused = false;
     this.sound.playPerkSelect();
     this.pickupToast = `PERK · ${PERK_SPECS[perkId].name.toUpperCase()}`;
@@ -2387,6 +2711,66 @@ export class GameEngine {
       this.applyClassFlashlightVisuals();
     }
 
+    this.evaluateEvolutions();
+    if (this.openWeaponDraftIfEligible()) return;
+    this.advanceToNextWave();
+  }
+
+  public chooseCursedPerk(cursedId: CursedPerkId): void {
+    if (this.phase !== 'playing' || !this.perkDraftChoices) return;
+    if (this.cursedDraftChoice !== cursedId) return;
+
+    if (!this.ownedCursedPerks.includes(cursedId)) {
+      this.ownedCursedPerks.push(cursedId);
+    }
+    this.perkDraftChoices = null;
+    this.cursedDraftChoice = null;
+    this.uiSimulationPaused = false;
+
+    if (cursedId === 'cursed_glass_cannon') {
+      this.maxHp = this.getEffectiveMaxHp();
+      this.hp = Math.min(this.hp, this.maxHp);
+      this.ghostHp = Math.min(this.ghostHp, this.maxHp);
+    }
+
+    this.sound.playCursedPerk();
+    this.pickupToast = `CURSED PACT · ${CURSED_PERK_SPECS[cursedId].name.toUpperCase()}`;
+    this.pickupToastTimer = 2.4;
+    this.spawnFlashRing(this.playerX, this.playerZ, 4.2, 0xf43f5e, 0.34);
+    this.spawnBurstParticles(this.playerX, 0.9, this.playerZ, 18, 0xf43f5e, 6.4);
+
+    if (this.openWeaponDraftIfEligible()) return;
+    this.advanceToNextWave();
+  }
+
+  public chooseWeaponDraft(weaponId: WeaponId): void {
+    if (this.phase !== 'playing' || !this.weaponDraftChoices) return;
+    if (!this.weaponDraftChoices.includes(weaponId)) return;
+
+    const target = this.weapons.find((w) => w.id === weaponId);
+    if (target) {
+      const spec = WEAPON_SPECS[weaponId];
+      if (!target.unlocked) {
+        target.unlocked = true;
+        target.mag = this.getWeaponMagSize(weaponId);
+        target.reserve = spec.maxReserve;
+        this.pickupToast = `ARSENAL DROP · ${spec.name.toUpperCase()}`;
+      } else {
+        this.weaponMastery[weaponId] = Math.min(5, (this.weaponMastery[weaponId] ?? 0) + 1);
+        target.mag = this.getWeaponMagSize(weaponId);
+        target.reserve = spec.maxReserve;
+        this.pickupToast = `${spec.shortCode} MASTERY +1 & RESUPPLY`;
+      }
+      this.activeWeapon = weaponId;
+      this.syncPlayerWeaponVisibility();
+      this.isReloading = false;
+      this.reloadTimer = 0;
+    }
+
+    this.weaponDraftChoices = null;
+    this.uiSimulationPaused = false;
+    this.sound.playPerkSelect();
+    this.pickupToastTimer = 2.4;
     this.evaluateEvolutions();
     this.advanceToNextWave();
   }
@@ -2534,6 +2918,46 @@ export class GameEngine {
     return { purchased: res.purchased, career: this.career };
   }
 
+  public unlockArmoryWeaponWithScrap(
+    weaponId: WeaponId,
+  ): { unlocked: boolean; career: CareerStats } {
+    const res = unlockArmoryWeapon(this.career, weaponId);
+    if (res.unlocked) {
+      this.career = saveCareerStats(res.career);
+      this.sound.playUpgrade();
+      this.callbacks.onCareerUpdate?.(this.career);
+      this.emitHudSnapshot(true);
+    }
+    return { unlocked: res.unlocked, career: this.career };
+  }
+
+  public unlockOrEquipDroneWithScrap(
+    droneId: DroneId,
+  ): { changed: boolean; career: CareerStats } {
+    const res = unlockOrEquipDrone(this.career, droneId);
+    if (res.changed) {
+      this.career = saveCareerStats(res.career);
+      this.syncEquippedDroneVisuals();
+      this.sound.playUpgrade();
+      this.callbacks.onCareerUpdate?.(this.career);
+      this.emitHudSnapshot(true);
+    }
+    return { changed: res.changed, career: this.career };
+  }
+
+  private syncEquippedDroneVisuals(): void {
+    if (this.droneRig) {
+      this.scene.remove(this.droneRig.root);
+      this.droneRig = null;
+    }
+    const id = this.career.equippedDrone;
+    if (id && id !== 'none') {
+      this.droneRig = buildCombatDroneRig(id);
+      this.droneRig.root.position.set(this.playerX + 1.4, 2.0, this.playerZ - 0.6);
+      this.scene.add(this.droneRig.root);
+    }
+  }
+
   private checkCareerSkinUnlocks(): void {
     const newly = evaluateSkinUnlocks(this.career);
     if (newly.length > 0) {
@@ -2550,20 +2974,24 @@ export class GameEngine {
       this.dailyMutator === 'hyper_dash'
         ? DAILY_MUTATOR_SPECS.hyper_dash.dashCooldownMult
         : 1;
+    const curseMult = this.hasCursedPerk('cursed_overclocked_legs') ? 0.65 : 1;
     return (
       DASH_COOLDOWN *
       getDashCooldownMultiplier(this.upgradeLevels) *
       getPermanentDashCooldownMultiplier(this.career.permanentUpgrades) *
       CLASS_SPECS[this.career.selectedClass].dashCooldownMult *
-      mutMult
+      mutMult *
+      curseMult
     );
   }
 
   private getEffectiveMoveSpeed(): number {
+    const curseMult = this.hasCursedPerk('cursed_overclocked_legs') ? 1.4 : 1;
     return (
       PLAYER_SPEED *
       getMoveSpeedMultiplier(this.upgradeLevels) *
-      CLASS_SPECS[this.career.selectedClass].moveSpeedMult
+      CLASS_SPECS[this.career.selectedClass].moveSpeedMult *
+      curseMult
     );
   }
 
@@ -2605,14 +3033,18 @@ export class GameEngine {
       activeWeapon: this.activeWeapon,
       equippedGear: this.equippedGear,
       equippedGadget: this.equippedGadget,
+      equippedDrone: this.career.equippedDrone,
       weapons: this.weapons.map((w) => ({ ...w })),
       hasUsedRevive: this.hasUsedRevive,
       mode: this.mode,
       arena: this.arena,
       ownedPerks: [...this.ownedPerks],
+      ownedCursedPerks: [...this.ownedCursedPerks],
       evolvedWeapons: [...this.evolvedWeapons],
+      ultimateCharge: this.ultimateCharge,
       dailyDateKey: this.dailyDateKey ?? undefined,
       perkDraftPending,
+      weaponDraftPending: Boolean(this.weaponDraftChoices),
       perkDraftSeedCursor: this.perkDraftSeedCursor,
       activeInterrupted: true,
     });
@@ -2643,11 +3075,22 @@ export class GameEngine {
     this.evolutionBanner = null;
     this.evolutionBannerTimer = 0;
     this.perkDraftChoices = null;
+    this.cursedDraftChoice = null;
+    this.weaponDraftChoices = null;
+    this.weaponDraftSeedCursor = 0;
     this.bossesKilledInRun = 0;
     this.lastScrapEarned = 0;
     this.minigunRemaining = 0;
     this.vampiricKillCounter = 0;
     this.supplyDropTimer = 18;
+    this.ultimateActiveTimer = 0;
+    this.comboState = createInitialComboState();
+    this.vulcanSpinUp = 0;
+    this.lowHpHapticCooldown = 0;
+    this.executedDashIds.clear();
+    if (this.nanoShieldDome) {
+      this.nanoShieldDome.visible = false;
+    }
 
     if (saved) {
       this.wave = options?.startWaveOverride ?? saved.lastWave;
@@ -2673,9 +3116,13 @@ export class GameEngine {
         this.mode = saved.mode;
       }
       this.ownedPerks = saved.ownedPerks ? [...saved.ownedPerks] : [];
+      this.ownedCursedPerks = saved.ownedCursedPerks
+        ? [...saved.ownedCursedPerks]
+        : [];
       this.evolvedWeapons = saved.evolvedWeapons
         ? [...saved.evolvedWeapons]
         : [];
+      this.ultimateCharge = saved.ultimateCharge ?? 0;
       this.perkDraftSeedCursor = saved.perkDraftSeedCursor ?? 0;
       if (this.mode === 'daily') {
         const cfg = getDailyChallengeConfig(saved.dailyDateKey);
@@ -2696,7 +3143,9 @@ export class GameEngine {
       this.upgradeLevels = createInitialUpgradeLevels();
       this.weaponMastery = createInitialWeaponMastery();
       this.ownedPerks = [];
+      this.ownedCursedPerks = [];
       this.evolvedWeapons = [];
+      this.ultimateCharge = 0;
       this.perkDraftSeedCursor = 0;
       this.score = 0;
       this.kills = 0;
@@ -2721,14 +3170,13 @@ export class GameEngine {
     this.rebuildArena();
     applyPlayerSkin(this.playerRig, this.career.equippedSkinId);
     this.applyClassFlashlightVisuals();
+    this.syncEquippedDroneVisuals();
 
     this.playerX = 0;
     this.playerZ = 0;
     this.playerAimAngle = 0;
     this.playerWalkPhase = 0;
-    this.maxHp =
-      getMaxHpForLevel(this.upgradeLevels) +
-      getPermanentBaseHpBonus(this.career.permanentUpgrades);
+    this.maxHp = this.getEffectiveMaxHp();
     const isResumingInterrupted = Boolean(saved && resumeInterrupted);
     this.hp = isResumingInterrupted
       ? getReviveRestoreHp(this.maxHp)
@@ -2737,13 +3185,16 @@ export class GameEngine {
     this.isNewHighScore = false;
     this.damageTaken = 0;
 
-    this.weapons = createInitialWeapons();
+    this.weapons = createInitialWeapons(this.career.unlockedWeapons);
     if (saved?.weapons) {
       const savedById = new Map(saved.weapons.map((w) => [w.id, w]));
       for (const w of this.weapons) {
         const prev = savedById.get(w.id);
         if (!prev) continue;
-        w.unlocked = w.id === 'pistol' ? true : prev.unlocked;
+        w.unlocked =
+          w.id === 'pistol' || this.career.unlockedWeapons.includes(w.id)
+            ? true
+            : prev.unlocked;
         w.mag = Math.min(this.getWeaponMagSize(w.id), Math.max(0, prev.mag));
         w.reserve = prev.reserve;
       }
@@ -2756,6 +3207,7 @@ export class GameEngine {
       this.weapons.find((w) => w.id === preferredWeapon)?.unlocked ?? false;
     this.activeWeapon = isPreferredUnlocked ? preferredWeapon : 'pistol';
     this.syncPlayerWeaponVisibility();
+    this.evaluateEvolutions();
     this.fireCooldown = 0;
     this.isReloading = false;
     this.reloadTimer = 0;
@@ -2864,8 +3316,22 @@ export class GameEngine {
             )
           : Math.random;
       this.perkDraftChoices = rollPerkDraftChoices(this.ownedPerks, draftRng);
+      this.cursedDraftChoice = rollCursedPerkChoice(this.ownedCursedPerks, draftRng);
       this.uiSimulationPaused = true;
       this.persistCurrentProgress(true);
+    } else if (saved?.weaponDraftPending) {
+      const draftRng =
+        this.mode === 'daily' && this.dailyDateKey
+          ? createSeededRng(
+              `nightfall-daily-${this.dailyDateKey}-wep-${this.weaponDraftSeedCursor}`,
+            )
+          : Math.random;
+      this.weaponDraftChoices = rollWeaponSupplyDraftChoices(
+        this.weapons,
+        draftRng,
+      );
+      this.uiSimulationPaused = Boolean(this.weaponDraftChoices);
+      this.persistCurrentProgress(false);
     } else {
       this.persistCurrentProgress(false);
     }
@@ -2990,6 +3456,12 @@ export class GameEngine {
   private finalizeGameOver(): void {
     this.uiSimulationPaused = false;
     this.perkDraftChoices = null;
+    this.cursedDraftChoice = null;
+    this.weaponDraftChoices = null;
+    this.ultimateActiveTimer = 0;
+    if (this.nanoShieldDome) {
+      this.nanoShieldDome.visible = false;
+    }
     this.sound.setBossIntensity(false);
     const prevBest = this.highScore;
     this.highScore = saveHighScore(this.score);
@@ -2997,12 +3469,16 @@ export class GameEngine {
       this.isNewHighScore = true;
     }
 
-    const scrapReward = computeRunScrapReward({
+    const baseScrap = computeRunScrapReward({
       wave: this.wave,
       kills: this.kills,
       bossesKilledInRun: this.bossesKilledInRun,
       rewardMultiplier: GAME_MODE_SPECS[this.mode].rewardMultiplier,
     });
+    const scrapReward =
+      this.career.equippedDrone === 'scrap_magnet'
+        ? Math.round(baseScrap * 1.25)
+        : baseScrap;
     this.lastScrapEarned = scrapReward;
     this.career.bestWave = Math.max(this.career.bestWave, this.wave);
     this.career.bestScore = Math.max(this.career.bestScore, Math.round(this.score));
@@ -3046,6 +3522,12 @@ export class GameEngine {
       this.persistCurrentProgress(Boolean(this.perkDraftChoices));
     }
     this.perkDraftChoices = null;
+    this.cursedDraftChoice = null;
+    this.weaponDraftChoices = null;
+    this.ultimateActiveTimer = 0;
+    if (this.nanoShieldDome) {
+      this.nanoShieldDome.visible = false;
+    }
     this.evolutionBanner = null;
     this.evolutionBannerTimer = 0;
     this.clearEntities();
@@ -3059,6 +3541,7 @@ export class GameEngine {
     this.playerRig.root.visible = true;
     updateDiegeticFootArcs(this.playerRig, false, 0, 1);
     applyPlayerSkin(this.playerRig, this.career.equippedSkinId);
+    this.syncEquippedDroneVisuals();
     this.rebuildArena();
     this.applyWeatherImmediate(
       this.mode === 'storm' ? 'storm' : (this.weatherOverride ?? 'clear'),
@@ -3148,6 +3631,27 @@ export class GameEngine {
       this.scene.remove(m.group);
     }
     this.activeMortars = [];
+    for (const hm of this.homingMissiles) {
+      this.scene.remove(hm.mesh);
+    }
+    this.homingMissiles = [];
+    for (const cw of this.crescentWaves) {
+      this.scene.remove(cw.mesh);
+    }
+    this.crescentWaves = [];
+    for (const sv of this.singularityVortices) {
+      this.scene.remove(sv.group);
+    }
+    this.singularityVortices = [];
+    for (const os of this.orbitalStrikes) {
+      if (os.ringGroup) this.scene.remove(os.ringGroup);
+    }
+    this.orbitalStrikes = [];
+    for (const nz of this.napalmZones) {
+      this.scene.remove(nz.mesh);
+      nz.mat.dispose();
+    }
+    this.napalmZones = [];
     if (this.supplyCrate) {
       this.scene.remove(this.supplyCrate.mesh);
       this.supplyCrate = null;
@@ -3361,6 +3865,37 @@ export class GameEngine {
       }
     }
 
+    // Combo & Spin-Up & Ultimate Active Timers
+    this.comboState = tickComboState(this.comboState, dt);
+    if (this.activeWeapon !== 'vulcan_minigun' || this.fireCooldown <= 0) {
+      this.vulcanSpinUp = Math.max(0, this.vulcanSpinUp - dt * 0.65);
+    }
+    if (this.ultimateActiveTimer > 0) {
+      this.ultimateActiveTimer = Math.max(0, this.ultimateActiveTimer - dt);
+      if (this.career.selectedClass === 'vanguard') {
+        if (this.nanoShieldDome) {
+          this.nanoShieldDome.visible = this.ultimateActiveTimer > 0;
+          this.nanoShieldDome.position.set(this.playerX, 0, this.playerZ);
+          this.nanoShieldDome.rotation.y += dt * 1.6;
+        }
+        const regen = (this.maxHp * 0.45 * dt) / (ULTIMATE_SPECS.vanguard.durationSec || 5);
+        this.hp = Math.min(this.maxHp, this.hp + regen);
+        this.ghostHp = Math.max(this.ghostHp, this.hp);
+      } else if (this.nanoShieldDome) {
+        this.nanoShieldDome.visible = false;
+      }
+    } else if (this.nanoShieldDome && this.nanoShieldDome.visible) {
+      this.nanoShieldDome.visible = false;
+    }
+
+    if (this.lowHpHapticCooldown > 0) {
+      this.lowHpHapticCooldown = Math.max(0, this.lowHpHapticCooldown - dt);
+    }
+    if (this.hp > 0 && this.hp / this.maxHp <= 0.25 && this.lowHpHapticCooldown <= 0) {
+      this.lowHpHapticCooldown = 3.5;
+      hapticLowHpWarning();
+    }
+
     // Delayed ghost health bar
     if (this.ghostHp > this.hp) {
       this.ghostHp = Math.max(this.hp, this.ghostHp - 28 * dt);
@@ -3405,6 +3940,56 @@ export class GameEngine {
     );
     this.playerX = resolved.x;
     this.playerZ = resolved.z;
+
+    // Execution Dash: Finish non-boss enemies below 25% HP on dash pass-through
+    if (this.dashTimer > 0) {
+      const curState = this.getActiveWeaponState();
+      const curSpec = WEAPON_SPECS[curState.id];
+      const curMagCap = this.getWeaponMagSize(curState.id);
+      for (let i = this.zombies.length - 1; i >= 0; i--) {
+        const z = this.zombies[i];
+        if (z.dying || z.kind === 'boss' || this.executedDashIds.has(z.id)) continue;
+        if (
+          Math.hypot(z.x - this.playerX, z.z - this.playerZ) <=
+          PLAYER_RADIUS + z.radius + 0.75
+        ) {
+          if (canExecuteDashTarget(z.hp, z.maxHp)) {
+            this.executedDashIds.add(z.id);
+            this.damageZombie(
+              z,
+              Math.max(z.hp + 50, z.maxHp),
+              true,
+              this.dashDirX,
+              this.dashDirZ,
+              12,
+              true,
+              'execute',
+              'EXEC',
+            );
+            const rewards = computeExecutionRewards(
+              this.maxHp,
+              curMagCap,
+            );
+            this.hp = Math.min(this.maxHp, this.hp + rewards.hpRestore);
+            this.ghostHp = Math.max(this.ghostHp, this.hp);
+            curState.mag = Math.min(curMagCap, curState.mag + rewards.ammoRestore);
+            if (!curSpec.infiniteReserve) {
+              curState.reserve = Math.min(
+                curSpec.maxReserve,
+                curState.reserve + rewards.ammoRestore,
+              );
+            }
+            this.sound.playExecutionDash();
+            hapticExecution();
+            this.hitstopTimer = Math.max(this.hitstopTimer, 0.032);
+            this.spawnFlashRing(z.x, z.z, 3.2, 0x22d3ee, 0.28);
+            this.spawnBurstParticles(z.x, 0.9, z.z, 16, 0x22d3ee, 7.2);
+            this.pickupToast = `EXECUTION DASH · +${rewards.hpRestore} HP`;
+            this.pickupToastTimer = 1.4;
+          }
+        }
+      }
+    }
 
     // Player Aiming (Right Stick > Mouse > Auto-Fire > Movement direction)
     let wantsToFire = false;
@@ -3481,10 +4066,12 @@ export class GameEngine {
     // Update visible red laser sight
     this.updateLaserSight();
 
-    // Firing
+    // Firing (Minigun overdrive & Recon Bullet-Time fire continuously)
+    const reconOverclock =
+      this.career.selectedClass === 'recon' && this.ultimateActiveTimer > 0;
     if (
       wantsToFire &&
-      (this.minigunRemaining > 0 || !this.isReloading) &&
+      (this.minigunRemaining > 0 || reconOverclock || !this.isReloading) &&
       this.fireCooldown <= 0
     ) {
       this.tryFireWeapon();
@@ -3496,8 +4083,12 @@ export class GameEngine {
     // Update Zombies
     this.updateZombies(dt);
 
-    // Update Tactical Gear (Mines, Turrets, Flashbang rings)
+    // Update Tactical Gear (Mines, Turrets, Gadgets, Barrels, Generators)
     this.updateTacticalGear(dt);
+
+    // Update Autonomous Combat Drone & Phase 1 Combat Zones/Projectiles
+    this.updateCombatDrone(dt);
+    this.updatePhase1CombatEffects(dt);
 
     // Update Boss Plasma Projectiles & Acid Spitter Hazards
     this.updateBossProjectiles(dt);
@@ -3644,7 +4235,7 @@ export class GameEngine {
     this.spawnFlashRing(b.x, b.z, blastR, 0xf97316, 0.34);
     this.spawnBurstParticles(b.x, 0.65, b.z, 28, 0xfbbf24, 9.5);
 
-    const dmg = Math.round(360 * getDamageMultiplier(this.upgradeLevels));
+    const dmg = Math.round(360 * this.getEffectiveDamageMultiplier());
     for (let j = this.zombies.length - 1; j >= 0; j--) {
       const z = this.zombies[j];
       if (z.dying) continue;
@@ -3709,11 +4300,14 @@ export class GameEngine {
 
   private tryFireWeapon(): void {
     const isMinigun = this.minigunRemaining > 0;
+    const reconOverclock =
+      this.career.selectedClass === 'recon' && this.ultimateActiveTimer > 0;
+    const freeFire = isMinigun || reconOverclock;
     const state = this.getActiveWeaponState();
     const spec = WEAPON_SPECS[state.id];
     const magSize = this.getWeaponMagSize(state.id);
 
-    if (!isMinigun && !canFireWeapon(state)) {
+    if (!freeFire && !canFireWeapon(state)) {
       if (canStartReload(state, magSize)) {
         this.triggerReload();
       } else {
@@ -3726,21 +4320,38 @@ export class GameEngine {
       return;
     }
 
-    if (!isMinigun) {
+    if (!freeFire) {
       consumeAmmoOnFire(state);
     }
 
     const isDragonsBreath =
-      !isMinigun &&
-      state.id === 'shotgun' &&
-      this.hasEvolution('dragons_breath');
+      !isMinigun && state.id === 'shotgun' && this.hasEvolution('dragons_breath');
     const isRailSmg =
       !isMinigun && state.id === 'smg' && this.hasEvolution('rail_smg');
+    const isPhantomEnforcers =
+      !isMinigun && state.id === 'twin9' && this.hasEvolution('phantom_enforcers');
+    const isAbsoluteZero =
+      !isMinigun && state.id === 'cryo_carbine' && this.hasEvolution('absolute_zero');
+    const isVoidCleaver =
+      !isMinigun && state.id === 'pulse_katana' && this.hasEvolution('void_cleaver');
+    const isHellfireGatling =
+      !isMinigun && state.id === 'vulcan_minigun' && this.hasEvolution('hellfire_gatling');
+    const isSingularityRailgun =
+      !isMinigun && state.id === 'gauss_carbine' && this.hasEvolution('singularity_railgun');
+    const isSwarmBarrage =
+      !isMinigun && state.id === 'micro_launcher' && this.hasEvolution('swarm_barrage');
+    const isNapalmBioblaster =
+      !isMinigun && state.id === 'chem_thrower' && this.hasEvolution('napalm_bioblaster');
+
+    if (!isMinigun && state.id === 'vulcan_minigun') {
+      this.vulcanSpinUp = Math.min(1, this.vulcanSpinUp + 0.14);
+    }
 
     this.fireCooldown = isMinigun
       ? 0.075
-      : getEffectiveFireInterval(state.id, this.rapidFireRemaining) *
-        getFireRateMultiplier(this.upgradeLevels);
+      : getEffectiveFireInterval(state.id, this.rapidFireRemaining, this.vulcanSpinUp) *
+        getFireRateMultiplier(this.upgradeLevels) *
+        (reconOverclock ? 0.72 : 1);
     this.recoilOffset = Math.min(0.18, this.recoilOffset + 0.085);
     const shake = isMinigun ? 0.08 : spec.screenShake;
     this.trauma = Math.min(0.85, this.trauma + shake);
@@ -3759,13 +4370,52 @@ export class GameEngine {
 
     if (!isMinigun && (state.id === 'shotgun' || state.id === 'autoshotgun')) {
       hapticShotgunBlast();
+    } else if (
+      !isMinigun &&
+      (state.id === 'sniper' ||
+        state.id === 'railgun' ||
+        state.id === 'gauss_carbine' ||
+        state.id === 'micro_launcher')
+    ) {
+      hapticRecoil(true);
     }
 
-    // Muzzle flash
+    const masteryMult = isMinigun
+      ? 1
+      : getWeaponMasteryDamageMult(this.weaponMastery[state.id] ?? 0);
+    const damageMult = this.getEffectiveDamageMultiplier() * masteryMult;
+    const isEvolved =
+      isDragonsBreath ||
+      isRailSmg ||
+      isPhantomEnforcers ||
+      isAbsoluteZero ||
+      isVoidCleaver ||
+      isHellfireGatling ||
+      isSingularityRailgun ||
+      isSwarmBarrage ||
+      isNapalmBioblaster;
+    const baseDamage = isMinigun
+      ? 36
+      : isEvolved
+        ? Math.round(spec.damage * 1.35)
+        : spec.damage;
+
+    const tracerColor = isMinigun
+      ? 0xfbbf24
+      : isDragonsBreath || isHellfireGatling || isNapalmBioblaster
+        ? 0xf97316
+        : isRailSmg || isPhantomEnforcers || isAbsoluteZero
+          ? 0x22d3ee
+          : isVoidCleaver || isSingularityRailgun
+            ? 0xc084fc
+            : spec.tracerColor;
+
+    // Muzzle flash tinted by weapon
     this.muzzleFlashTimer = 0.055;
     this.playerRig.muzzleFlash.visible = true;
     this.playerRig.muzzleFlash.rotation.z = Math.random() * Math.PI;
     if (this.playerRig.flashLight) {
+      this.playerRig.flashLight.color.setHex(tracerColor);
       this.playerRig.flashLight.intensity = 10;
     }
 
@@ -3773,46 +4423,147 @@ export class GameEngine {
 
     const muzzleX = this.cachedMuzzleX;
     const muzzleZ = this.cachedMuzzleZ;
+    const critChance = 0.16 + (this.hasPerk('critical_optics') ? 0.14 : 0);
+    const critMult = this.hasPerk('critical_optics') ? 2.1 : 1.5;
+
+    // 1. Melee Pulse Katana / Void Cleaver cone cleave
+    if (!isMinigun && state.id === 'pulse_katana') {
+      const cleaveRange = isVoidCleaver ? spec.range + 1.1 : spec.range;
+      const aimX = -Math.sin(this.playerAimAngle);
+      const aimZ = -Math.cos(this.playerAimAngle);
+      const minDot = Math.cos(spec.spreadRad);
+      this.spawnFlashRing(
+        this.playerX + aimX * 1.1,
+        this.playerZ + aimZ * 1.1,
+        cleaveRange * 0.72,
+        tracerColor,
+        0.22,
+      );
+      let killedAnyMelee = false;
+      for (let i = this.zombies.length - 1; i >= 0; i--) {
+        const z = this.zombies[i];
+        if (z.dying) continue;
+        const dx = z.x - this.playerX;
+        const dz = z.z - this.playerZ;
+        const dist = Math.hypot(dx, dz) || 0.001;
+        if (dist > cleaveRange + z.radius) continue;
+        const dot = (dx / dist) * aimX + (dz / dist) * aimZ;
+        if (dot >= minDot || dist <= 1.25 + z.radius) {
+          const isCrit = Math.random() < critChance;
+          const dmg = Math.round(baseDamage * damageMult * (isCrit ? critMult : 1));
+          if (this.hasPerk('cryo_rounds')) {
+            z.cryoTimer = Math.max(z.cryoTimer, 2.8);
+          }
+          if (this.hasPerk('incendiary')) {
+            z.burnTimer = Math.max(z.burnTimer, 2.5);
+            z.burnDps = Math.max(z.burnDps, Math.round(dmg * 0.2));
+          }
+          const killed = this.damageZombie(
+            z,
+            dmg,
+            isCrit,
+            dx / dist,
+            dz / dist,
+            spec.knockback,
+            true,
+          );
+          if (killed) killedAnyMelee = true;
+          this.spawnDirectionalBloodBurst(z.x, 0.95, z.z, dx / dist, dz / dist, 9, 6.2, true);
+        }
+      }
+      for (let b = 0; b < this.barrels.length; b++) {
+        const barrel = this.barrels[b];
+        if (!barrel.active) continue;
+        const dx = barrel.x - this.playerX;
+        const dz = barrel.z - this.playerZ;
+        const dist = Math.hypot(dx, dz) || 0.001;
+        if (dist <= cleaveRange + 0.6 && (dx / dist) * aimX + (dz / dist) * aimZ >= minDot) {
+          this.detonateBarrel(barrel);
+        }
+      }
+      if (isVoidCleaver) {
+        const mesh = new THREE.Mesh(this.crescentGeo, this.crescentMat);
+        mesh.position.set(muzzleX, 0.95, muzzleZ);
+        mesh.rotation.y = this.playerAimAngle;
+        this.scene.add(mesh);
+        this.crescentWaves.push({
+          mesh,
+          x: muzzleX,
+          z: muzzleZ,
+          dirX: aimX,
+          dirZ: aimZ,
+          speed: 24,
+          damage: Math.round(baseDamage * damageMult * 0.85),
+          life: 0.72,
+          hitIds: new Set(),
+        });
+      }
+      if (killedAnyMelee) {
+        this.hitstopTimer = 0.025;
+      }
+      this.emitHudSnapshot(true);
+      return;
+    }
+
+    // 2. Homing MML-4 Micro-Launcher / Swarm Barrage Pod
+    if (!isMinigun && state.id === 'micro_launcher') {
+      const count = isSwarmBarrage ? 6 : spec.pellets;
+      for (let m = 0; m < count; m++) {
+        const spread = (m - (count - 1) / 2) * 0.22;
+        const angle = this.playerAimAngle + spread;
+        const dirX = -Math.sin(angle);
+        const dirZ = -Math.cos(angle);
+        const mesh = new THREE.Mesh(this.missileGeo, this.missileMat);
+        mesh.position.set(muzzleX, 1.05, muzzleZ);
+        mesh.rotation.y = angle;
+        this.scene.add(mesh);
+        this.homingMissiles.push({
+          mesh,
+          x: muzzleX,
+          y: 1.05,
+          z: muzzleZ,
+          vx: dirX * 15,
+          vz: dirZ * 15,
+          damage: Math.round(baseDamage * damageMult),
+          life: 2.3,
+          blastRadius: isSwarmBarrage ? 3.5 : 3.0,
+          targetId: null,
+        });
+      }
+      if (!freeFire && state.mag === 0 && canStartReload(state, magSize)) {
+        this.triggerReload();
+      }
+      this.emitHudSnapshot(true);
+      return;
+    }
+
+    // Standard hitscan / piercing / beam fire
     this.spawnShellCasing(muzzleX, muzzleZ, this.playerAimAngle);
 
-    const masteryMult = isMinigun
-      ? 1
-      : getWeaponMasteryDamageMult(this.weaponMastery[state.id] ?? 0);
-    const damageMult = getDamageMultiplier(this.upgradeLevels) * masteryMult;
     const pellets = isMinigun ? 1 : isDragonsBreath ? 10 : spec.pellets;
     const spreadRad = isMinigun ? 0.09 : isDragonsBreath ? 0.34 : spec.spreadRad;
     const range = isMinigun ? 24 : spec.range;
-    const baseDamage = isMinigun
-      ? 36
-      : isDragonsBreath
-        ? Math.round(spec.damage * 1.28)
-        : isRailSmg
-          ? Math.round(spec.damage * 1.4)
-          : spec.damage;
-    const tracerColor = isMinigun
-      ? 0xfbbf24
-      : isDragonsBreath
-        ? 0xf97316
-        : isRailSmg
-          ? 0x22d3ee
-          : spec.tracerColor;
 
     let pierceLimit = isMinigun
       ? 1
       : isRailSmg
         ? 3
-        : (spec.pierceCount ?? 1);
+        : isSingularityRailgun
+          ? 99
+          : (spec.pierceCount ?? 1);
     if (this.hasPerk('piercing_core') && pierceLimit === 1) {
       pierceLimit = 2;
     }
 
-    const armorBypass = (!isMinigun && state.id === 'railgun') || isRailSmg;
-    const critChance = 0.16 + (this.hasPerk('critical_optics') ? 0.14 : 0);
-    const critMult = this.hasPerk('critical_optics') ? 2.1 : 1.5;
+    const armorBypass =
+      (!isMinigun && (state.id === 'railgun' || state.id === 'gauss_carbine')) ||
+      isRailSmg ||
+      isSingularityRailgun;
     const obstacles = this.getObstacles();
     const halfSize = this.getHalfSize();
 
     let killedAny = false;
+    let spawnedVortexThisShot = false;
     for (let p = 0; p < pellets; p++) {
       const spread = (Math.random() * 2 - 1) * spreadRad;
       const angle = this.playerAimAngle + spread;
@@ -3903,18 +4654,24 @@ export class GameEngine {
           const isCrit = Math.random() < critChance;
           const dmg = Math.round(baseDamage * damageMult * (isCrit ? critMult : 1));
 
-          if (this.hasPerk('cryo_rounds')) {
-            hit.z.cryoTimer = Math.max(hit.z.cryoTimer, 2.8);
+          if (this.hasPerk('cryo_rounds') || state.id === 'cryo_carbine') {
+            hit.z.cryoTimer = Math.max(hit.z.cryoTimer, state.id === 'cryo_carbine' ? 3.2 : 2.8);
           }
-          if (isDragonsBreath || this.hasPerk('incendiary')) {
+          if (isAbsoluteZero) {
+            hit.z.cryoFreezeTimer = Math.max(hit.z.cryoFreezeTimer, 1.8);
+          }
+          if (isDragonsBreath || isHellfireGatling || state.id === 'chem_thrower' || this.hasPerk('incendiary')) {
             hit.z.burnTimer = Math.max(
               hit.z.burnTimer,
-              isDragonsBreath ? 2.8 : 2.5,
+              isDragonsBreath || state.id === 'chem_thrower' ? 2.8 : 2.5,
             );
             hit.z.burnDps = Math.max(
               hit.z.burnDps,
-              Math.round(dmg * (isDragonsBreath ? 0.28 : 0.18)),
+              Math.round(dmg * (isDragonsBreath || state.id === 'chem_thrower' ? 0.3 : 0.18)),
             );
+          }
+          if (state.id === 'chem_thrower') {
+            hit.z.cryoTimer = Math.max(hit.z.cryoTimer, 1.6);
           }
 
           const killed = this.damageZombie(
@@ -3927,6 +4684,65 @@ export class GameEngine {
             armorBypass,
           );
           if (killed) killedAny = true;
+
+          if (isPhantomEnforcers && !hit.z.dying) {
+            this.triggerChainLightning(hit.z, Math.round(dmg * 0.72), 3, 0x22d3ee);
+          }
+
+          if (isHellfireGatling) {
+            const splashR = 2.6;
+            this.spawnFlashRing(hitX, hitZ, splashR, 0xf97316, 0.22);
+            const splashDmg = Math.round(dmg * 0.52);
+            for (let j = this.zombies.length - 1; j >= 0; j--) {
+              const other = this.zombies[j];
+              if (other.dying || other.id === hit.z.id) continue;
+              const odx = other.x - hitX;
+              const odz = other.z - hitZ;
+              const od = Math.hypot(odx, odz) || 0.001;
+              if (od <= splashR + other.radius) {
+                other.burnTimer = Math.max(other.burnTimer, 2.0);
+                other.burnDps = Math.max(other.burnDps, 18);
+                this.damageZombie(other, splashDmg, false, odx / od, odz / od, 3.5, true);
+              }
+            }
+          }
+
+          if (isSingularityRailgun && !spawnedVortexThisShot) {
+            spawnedVortexThisShot = true;
+            const group = buildSingularityVortexMesh();
+            group.position.set(hitX, 0.05, hitZ);
+            this.scene.add(group);
+            this.singularityVortices.push({
+              group,
+              x: hitX,
+              z: hitZ,
+              life: 2.3,
+              tickTimer: 0.3,
+              damage: Math.round(dmg * 0.35),
+            });
+          }
+
+          if (isNapalmBioblaster && this.napalmZones.length < 10) {
+            const mat = new THREE.MeshBasicMaterial({
+              color: 0xf97316,
+              transparent: true,
+              opacity: 0.5,
+              depthWrite: false,
+            });
+            const mesh = new THREE.Mesh(this.napalmGeo, mat);
+            mesh.position.set(hitX, 0.035, hitZ);
+            this.scene.add(mesh);
+            this.napalmZones.push({
+              mesh,
+              mat,
+              x: hitX,
+              z: hitZ,
+              life: 4.5,
+              maxLife: 4.5,
+              tickTimer: 0.2,
+              damage: Math.round(dmg * 0.45),
+            });
+          }
 
           if (!hit.z.dying && this.hasPerk('storm_conductor')) {
             const isWet =
@@ -3956,7 +4772,8 @@ export class GameEngine {
             state.id === 'shotgun' ||
             state.id === 'autoshotgun' ||
             state.id === 'sniper' ||
-            state.id === 'railgun'
+            state.id === 'railgun' ||
+            state.id === 'gauss_carbine'
           ) {
             this.spawnDirectionalBloodStreak(
               hit.z.x + dirX * (hit.z.radius + 0.45),
@@ -3977,13 +4794,14 @@ export class GameEngine {
       (state.id === 'shotgun' ||
         state.id === 'autoshotgun' ||
         state.id === 'sniper' ||
-        state.id === 'railgun')
+        state.id === 'railgun' ||
+        state.id === 'gauss_carbine')
     ) {
-      this.hitstopTimer = 0.025;
+      this.hitstopTimer = 0.028;
     }
 
     // Auto reload if magazine hits 0 and reserve allows
-    if (!isMinigun && state.mag === 0 && canStartReload(state, magSize)) {
+    if (!freeFire && state.mag === 0 && canStartReload(state, magSize)) {
       this.triggerReload();
     }
 
@@ -3998,6 +4816,8 @@ export class GameEngine {
     dirZ: number,
     knockback: number,
     armorBypass = false,
+    dmgKindOverride?: DamageNumberKind,
+    labelOverride?: string,
   ): boolean {
     if (z.dying) return false;
     const facingX = -Math.sin(z.facingYaw);
@@ -4048,6 +4868,12 @@ export class GameEngine {
     z.knockVx += dirX * kbForce;
     z.knockVz += dirZ * kbForce;
 
+    this.ultimateCharge = gainUltimateCharge(
+      this.ultimateCharge,
+      finalDamage,
+      z.hp <= 0,
+    );
+
     if (blockedByArmor) {
       this.sound.playArmorClang();
       this.spawnBurstParticles(
@@ -4059,6 +4885,18 @@ export class GameEngine {
         5.0,
       );
     }
+
+    const numKind: DamageNumberKind =
+      dmgKindOverride ??
+      (isWeakpoint
+        ? 'weakpoint'
+        : blockedByArmor
+          ? 'shield'
+          : isCrit
+            ? 'crit'
+            : z.cryoTimer > 0 || z.cryoFreezeTimer > 0
+              ? 'cryo'
+              : 'normal');
 
     this.floatingDamages.push({
       id: this.nextEntityId++,
@@ -4074,6 +4912,8 @@ export class GameEngine {
       isCrit: isCrit && !blockedByArmor && !isWeakpoint,
       isWeakpoint,
       blockedByArmor,
+      kind: numKind,
+      label: labelOverride,
       age: 0,
       duration: 0.65,
     });
@@ -4093,6 +4933,16 @@ export class GameEngine {
       if (this.killsTowardNextUp >= KILLS_PER_UPGRADE_POINT) {
         this.killsTowardNextUp -= KILLS_PER_UPGRADE_POINT;
         this.upgradePoints += 1;
+      }
+
+      const comboRes = registerComboKill(this.comboState);
+      this.comboState = comboRes.next;
+      if (comboRes.newCallout) {
+        this.sound.playComboMilestone();
+      }
+
+      if (this.hasCursedPerk('cursed_bloodthirst')) {
+        this.hp = Math.min(this.maxHp, this.hp + 3);
       }
 
       if (this.hasPerk('vampiric_rounds')) {
@@ -4115,7 +4965,7 @@ export class GameEngine {
         this.career.bossesKilled += 1;
         this.upgradePoints += BOSS_KILL_UP_BONUS;
         this.trauma = Math.min(1.0, this.trauma + 0.7);
-        this.hitstopTimer = Math.max(this.hitstopTimer, 0.02);
+        this.hitstopTimer = Math.max(this.hitstopTimer, 0.042);
         this.pickupToast = `BOSS DEFEATED · +${BOSS_KILL_UP_BONUS} UP`;
         this.pickupToastTimer = 2.6;
         this.spawnDirectionalBloodBurst(z.x, 1.2, z.z, dirX, dirZ, 28, 8.6, true);
@@ -4132,11 +4982,40 @@ export class GameEngine {
         );
       }
 
+      // Absolute Zero Beam frost shatter nova on frozen kill
+      if (z.cryoFreezeTimer > 0 && this.hasEvolution('absolute_zero')) {
+        const shatterR = 4.6;
+        this.sound.playCryoShatter();
+        this.spawnFlashRing(z.x, z.z, shatterR, 0x22d3ee, 0.34);
+        this.spawnBurstParticles(z.x, 0.9, z.z, 20, 0x67e8f9, 8.0);
+        const shatterDmg = Math.round(115 * this.getEffectiveDamageMultiplier());
+        for (let j = this.zombies.length - 1; j >= 0; j--) {
+          const other = this.zombies[j];
+          if (other.dying || other.id === z.id) continue;
+          const odx = other.x - z.x;
+          const odz = other.z - z.z;
+          const od = Math.hypot(odx, odz) || 0.001;
+          if (od <= shatterR + other.radius) {
+            other.cryoTimer = Math.max(other.cryoTimer, 3.0);
+            this.damageZombie(
+              other,
+              shatterDmg,
+              false,
+              odx / od,
+              odz / od,
+              6.0,
+              true,
+              'cryo',
+            );
+          }
+        }
+      }
+
       // Volatile Bomber death blast damages surrounding enemies!
       if (z.kind === 'bomber') {
         const blastR = 4.4;
         this.sound.playBomberExplosion();
-        this.hitstopTimer = Math.max(this.hitstopTimer, 0.02);
+        this.hitstopTimer = Math.max(this.hitstopTimer, 0.025);
         this.trauma = Math.min(1.0, this.trauma + 0.5);
         this.spawnFlashRing(z.x, z.z, blastR, 0xf97316, 0.34);
         this.spawnBurstParticles(z.x, 0.75, z.z, 22, 0xf97316, 8.5);
@@ -4173,9 +5052,10 @@ export class GameEngine {
         this.spawnAcidPuddle(z.x, z.z, 12);
       }
 
-      const scoreMult =
+      const modeMult =
         this.mode === 'blackout' ? 2 : this.dailyMutator === 'acid_rain' ? 1.25 : 1;
-      this.score += Math.round(z.scoreValue * scoreMult);
+      const comboMult = getComboMultiplier(this.comboState.count);
+      this.score += Math.round(z.scoreValue * modeMult * comboMult);
       this.career.bestScore = Math.max(this.career.bestScore, Math.round(this.score));
       if (this.score > this.highScore) {
         this.highScore = saveHighScore(this.score);
@@ -4307,6 +5187,10 @@ export class GameEngine {
         } else {
           this.waveBanner = `WAVE ${this.wave} CLEARED · +${waveUp} UP`;
         }
+        if (!this.hasCursedPerk('cursed_bloodthirst') && this.hp < this.maxHp) {
+          this.hp = Math.min(this.maxHp, this.hp + 8);
+          this.ghostHp = Math.max(this.ghostHp, this.hp);
+        }
         this.waveBannerTimer = 2.6;
         this.emitHudSnapshot(true);
       } else {
@@ -4327,10 +5211,17 @@ export class GameEngine {
               this.ownedPerks,
               draftRng,
             );
+            this.cursedDraftChoice = rollCursedPerkChoice(
+              this.ownedCursedPerks,
+              draftRng,
+            );
             this.uiSimulationPaused = true;
             this.clearHeldInputs();
             this.persistCurrentProgress(true);
             this.emitHudSnapshot(true);
+            return;
+          }
+          if (this.openWeaponDraftIfEligible()) {
             return;
           }
           this.advanceToNextWave();
@@ -4429,6 +5320,7 @@ export class GameEngine {
       howlerBuffTimer: 0,
       howlerCooldown: kind === 'howler' ? 1.8 + Math.random() * 1.2 : 0,
       cryoTimer: 0,
+      cryoFreezeTimer: 0,
       burnTimer: 0,
       burnDps: 0,
       phase2Triggered: false,
@@ -4448,6 +5340,11 @@ export class GameEngine {
     const obstacles = this.getObstacles();
     const halfSize = this.getHalfSize();
     const uvOverdrive = this.hasPerk('uv_overdrive');
+    const reconSlow =
+      this.career.selectedClass === 'recon' && this.ultimateActiveTimer > 0;
+    const enemyOverclockMult = this.hasCursedPerk('cursed_overclocked_legs')
+      ? 1.25
+      : 1;
     const coneRange =
       14.5 *
       CLASS_SPECS[this.career.selectedClass].flashlightConeMult *
@@ -4468,6 +5365,7 @@ export class GameEngine {
       if (z.lungeTimer > 0) z.lungeTimer = Math.max(0, z.lungeTimer - dt);
       if (z.howlerBuffTimer > 0) z.howlerBuffTimer = Math.max(0, z.howlerBuffTimer - dt);
       if (z.cryoTimer > 0) z.cryoTimer = Math.max(0, z.cryoTimer - dt);
+      if (z.cryoFreezeTimer > 0) z.cryoFreezeTimer = Math.max(0, z.cryoFreezeTimer - dt);
       if (z.bossSlamCooldown > 0) z.bossSlamCooldown = Math.max(0, z.bossSlamCooldown - dt);
       if (z.chargeCooldown > 0) {
         z.chargeCooldown = Math.max(0, z.chargeCooldown - dt);
@@ -4476,13 +5374,18 @@ export class GameEngine {
         z.chargeTimer = Math.max(0, z.chargeTimer - dt);
       }
 
-      // Hit flash, stun, cryo, or incendiary burn visuals
+      // Hit flash, stun, freeze, cryo, or incendiary burn visuals
       if (z.hitFlashTimer > 0) {
         z.hitFlashTimer -= dt;
         const flashOn = z.hitFlashTimer > 0;
         for (const mat of z.rig.hitFlashMaterials) {
           mat.emissive.setHex(flashOn ? 0xffffff : 0x000000);
           mat.emissiveIntensity = flashOn ? 0.85 : 0;
+        }
+      } else if (z.cryoFreezeTimer > 0) {
+        for (const mat of z.rig.hitFlashMaterials) {
+          mat.emissive.setHex(0x22d3ee);
+          mat.emissiveIntensity = 0.65;
         }
       } else if (z.stunTimer > 0) {
         const pulse = 0.28 + 0.18 * Math.sin(this.lastTimestamp * 0.018);
@@ -4625,13 +5528,13 @@ export class GameEngine {
           z.burnTimer = Math.max(z.burnTimer, 0.6);
           z.burnDps = Math.max(
             z.burnDps,
-            Math.round(28 * getDamageMultiplier(this.upgradeLevels)),
+            Math.round(28 * this.getEffectiveDamageMultiplier()),
           );
         }
       }
 
-      // Stunned enemies hold position & decay knockback cleanly
-      if (z.stunTimer > 0) {
+      // Stunned or Frozen enemies hold position & decay knockback cleanly
+      if (z.stunTimer > 0 || z.cryoFreezeTimer > 0) {
         z.x += z.knockVx * dt;
         z.z += z.knockVz * dt;
         z.knockVx *= Math.exp(-9.5 * dt);
@@ -4705,6 +5608,8 @@ export class GameEngine {
 
       if (z.cryoTimer > 0) moveSpeedMult *= 0.7;
       if (z.howlerBuffTimer > 0) moveSpeedMult *= 1.35;
+      if (reconSlow) moveSpeedMult *= 0.35;
+      moveSpeedMult *= enemyOverclockMult;
       for (let w = 0; w < this.activeWires.length; w++) {
         const wire = this.activeWires[w];
         if (Math.hypot(z.x - wire.x, z.z - wire.z) <= GADGET_SPECS.wire.radius) {
@@ -5168,7 +6073,7 @@ export class GameEngine {
           );
           this.spawnBurstParticles(m.x, 0.45, m.z, 26, 0xfbbf24, 9.0);
           const dmg = Math.round(
-            mineSpec.damage * getDamageMultiplier(this.upgradeLevels),
+            mineSpec.damage * this.getEffectiveDamageMultiplier(),
           );
           for (let j = this.zombies.length - 1; j >= 0; j--) {
             const z = this.zombies[j];
@@ -5196,10 +6101,14 @@ export class GameEngine {
       }
     }
 
-    // Deployable Sentry Turrets (Supports Twin-Barrel Turrets & Tesla Coil evolution)
+    // Deployable Sentry Turrets (Supports Twin-Barrel Turrets, Tesla Coil, and Engineer Ultimate Overdrive)
     const turretRange = turretSpec.range ?? 13.5;
-    const turretDmgMult = getDamageMultiplier(this.upgradeLevels);
-    const turretRateMult = CLASS_SPECS[this.career.selectedClass].turretFireRateMult;
+    const turretDmgMult = this.getEffectiveDamageMultiplier();
+    const engineerOverdrive =
+      this.career.selectedClass === 'engineer' && this.ultimateActiveTimer > 0;
+    const turretRateMult =
+      CLASS_SPECS[this.career.selectedClass].turretFireRateMult *
+      (engineerOverdrive ? 2.0 : 1);
     for (let i = this.activeTurrets.length - 1; i >= 0; i--) {
       const t = this.activeTurrets[i];
       t.life -= dt;
@@ -5303,7 +6212,7 @@ export class GameEngine {
       }
     }
 
-    // Tactical Gadget: Laser Tripmines
+    // Tactical Gadget: Laser Tripmines (Synergy: Twin-Charge Tripmine)
     for (let i = this.activeTripmines.length - 1; i >= 0; i--) {
       const tm = this.activeTripmines[i];
       tm.life -= dt;
@@ -5320,9 +6229,8 @@ export class GameEngine {
         }
       }
       if (triggered) {
-        this.scene.remove(tm.root);
-        this.activeTripmines.splice(i, 1);
-        if (tm.life > 0) {
+        const detonatedByEnemy = tm.life > 0;
+        if (detonatedByEnemy) {
           const r =
             GADGET_SPECS.tripmine.radius *
             CLASS_SPECS[this.career.selectedClass].blastRadiusMult;
@@ -5332,7 +6240,7 @@ export class GameEngine {
           this.spawnFlashRing(tm.x, tm.z, r, 0xef4444, 0.32);
           this.spawnBurstParticles(tm.x, 0.45, tm.z, 24, 0xef4444, 8.8);
           const dmg = Math.round(
-            GADGET_SPECS.tripmine.damage * getDamageMultiplier(this.upgradeLevels),
+            GADGET_SPECS.tripmine.damage * this.getEffectiveDamageMultiplier(),
           );
           for (let j = this.zombies.length - 1; j >= 0; j--) {
             const z = this.zombies[j];
@@ -5348,10 +6256,20 @@ export class GameEngine {
             }
           }
         }
+        if (detonatedByEnemy && tm.charges > 1) {
+          tm.charges -= 1;
+          tm.armTimer = 1.1;
+          this.pickupToast = 'TRIPMINE RE-ARMING (1 LEFT)';
+          this.pickupToastTimer = 1.2;
+        } else {
+          this.scene.remove(tm.root);
+          this.activeTripmines.splice(i, 1);
+        }
       }
     }
 
-    // Tactical Gadget: Decoy Flares
+    // Tactical Gadget: Decoy Flares (Synergy: Thermite Nuke Decoy)
+    const hasNukeDecoy = this.hasPerk('incendiary');
     for (let i = this.activeDecoys.length - 1; i >= 0; i--) {
       const dec = this.activeDecoys[i];
       dec.life -= dt;
@@ -5359,10 +6277,31 @@ export class GameEngine {
       if (dec.life <= 0) {
         this.scene.remove(dec.root);
         this.activeDecoys.splice(i, 1);
+        if (hasNukeDecoy) {
+          const r = 5.5;
+          this.sound.playGearExplosion();
+          this.hitstopTimer = Math.max(this.hitstopTimer, 0.025);
+          this.trauma = Math.min(1.0, this.trauma + 0.55);
+          this.spawnFlashRing(dec.x, dec.z, r, 0xf97316, 0.36);
+          this.spawnBurstParticles(dec.x, 0.6, dec.z, 26, 0xf97316, 9.4);
+          const dmg = Math.round(220 * this.getEffectiveDamageMultiplier());
+          for (let j = this.zombies.length - 1; j >= 0; j--) {
+            const z = this.zombies[j];
+            if (z.dying) continue;
+            const dx = z.x - dec.x;
+            const dz = z.z - dec.z;
+            const dist = Math.hypot(dx, dz) || 0.001;
+            if (dist <= r + z.radius) {
+              z.burnTimer = Math.max(z.burnTimer, 3.0);
+              z.burnDps = Math.max(z.burnDps, 24);
+              this.damageZombie(z, dmg, true, dx / dist, dz / dist, 10, true);
+            }
+          }
+        }
       }
     }
 
-    // Tactical Gadget: Barbed Wire Snares
+    // Tactical Gadget: Barbed Wire Snares (Synergy: Arc Electric Fence)
     for (let i = this.activeWires.length - 1; i >= 0; i--) {
       const wire = this.activeWires[i];
       wire.life -= dt;
@@ -5375,19 +6314,30 @@ export class GameEngine {
       if (wire.tickTimer <= 0) {
         wire.tickTimer = 0.7;
         const dmg = Math.round(
-          GADGET_SPECS.wire.damage * getDamageMultiplier(this.upgradeLevels),
+          GADGET_SPECS.wire.damage *
+            this.getEffectiveDamageMultiplier() *
+            (hasShockwaveCoil ? 3.0 : 1),
         );
+        let shockedAny = false;
         for (let j = this.zombies.length - 1; j >= 0; j--) {
           const z = this.zombies[j];
           if (z.dying) continue;
           if (Math.hypot(z.x - wire.x, z.z - wire.z) <= GADGET_SPECS.wire.radius) {
-            this.damageZombie(z, dmg, false, 0, 1, 0, true);
+            if (hasShockwaveCoil) {
+              z.stunTimer = Math.max(z.stunTimer, z.kind === 'boss' ? 0.15 : 0.35);
+              shockedAny = true;
+            }
+            this.damageZombie(z, dmg, hasShockwaveCoil, 0, 1, 0, true);
           }
+        }
+        if (shockedAny) {
+          this.spawnFlashRing(wire.x, wire.z, GADGET_SPECS.wire.radius, 0x22d3ee, 0.22);
         }
       }
     }
 
-    // Tactical Gadget: Mortar Strikes
+    // Tactical Gadget: Mortar Strikes (Synergy: Cryo Frost Mortar)
+    const hasFrostMortar = this.hasPerk('cryo_rounds');
     for (let i = this.activeMortars.length - 1; i >= 0; i--) {
       const m = this.activeMortars[i];
       m.age += dt;
@@ -5401,12 +6351,20 @@ export class GameEngine {
           GADGET_SPECS.mortar.radius *
           CLASS_SPECS[this.career.selectedClass].blastRadiusMult;
         this.sound.playMortarImpact();
+        hapticMortarImpact();
         this.hitstopTimer = Math.max(this.hitstopTimer, 0.025);
         this.trauma = Math.min(1.0, this.trauma + 0.72);
-        this.spawnFlashRing(m.x, m.z, r, 0xf97316, 0.36);
-        this.spawnBurstParticles(m.x, 0.65, m.z, 30, 0xfbbf24, 10.5);
+        this.spawnFlashRing(m.x, m.z, r, hasFrostMortar ? 0x22d3ee : 0xf97316, 0.36);
+        this.spawnBurstParticles(
+          m.x,
+          0.65,
+          m.z,
+          30,
+          hasFrostMortar ? 0x67e8f9 : 0xfbbf24,
+          10.5,
+        );
         const dmg = Math.round(
-          GADGET_SPECS.mortar.damage * getDamageMultiplier(this.upgradeLevels),
+          GADGET_SPECS.mortar.damage * this.getEffectiveDamageMultiplier(),
         );
         for (let j = this.zombies.length - 1; j >= 0; j--) {
           const z = this.zombies[j];
@@ -5418,6 +6376,9 @@ export class GameEngine {
             if (hasShockwaveCoil) {
               z.stunTimer = Math.max(z.stunTimer, z.kind === 'boss' ? 0.65 : 1.15);
             }
+            if (hasFrostMortar) {
+              z.cryoTimer = Math.max(z.cryoTimer, 4.0);
+            }
             const falloff = Math.max(0.6, 1 - (dist / (r + 1)) * 0.4);
             this.damageZombie(
               z,
@@ -5427,6 +6388,7 @@ export class GameEngine {
               dz / dist,
               11.5,
               true,
+              hasFrostMortar ? 'cryo' : undefined,
             );
           }
         }
@@ -5630,8 +6592,325 @@ export class GameEngine {
     }
   }
 
+  private updateCombatDrone(dt: number): void {
+    const droneId = this.career.equippedDrone;
+    if (!droneId || droneId === 'none' || !this.droneRig) return;
+
+    this.droneOrbitAngle += dt * 1.9;
+    const dx = this.playerX + Math.cos(this.droneOrbitAngle) * 1.45;
+    const dz = this.playerZ + Math.sin(this.droneOrbitAngle) * 1.45;
+    const bob = 1.95 + Math.sin(this.droneOrbitAngle * 2.2) * 0.14;
+    this.droneRig.root.position.set(dx, bob, dz);
+    this.droneRig.root.rotation.y = -this.droneOrbitAngle;
+
+    if (droneId === 'scrap_magnet') return;
+
+    this.droneActionTimer -= dt;
+    if (this.droneActionTimer > 0) return;
+
+    const spec = DRONE_SPECS[droneId];
+    this.droneActionTimer = spec.cooldownSec;
+
+    if (droneId === 'medic_drone') {
+      if (this.hp < this.maxHp) {
+        const heal = Math.min(this.maxHp - this.hp, 6);
+        this.hp += heal;
+        this.ghostHp = Math.max(this.ghostHp, this.hp);
+        this.sound.playDroneAction();
+        this.spawnBurstParticles(this.playerX, 1.0, this.playerZ, 8, 0x22c55e, 3.6);
+      }
+      return;
+    }
+
+    if (droneId === 'cryo_drone') {
+      let hitAny = false;
+      const dmg = Math.round(18 * this.getEffectiveDamageMultiplier());
+      for (let i = this.zombies.length - 1; i >= 0; i--) {
+        const z = this.zombies[i];
+        if (z.dying) continue;
+        const zdx = z.x - this.playerX;
+        const zdz = z.z - this.playerZ;
+        const d = Math.hypot(zdx, zdz) || 0.001;
+        if (d <= spec.range + z.radius) {
+          hitAny = true;
+          z.cryoTimer = Math.max(z.cryoTimer, 3.2);
+          this.damageZombie(z, dmg, false, zdx / d, zdz / d, 2.0, true, 'cryo');
+        }
+      }
+      if (hitAny) {
+        this.sound.playDroneAction();
+        this.spawnFlashRing(this.playerX, this.playerZ, spec.range, 0x22d3ee, 0.28);
+      }
+      return;
+    }
+
+    // Laser Scout targeting
+    let best: ActiveZombie | null = null;
+    let bestDistSq = spec.range * spec.range;
+    for (let i = 0; i < this.zombies.length; i++) {
+      const z = this.zombies[i];
+      if (z.dying) continue;
+      const zdx = z.x - dx;
+      const zdz = z.z - dz;
+      const dSq = zdx * zdx + zdz * zdz;
+      if (dSq < bestDistSq) {
+        bestDistSq = dSq;
+        best = z;
+      }
+    }
+    if (!best) return;
+
+    const zdx = best.x - dx;
+    const zdz = best.z - dz;
+    const dist = Math.sqrt(bestDistSq) || 0.1;
+    const yaw = Math.atan2(-zdx, -zdz);
+    this.droneRig.root.rotation.y = yaw;
+    this.spawnTracer(dx, bob - 0.1, dz, yaw, dist, 0x38bdf8);
+    this.sound.playDroneAction();
+
+    const dmg = Math.round(28 * this.getEffectiveDamageMultiplier());
+    this.damageZombie(best, dmg, false, zdx / dist, zdz / dist, 1.4, true);
+  }
+
+  private updatePhase1CombatEffects(dt: number): void {
+    const obstacles = this.getObstacles();
+    const halfSize = this.getHalfSize();
+
+    // 1. Homing Micro-Missiles (MML-4 / Swarm Barrage)
+    for (let i = this.homingMissiles.length - 1; i >= 0; i--) {
+      const hm = this.homingMissiles[i];
+      hm.life -= dt;
+      let target: ActiveZombie | undefined;
+      if (hm.targetId !== null) {
+        target = this.zombies.find((z) => z.id === hm.targetId && !z.dying);
+      }
+      if (!target) {
+        let bestSq = 25 * 25;
+        for (const z of this.zombies) {
+          if (z.dying) continue;
+          const dSq = (z.x - hm.x) ** 2 + (z.z - hm.z) ** 2;
+          if (dSq < bestSq) {
+            bestSq = dSq;
+            target = z;
+          }
+        }
+        if (target) hm.targetId = target.id;
+      }
+
+      if (target) {
+        const dx = target.x - hm.x;
+        const dz = target.z - hm.z;
+        const d = Math.hypot(dx, dz) || 1;
+        const desiredVx = (dx / d) * 18.5;
+        const desiredVz = (dz / d) * 18.5;
+        hm.vx += (desiredVx - hm.vx) * Math.min(1, dt * 8.5);
+        hm.vz += (desiredVz - hm.vz) * Math.min(1, dt * 8.5);
+      }
+
+      hm.x += hm.vx * dt;
+      hm.z += hm.vz * dt;
+      hm.mesh.position.set(hm.x, hm.y, hm.z);
+      hm.mesh.rotation.y = Math.atan2(-hm.vx, -hm.vz);
+
+      let detonate = hm.life <= 0 || Math.abs(hm.x) >= halfSize || Math.abs(hm.z) >= halfSize;
+      if (!detonate) {
+        for (const z of this.zombies) {
+          if (z.dying) continue;
+          if (Math.hypot(z.x - hm.x, z.z - hm.z) <= z.radius + 0.65) {
+            detonate = true;
+            break;
+          }
+        }
+      }
+      if (!detonate) {
+        for (const obs of obstacles) {
+          if (
+            obs.blocksBullets &&
+            Math.abs(hm.x - obs.x) <= obs.halfW + 0.25 &&
+            Math.abs(hm.z - obs.z) <= obs.halfD + 0.25
+          ) {
+            detonate = true;
+            break;
+          }
+        }
+      }
+
+      if (detonate) {
+        this.scene.remove(hm.mesh);
+        this.homingMissiles.splice(i, 1);
+        this.sound.playBomberExplosion();
+        this.spawnFlashRing(hm.x, hm.z, hm.blastRadius, 0xf97316, 0.28);
+        this.spawnBurstParticles(hm.x, 0.7, hm.z, 14, 0xfbbf24, 7.6);
+        for (let j = this.zombies.length - 1; j >= 0; j--) {
+          const z = this.zombies[j];
+          if (z.dying) continue;
+          const dx = z.x - hm.x;
+          const dz = z.z - hm.z;
+          const d = Math.hypot(dx, dz) || 0.001;
+          if (d <= hm.blastRadius + z.radius) {
+            const falloff = Math.max(0.55, 1 - (d / (hm.blastRadius + 1)) * 0.45);
+            this.damageZombie(
+              z,
+              Math.round(hm.damage * falloff),
+              true,
+              dx / d,
+              dz / d,
+              7.5,
+              true,
+            );
+          }
+        }
+      }
+    }
+
+    // 2. Void Cleaver Crescent Energy Waves
+    for (let i = this.crescentWaves.length - 1; i >= 0; i--) {
+      const cw = this.crescentWaves[i];
+      cw.life -= dt;
+      cw.x += cw.dirX * cw.speed * dt;
+      cw.z += cw.dirZ * cw.speed * dt;
+      cw.mesh.position.set(cw.x, 0.95, cw.z);
+      if (cw.life <= 0 || Math.abs(cw.x) > halfSize || Math.abs(cw.z) > halfSize) {
+        this.scene.remove(cw.mesh);
+        this.crescentWaves.splice(i, 1);
+        continue;
+      }
+      for (let j = this.zombies.length - 1; j >= 0; j--) {
+        const z = this.zombies[j];
+        if (z.dying || cw.hitIds.has(z.id)) continue;
+        if (Math.hypot(z.x - cw.x, z.z - cw.z) <= z.radius + 1.15) {
+          cw.hitIds.add(z.id);
+          this.damageZombie(z, cw.damage, true, cw.dirX, cw.dirZ, 6.0, true);
+        }
+      }
+    }
+
+    // 3. Singularity Railgun Gravity Pull Vortices
+    for (let i = this.singularityVortices.length - 1; i >= 0; i--) {
+      const sv = this.singularityVortices[i];
+      sv.life -= dt;
+      sv.group.rotation.y += dt * 4.5;
+      sv.tickTimer -= dt;
+      for (let j = this.zombies.length - 1; j >= 0; j--) {
+        const z = this.zombies[j];
+        if (z.dying || z.kind === 'boss') continue;
+        const dx = sv.x - z.x;
+        const dz = sv.z - z.z;
+        const dist = Math.hypot(dx, dz) || 0.001;
+        if (dist <= 6.2 && dist > 0.45) {
+          const pull = (6.8 * dt) / dist;
+          z.x += dx * pull;
+          z.z += dz * pull;
+        }
+      }
+      if (sv.tickTimer <= 0) {
+        sv.tickTimer = 0.45;
+        for (let j = this.zombies.length - 1; j >= 0; j--) {
+          const z = this.zombies[j];
+          if (z.dying) continue;
+          if (Math.hypot(z.x - sv.x, z.z - sv.z) <= 4.0) {
+            this.damageZombie(z, sv.damage, false, 0, 1, 0, true);
+          }
+        }
+      }
+      if (sv.life <= 0) {
+        this.scene.remove(sv.group);
+        this.singularityVortices.splice(i, 1);
+      }
+    }
+
+    // 4. Demolitionist Orbital Airstrikes
+    for (let i = this.orbitalStrikes.length - 1; i >= 0; i--) {
+      const os = this.orbitalStrikes[i];
+      if (os.delay > 0) {
+        os.delay -= dt;
+        if (os.delay <= 0 && !os.ringGroup) {
+          const rig = buildMortarTargetRing(3.8);
+          rig.group.position.set(os.x, 0.04, os.z);
+          this.scene.add(rig.group);
+          os.ringGroup = rig.group;
+          os.ringFillMat = rig.fillMat;
+        }
+        continue;
+      }
+      os.age += dt;
+      if (os.ringGroup && os.ringFillMat) {
+        const p = Math.min(1, os.age / os.duration);
+        os.ringFillMat.opacity = 0.25 + p * 0.65;
+        os.ringGroup.scale.setScalar(0.85 + p * 0.15);
+      }
+      if (os.age >= os.duration) {
+        if (os.ringGroup) {
+          this.scene.remove(os.ringGroup);
+        }
+        this.orbitalStrikes.splice(i, 1);
+        const r = 4.2;
+        this.sound.playMortarImpact();
+        hapticMortarImpact();
+        this.trauma = Math.min(1.0, this.trauma + 0.35);
+        this.spawnFlashRing(os.x, os.z, r, 0xf97316, 0.32);
+        this.spawnBurstParticles(os.x, 0.7, os.z, 18, 0xfbbf24, 9.0);
+        const dmg = Math.round(310 * this.getEffectiveDamageMultiplier());
+        for (let j = this.zombies.length - 1; j >= 0; j--) {
+          const z = this.zombies[j];
+          if (z.dying) continue;
+          const dx = z.x - os.x;
+          const dz = z.z - os.z;
+          const dist = Math.hypot(dx, dz) || 0.001;
+          if (dist <= r + z.radius) {
+            this.damageZombie(z, dmg, true, dx / dist, dz / dist, 9.5, true);
+          }
+        }
+      }
+    }
+
+    // 5. Napalm Bio-Blaster Burning Floor Zones
+    for (let i = this.napalmZones.length - 1; i >= 0; i--) {
+      const nz = this.napalmZones[i];
+      nz.life -= dt;
+      nz.mat.opacity = Math.max(0.08, (nz.life / nz.maxLife) * 0.52);
+      nz.tickTimer -= dt;
+      if (nz.tickTimer <= 0) {
+        nz.tickTimer = 0.45;
+        for (let j = this.zombies.length - 1; j >= 0; j--) {
+          const z = this.zombies[j];
+          if (z.dying) continue;
+          if (Math.hypot(z.x - nz.x, z.z - nz.z) <= 2.4 + z.radius) {
+            z.burnTimer = Math.max(z.burnTimer, 2.0);
+            z.burnDps = Math.max(z.burnDps, 22);
+            this.damageZombie(z, nz.damage, false, 0, 1, 0, true);
+          }
+        }
+      }
+      if (nz.life <= 0) {
+        this.scene.remove(nz.mesh);
+        nz.mat.dispose();
+        this.napalmZones.splice(i, 1);
+      }
+    }
+  }
+
   private damagePlayer(amount: number, dirX: number, dirZ: number): void {
     if (this.invulnTimer > 0 || this.phase !== 'playing') return;
+
+    if (this.career.selectedClass === 'vanguard' && this.ultimateActiveTimer > 0) {
+      this.spawnFlashRing(this.playerX, this.playerZ, 2.2, 0x22d3ee, 0.24);
+      this.floatingDamages.push({
+        id: this.nextEntityId++,
+        wx: this.playerX,
+        wy: 1.9,
+        wz: this.playerZ,
+        amount: 0,
+        isCrit: false,
+        isWeakpoint: false,
+        blockedByArmor: true,
+        kind: 'shield',
+        label: 'SHIELD',
+        age: 0,
+        duration: 0.55,
+      });
+      return;
+    }
 
     const mitigated = Math.max(
       1,
@@ -5685,6 +6964,18 @@ export class GameEngine {
   }
 
   private updatePickups(dt: number): void {
+    const magnetActive = this.career.equippedDrone === 'scrap_magnet';
+    if (magnetActive && this.supplyCrate) {
+      const sdx = this.playerX - this.supplyCrate.x;
+      const sdz = this.playerZ - this.supplyCrate.z;
+      const sDist = Math.hypot(sdx, sdz) || 0.001;
+      if (sDist <= 13 && sDist > 0.6) {
+        this.supplyCrate.x += (sdx / sDist) * 6.5 * dt;
+        this.supplyCrate.z += (sdz / sDist) * 6.5 * dt;
+        this.supplyCrate.mesh.position.set(this.supplyCrate.x, 0, this.supplyCrate.z);
+      }
+    }
+
     for (let i = this.pickups.length - 1; i >= 0; i--) {
       const p = this.pickups[i];
       p.age += dt;
@@ -5694,7 +6985,14 @@ export class GameEngine {
         body.position.y = Math.sin(p.age * 4) * 0.1;
       }
 
-      const dist = Math.hypot(this.playerX - p.x, this.playerZ - p.z);
+      const pdx = this.playerX - p.x;
+      const pdz = this.playerZ - p.z;
+      const dist = Math.hypot(pdx, pdz);
+      if (magnetActive && dist <= 13 && dist > 0.5) {
+        p.x += (pdx / dist) * 9.5 * dt;
+        p.z += (pdz / dist) * 9.5 * dt;
+        p.mesh.position.set(p.x, 0, p.z);
+      }
       if (dist <= PLAYER_RADIUS + 0.72) {
         this.applyPickup(p.kind);
         this.scene.remove(p.mesh);
@@ -6377,6 +7675,8 @@ export class GameEngine {
           isCrit: f.isCrit,
           isWeakpoint: f.isWeakpoint,
           blockedByArmor: f.blockedByArmor,
+          kind: f.kind,
+          label: f.label,
           age: f.age,
           duration: f.duration,
         });
@@ -6563,6 +7863,26 @@ export class GameEngine {
       autoFire: this.settings.autoFire,
       equippedSkinId: this.career.equippedSkinId,
       selectedClass: this.career.selectedClass,
+      equippedDrone: this.career.equippedDrone,
+      ultimateCharge: Math.round(this.ultimateCharge),
+      ultimateActiveRemaining: this.ultimateActiveTimer,
+      ultimateName: ULTIMATE_SPECS[this.career.selectedClass].name,
+      comboCount: this.comboState.count,
+      comboMultiplier: getComboMultiplier(this.comboState.count),
+      comboTimerRatio:
+        this.comboState.count > 0
+          ? Math.max(0, Math.min(1, this.comboState.timer / COMBO_DECAY_SEC))
+          : 0,
+      comboCallout: getComboCallout(this.comboState.count),
+      ownedCursedPerks: [...this.ownedCursedPerks],
+      cursedDraftChoice: this.cursedDraftChoice,
+      weaponDraftChoices: this.weaponDraftChoices
+        ? [...this.weaponDraftChoices]
+        : null,
+      activeSynergies: evaluateActiveSynergies(
+        this.ownedPerks,
+        this.equippedGadget,
+      ),
       lastScrapEarned: this.lastScrapEarned,
       minimap: {
         playerX: this.playerX,

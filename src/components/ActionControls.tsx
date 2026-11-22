@@ -1,5 +1,5 @@
 import React from 'react';
-import { Bomb, Crosshair, Flame, Radio, ShieldAlert, Sparkles, Target } from 'lucide-react';
+import { Bomb, Crosshair, Flame, Radio, ShieldAlert, Sparkles, Target, Zap } from 'lucide-react';
 import { GADGET_SPECS } from '../game/gadgets';
 import { TACTICAL_GEAR_SPECS } from '../game/tacticalGear';
 import { getEffectiveMagSize } from '../game/upgrades';
@@ -23,6 +23,9 @@ interface ActionControlsProps {
   equippedGadget: GadgetId;
   gadgetCooldownProgress: number; // 1 = ready
   gadgetCooldownRemaining: number;
+  ultimateCharge: number; // 0..100
+  ultimateActiveRemaining: number;
+  ultimateName: string;
   isReloading: boolean;
   reloadProgress: number; // 0..1
   onDash: () => void;
@@ -30,6 +33,7 @@ interface ActionControlsProps {
   onSwitchWeapon: () => void;
   onTriggerGear: () => void;
   onTriggerGadget: () => void;
+  onTriggerUltimate: () => void;
 }
 
 export const ActionControls: React.FC<ActionControlsProps> = ({
@@ -43,6 +47,9 @@ export const ActionControls: React.FC<ActionControlsProps> = ({
   equippedGadget,
   gadgetCooldownProgress,
   gadgetCooldownRemaining,
+  ultimateCharge,
+  ultimateActiveRemaining,
+  ultimateName,
   isReloading,
   reloadProgress,
   onDash,
@@ -50,10 +57,14 @@ export const ActionControls: React.FC<ActionControlsProps> = ({
   onSwitchWeapon,
   onTriggerGear,
   onTriggerGadget,
+  onTriggerUltimate,
 }) => {
   const dashReady = dashCooldownProgress >= 0.999;
   const gearReady = gearCooldownProgress >= 0.999;
   const gadgetReady = gadgetCooldownProgress >= 0.999;
+  const ultActive = ultimateActiveRemaining > 0.05;
+  const ultReady = !ultActive && ultimateCharge >= 99.9;
+  const ultPct = Math.max(0, Math.min(100, Math.round(ultimateCharge)));
   const gearSpec = TACTICAL_GEAR_SPECS[equippedGear];
   const gadgetSpec = GADGET_SPECS[equippedGadget];
   const activeState = weapons.find((w) => w.id === activeWeapon);
@@ -84,8 +95,60 @@ export const ActionControls: React.FC<ActionControlsProps> = ({
 
   return (
     <div className="pointer-events-auto flex flex-col items-end gap-2">
-      {/* Tactical Gear & Dedicated Gadget Row */}
-      <div className="flex items-center gap-1.5">
+      {/* Ultimate, Gadget & Tactical Gear Row */}
+      <div className="flex items-center gap-1 sm:gap-1.5">
+        <button
+          type="button"
+          tabIndex={-1}
+          data-testid="ultimate-btn"
+          aria-label={`Activate Ultimate: ${ultimateName}`}
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            onTriggerUltimate();
+            e.currentTarget.blur();
+          }}
+          className={`relative flex h-9 min-w-[68px] items-center justify-center gap-1 overflow-hidden rounded-xl border px-1.5 text-white transition-transform active:scale-95 sm:h-10 sm:min-w-[88px] sm:px-2 ${
+            ultReady ? 'shadow-[0_0_16px_rgba(168,85,247,0.5)]' : ''
+          }`}
+          style={{
+            backgroundColor: ultActive
+              ? 'rgba(147, 51, 234, 0.45)'
+              : ultReady
+                ? 'rgba(168, 85, 247, 0.34)'
+                : 'rgba(15, 23, 42, 0.88)',
+            borderColor: ultActive || ultReady
+              ? 'rgba(192, 132, 252, 0.95)'
+              : 'rgba(148, 163, 184, 0.35)',
+          }}
+        >
+          {!ultReady && !ultActive && (
+            <div
+              aria-hidden="true"
+              className="absolute inset-y-0 left-0 bg-purple-500/30"
+              style={{ width: `${ultPct}%` }}
+            />
+          )}
+          <Zap
+            className={`relative z-10 h-3.5 w-3.5 shrink-0 ${
+              ultActive || ultReady ? 'text-purple-200' : 'text-slate-400'
+            }`}
+          />
+          <span className="relative z-10 text-[9px] font-extrabold tracking-wider uppercase sm:text-[10px]">
+            ULT
+          </span>
+          <span
+            className={`font-mono-tabular relative z-10 text-[9px] font-bold sm:text-[10px] ${
+              ultActive || ultReady ? 'text-purple-200' : 'text-slate-300'
+            }`}
+          >
+            {ultActive
+              ? `${ultimateActiveRemaining.toFixed(1)}s`
+              : ultReady
+                ? 'Q'
+                : `${ultPct}%`}
+          </span>
+        </button>
+
         <button
           type="button"
           tabIndex={-1}
@@ -96,7 +159,7 @@ export const ActionControls: React.FC<ActionControlsProps> = ({
             onTriggerGadget();
             e.currentTarget.blur();
           }}
-          className="relative flex h-9 min-w-[82px] items-center justify-center gap-1 overflow-hidden rounded-xl border px-2 text-white transition-transform active:scale-95 sm:h-10 sm:min-w-[92px]"
+          className="relative flex h-9 min-w-[70px] items-center justify-center gap-1 overflow-hidden rounded-xl border px-1.5 text-white transition-transform active:scale-95 sm:h-10 sm:min-w-[88px] sm:px-2"
           style={{
             backgroundColor: gadgetReady
               ? 'rgba(245, 158, 11, 0.24)'
@@ -126,7 +189,7 @@ export const ActionControls: React.FC<ActionControlsProps> = ({
               gadgetReady ? 'text-amber-300' : 'text-slate-300'
             }`}
           >
-            {gadgetReady ? 'Q' : `${Math.ceil(gadgetCooldownRemaining)}s`}
+            {gadgetReady ? 'E' : `${Math.ceil(gadgetCooldownRemaining)}s`}
           </span>
         </button>
 
@@ -140,7 +203,7 @@ export const ActionControls: React.FC<ActionControlsProps> = ({
             onTriggerGear();
             e.currentTarget.blur();
           }}
-          className="relative flex h-9 min-w-[82px] items-center justify-center gap-1 overflow-hidden rounded-xl border px-2 text-white transition-transform active:scale-95 sm:h-10 sm:min-w-[96px]"
+          className="relative flex h-9 min-w-[72px] items-center justify-center gap-1 overflow-hidden rounded-xl border px-1.5 text-white transition-transform active:scale-95 sm:h-10 sm:min-w-[92px] sm:px-2"
           style={{
             backgroundColor: gearReady
               ? 'rgba(8, 145, 178, 0.34)'

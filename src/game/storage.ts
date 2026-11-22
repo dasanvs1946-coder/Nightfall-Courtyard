@@ -1,9 +1,12 @@
 import { ARENA_ORDER, GAME_MODE_ORDER } from './arenas';
+import { ALL_DRONE_IDS } from './drones';
 import { GADGET_ORDER } from './gadgets';
-import { EVOLUTION_ORDER, PERK_ORDER } from './perks';
+import { CURSED_PERK_ORDER, EVOLUTION_ORDER, PERK_ORDER } from './perks';
 import { TACTICAL_GEAR_ORDER } from './tacticalGear';
 import {
   ArenaId,
+  CursedPerkId,
+  DroneId,
   EvolutionId,
   GadgetId,
   GameModeId,
@@ -200,6 +203,20 @@ function sanitizePerks(raw: unknown): PerkId[] {
   return Array.from(seen);
 }
 
+function sanitizeCursedPerks(raw: unknown): CursedPerkId[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<CursedPerkId>();
+  for (const item of raw) {
+    if (
+      typeof item === 'string' &&
+      (CURSED_PERK_ORDER as string[]).includes(item)
+    ) {
+      seen.add(item as CursedPerkId);
+    }
+  }
+  return Array.from(seen);
+}
+
 function sanitizeEvolutions(raw: unknown): EvolutionId[] {
   if (!Array.isArray(raw)) return [];
   const seen = new Set<EvolutionId>();
@@ -258,6 +275,12 @@ export function loadRunProgress(
 
     const weapons = sanitizeWeapons(parsed.weapons);
 
+    const equippedDrone: DroneId =
+      typeof parsed.equippedDrone === 'string' &&
+      (ALL_DRONE_IDS as string[]).includes(parsed.equippedDrone)
+        ? (parsed.equippedDrone as DroneId)
+        : 'none';
+
     return {
       lastWave: Math.min(999, lastWave),
       score: Math.max(0, Math.round(Number(parsed.score) || 0)),
@@ -268,12 +291,18 @@ export function loadRunProgress(
       activeWeapon,
       equippedGear,
       equippedGadget,
+      equippedDrone,
       weapons,
       hasUsedRevive: Boolean(parsed.hasUsedRevive),
       mode,
       arena,
       ownedPerks: sanitizePerks(parsed.ownedPerks),
+      ownedCursedPerks: sanitizeCursedPerks(parsed.ownedCursedPerks),
       evolvedWeapons: sanitizeEvolutions(parsed.evolvedWeapons),
+      ultimateCharge: Math.max(
+        0,
+        Math.min(100, Number(parsed.ultimateCharge) || 0),
+      ),
       dailyDateKey:
         typeof parsed.dailyDateKey === 'string' ? parsed.dailyDateKey : undefined,
       perkDraftPending: Boolean(parsed.perkDraftPending),
@@ -281,6 +310,7 @@ export function loadRunProgress(
         0,
         Math.floor(Number(parsed.perkDraftSeedCursor) || 0),
       ),
+      weaponDraftPending: Boolean(parsed.weaponDraftPending),
       activeInterrupted: parsed.activeInterrupted !== false,
     };
   } catch {
@@ -304,15 +334,19 @@ export function saveRunProgress(
       activeWeapon: progress.activeWeapon,
       equippedGear: progress.equippedGear ?? 'mine',
       equippedGadget: progress.equippedGadget ?? 'tripmine',
+      equippedDrone: progress.equippedDrone ?? 'none',
       weapons: sanitizeWeapons(progress.weapons),
       hasUsedRevive: Boolean(progress.hasUsedRevive),
       mode: progress.mode ?? 'normal',
       arena: progress.arena ?? 'courtyard',
       ownedPerks: sanitizePerks(progress.ownedPerks),
+      ownedCursedPerks: sanitizeCursedPerks(progress.ownedCursedPerks),
       evolvedWeapons: sanitizeEvolutions(progress.evolvedWeapons),
+      ultimateCharge: Math.max(0, Math.min(100, progress.ultimateCharge ?? 0)),
       dailyDateKey: progress.dailyDateKey,
       perkDraftPending: Boolean(progress.perkDraftPending),
       perkDraftSeedCursor: Math.max(0, Math.floor(progress.perkDraftSeedCursor ?? 0)),
+      weaponDraftPending: Boolean(progress.weaponDraftPending),
       activeInterrupted: progress.activeInterrupted ?? true,
     };
     storage.setItem(RUN_PROGRESS_KEY, JSON.stringify(clean));

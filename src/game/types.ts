@@ -12,7 +12,14 @@ export type WeaponId =
   | 'dual'
   | 'sniper'
   | 'flamethrower'
-  | 'railgun';
+  | 'railgun'
+  | 'twin9'
+  | 'cryo_carbine'
+  | 'pulse_katana'
+  | 'vulcan_minigun'
+  | 'gauss_carbine'
+  | 'micro_launcher'
+  | 'chem_thrower';
 
 export type ZombieKind =
   | 'walker'
@@ -52,7 +59,43 @@ export type PerkId =
   | 'critical_optics'
   | 'dash_shockwave';
 
-export type EvolutionId = 'dragons_breath' | 'rail_smg' | 'tesla_coil';
+export type CursedPerkId =
+  | 'cursed_glass_cannon'
+  | 'cursed_bloodthirst'
+  | 'cursed_overclocked_legs';
+
+export type EvolutionId =
+  | 'dragons_breath'
+  | 'rail_smg'
+  | 'tesla_coil'
+  | 'phantom_enforcers'
+  | 'absolute_zero'
+  | 'void_cleaver'
+  | 'hellfire_gatling'
+  | 'singularity_railgun'
+  | 'swarm_barrage'
+  | 'napalm_bioblaster';
+
+export type DroneId =
+  | 'none'
+  | 'laser_scout'
+  | 'cryo_drone'
+  | 'medic_drone'
+  | 'scrap_magnet';
+
+export type SynergyId =
+  | 'frost_mortar'
+  | 'electric_fence'
+  | 'nuke_decoy'
+  | 'twin_tripmine';
+
+export type DamageNumberKind =
+  | 'normal'
+  | 'crit'
+  | 'cryo'
+  | 'shield'
+  | 'weakpoint'
+  | 'execute';
 
 export type CrateKind = 'health' | 'ammo' | 'rapidfire';
 
@@ -111,6 +154,9 @@ export interface CareerStats {
   equippedSkinId: SkinId;
   selectedClass: SurvivorClassId;
   permanentUpgrades: PermanentUpgrades;
+  unlockedWeapons: WeaponId[];
+  unlockedDrones: DroneId[];
+  equippedDrone: DroneId;
 }
 
 export interface RemoteAppConfig {
@@ -140,6 +186,14 @@ export interface WeaponSpec {
   unlockWave: number;
   tracerColor: number;
   screenShake: number;
+  armoryOnly?: boolean;
+  scrapUnlockCost?: number;
+  meleeArc?: boolean;
+  spinUpMax?: number;
+  homingMissiles?: number;
+  chillDuration?: number;
+  ricochetCount?: number;
+  createsAcidFire?: boolean;
 }
 
 export interface WeaponRuntimeState {
@@ -159,15 +213,19 @@ export interface SavedRunProgress {
   activeWeapon: WeaponId;
   equippedGear?: TacticalGearId;
   equippedGadget?: GadgetId;
+  equippedDrone?: DroneId;
   weapons?: WeaponRuntimeState[];
   hasUsedRevive?: boolean;
   mode?: GameModeId | 'survival';
   arena?: ArenaId;
   ownedPerks?: PerkId[];
+  ownedCursedPerks?: CursedPerkId[];
   evolvedWeapons?: EvolutionId[];
+  ultimateCharge?: number;
   dailyDateKey?: string;
   perkDraftPending?: boolean;
   perkDraftSeedCursor?: number;
+  weaponDraftPending?: boolean;
   activeInterrupted?: boolean;
 }
 
@@ -192,6 +250,8 @@ export interface FloatingDamage {
   isCrit: boolean;
   isWeakpoint?: boolean;
   blockedByArmor?: boolean;
+  kind?: DamageNumberKind;
+  label?: string;
   age: number;
   duration: number;
 }
@@ -272,6 +332,14 @@ export interface HudSnapshot {
   equippedGadget: GadgetId;
   gadgetCooldownProgress: number; // 1 = ready, 0..1 recharging
   gadgetCooldownRemaining: number; // seconds
+  equippedDrone: DroneId;
+  ultimateCharge: number; // 0..100
+  ultimateActiveRemaining: number; // seconds
+  ultimateName: string;
+  comboCount: number;
+  comboMultiplier: number;
+  comboTimerRatio: number; // 0..1
+  comboCallout: string | null;
   rapidFireRemaining: number; // seconds
   minigunRemaining: number; // seconds
   muted: boolean;
@@ -288,8 +356,12 @@ export interface HudSnapshot {
   upgradeLevels: UpgradeLevels;
   weaponMastery: WeaponMasteryLevels;
   ownedPerks: PerkId[];
+  ownedCursedPerks: CursedPerkId[];
   perkDraftChoices: PerkId[] | null;
+  cursedDraftChoice: CursedPerkId | null;
+  weaponDraftChoices: WeaponId[] | null;
   evolvedWeapons: EvolutionId[];
+  activeSynergies: SynergyId[];
   arena: ArenaId;
   mode: GameModeId;
   dailyDateKey: string | null;

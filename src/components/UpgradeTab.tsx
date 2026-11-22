@@ -10,13 +10,23 @@ import {
   Wrench,
   Zap,
 } from 'lucide-react';
+import { DRONE_SPECS } from '../game/drones';
 import { GADGET_ORDER, GADGET_SPECS } from '../game/gadgets';
-import { EVOLUTION_SPECS, PERK_SPECS } from '../game/perks';
+import {
+  CURSED_PERK_SPECS,
+  EVOLUTION_SPECS,
+  getWeaponEvolutionHint,
+  PERK_SPECS,
+} from '../game/perks';
+import { SYNERGY_SPECS } from '../game/synergies';
 import { TACTICAL_GEAR_ORDER, TACTICAL_GEAR_SPECS } from '../game/tacticalGear';
 import {
+  CursedPerkId,
+  DroneId,
   EvolutionId,
   GadgetId,
   PerkId,
+  SynergyId,
   TacticalGearId,
   UpgradeId,
   UpgradeLevels,
@@ -46,8 +56,11 @@ interface UpgradeTabProps {
   activeWeapon: WeaponId;
   equippedGear: TacticalGearId;
   equippedGadget: GadgetId;
+  equippedDrone: DroneId;
   ownedPerks: PerkId[];
+  ownedCursedPerks: CursedPerkId[];
   evolvedWeapons: EvolutionId[];
+  activeSynergies: SynergyId[];
   onToggle: () => void;
   onBuyUpgrade: (id: UpgradeId) => void;
   onBuyMastery: (weaponId: WeaponId) => void;
@@ -73,8 +86,11 @@ export const UpgradeTab: React.FC<UpgradeTabProps> = ({
   activeWeapon,
   equippedGear,
   equippedGadget,
+  equippedDrone,
   ownedPerks,
+  ownedCursedPerks,
   evolvedWeapons,
+  activeSynergies,
   onToggle,
   onBuyUpgrade,
   onBuyMastery,
@@ -92,12 +108,7 @@ export const UpgradeTab: React.FC<UpgradeTabProps> = ({
     activeWeapon,
   );
 
-  const evoHint =
-    activeWeapon === 'shotgun'
-      ? "Lv 5 + Incendiary -> Dragon's Breath"
-      : activeWeapon === 'smg'
-        ? 'Lv 5 + Piercing Core -> Rail-SMG'
-        : null;
+  const evoHint = getWeaponEvolutionHint(activeWeapon);
 
   return (
     <div className="pointer-events-auto relative mt-1.5 flex flex-col items-start">
@@ -243,7 +254,7 @@ export const UpgradeTab: React.FC<UpgradeTabProps> = ({
               </div>
 
               <div className="mt-2 mb-1 flex items-center justify-between text-[10px] font-bold tracking-wider uppercase">
-                <span className="text-slate-400">Gadget Slot [Q]</span>
+                <span className="text-slate-400">Gadget Slot [E]</span>
                 <span className="font-mono-tabular text-amber-300">
                   {GADGET_SPECS[equippedGadget].cooldownSec}s CD
                 </span>
@@ -346,20 +357,45 @@ export const UpgradeTab: React.FC<UpgradeTabProps> = ({
               );
             })}
 
-            {/* Owned Perks & Weapon Evolutions Summary */}
-            {(ownedPerks.length > 0 || evolvedWeapons.length > 0) && (
+            {/* Owned Perks, Synergies, Cursed Pacts, Drone & Evolutions Summary */}
+            {(ownedPerks.length > 0 ||
+              ownedCursedPerks.length > 0 ||
+              activeSynergies.length > 0 ||
+              evolvedWeapons.length > 0 ||
+              equippedDrone !== 'none') && (
               <div className="rounded-lg border border-slate-800 bg-slate-950/75 p-2">
                 <div className="mb-1 flex items-center gap-1 text-[10px] font-bold tracking-wider text-amber-300 uppercase">
                   <Sparkles className="h-3 w-3" />
-                  <span>Active Perks &amp; Evolutions</span>
+                  <span>Active Perks, Synergies &amp; Evolutions</span>
                 </div>
                 <div className="flex flex-wrap gap-1">
+                  {equippedDrone !== 'none' && (
+                    <span className="rounded border border-cyan-400/60 bg-cyan-500/15 px-1.5 py-0.5 text-[9px] font-extrabold text-cyan-200 uppercase">
+                      Drone: {DRONE_SPECS[equippedDrone].shortLabel}
+                    </span>
+                  )}
                   {evolvedWeapons.map((evo) => (
                     <span
                       key={evo}
                       className="rounded border border-amber-400/70 bg-amber-500/20 px-1.5 py-0.5 text-[9px] font-extrabold text-amber-200 uppercase"
                     >
                       {EVOLUTION_SPECS[evo].name}
+                    </span>
+                  ))}
+                  {activeSynergies.map((syn) => (
+                    <span
+                      key={syn}
+                      className="rounded border border-sky-400/60 bg-sky-500/15 px-1.5 py-0.5 text-[9px] font-bold text-sky-200 uppercase"
+                    >
+                      {SYNERGY_SPECS[syn].name}
+                    </span>
+                  ))}
+                  {ownedCursedPerks.map((cursed) => (
+                    <span
+                      key={cursed}
+                      className="rounded border border-rose-500/70 bg-rose-500/20 px-1.5 py-0.5 text-[9px] font-bold text-rose-200 uppercase"
+                    >
+                      {CURSED_PERK_SPECS[cursed].name}
                     </span>
                   ))}
                   {ownedPerks.map((perk) => (

@@ -66,13 +66,48 @@ export class SoundEngine {
     const now = ctx.currentTime;
     const pitchJitter = 0.94 + Math.random() * 0.12;
 
+    if (weapon === 'pulse_katana') {
+      const slash = ctx.createBufferSource();
+      slash.buffer = this.noiseBuffer;
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(1600 * pitchJitter, now);
+      filter.frequency.exponentialRampToValueAtTime(420, now + 0.16);
+      filter.Q.setValueAtTime(2.6, now);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.26, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.17);
+      slash.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+      slash.start(now);
+      slash.stop(now + 0.18);
+
+      const chime = ctx.createOscillator();
+      chime.type = 'triangle';
+      chime.frequency.setValueAtTime(680 * pitchJitter, now);
+      chime.frequency.exponentialRampToValueAtTime(220, now + 0.14);
+      const cGain = ctx.createGain();
+      cGain.gain.setValueAtTime(0.14, now);
+      cGain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+      chime.connect(cGain);
+      cGain.connect(ctx.destination);
+      chime.start(now);
+      chime.stop(now + 0.16);
+      return;
+    }
+
     const isHeavy =
       weapon === 'shotgun' ||
       weapon === 'autoshotgun' ||
       weapon === 'sniper' ||
-      weapon === 'revolver';
-    const isEnergy = weapon === 'railgun';
-    const isFlame = weapon === 'flamethrower';
+      weapon === 'revolver' ||
+      weapon === 'micro_launcher';
+    const isEnergy =
+      weapon === 'railgun' ||
+      weapon === 'gauss_carbine' ||
+      weapon === 'cryo_carbine';
+    const isFlame = weapon === 'flamethrower' || weapon === 'chem_thrower';
 
     // Noise crack layer
     const noise = ctx.createBufferSource();
@@ -81,14 +116,16 @@ export class SoundEngine {
     const filter = ctx.createBiquadFilter();
     filter.type = isFlame ? 'lowpass' : 'bandpass';
     const filterFreq = isFlame
-      ? 720
-      : weapon === 'sniper'
+      ? weapon === 'chem_thrower'
+        ? 920
+        : 720
+      : weapon === 'sniper' || weapon === 'micro_launcher'
         ? 680
         : weapon === 'shotgun' || weapon === 'autoshotgun'
           ? 950
-          : weapon === 'revolver' || weapon === 'dmr'
+          : weapon === 'revolver' || weapon === 'dmr' || weapon === 'gauss_carbine'
             ? 1280
-            : weapon === 'smg' || weapon === 'dual'
+            : weapon === 'smg' || weapon === 'dual' || weapon === 'twin9'
               ? 2200
               : 1750;
     filter.frequency.setValueAtTime(filterFreq, now);
@@ -96,18 +133,18 @@ export class SoundEngine {
 
     const nGain = ctx.createGain();
     const nPeak =
-      weapon === 'sniper'
-        ? 0.38
+      weapon === 'sniper' || weapon === 'micro_launcher'
+        ? 0.36
         : isHeavy
           ? 0.32
           : isFlame
             ? 0.22
-            : weapon === 'smg' || weapon === 'lmg'
+            : weapon === 'smg' || weapon === 'lmg' || weapon === 'vulcan_minigun'
               ? 0.16
               : 0.21;
     const nDur =
-      weapon === 'sniper'
-        ? 0.28
+      weapon === 'sniper' || weapon === 'micro_launcher'
+        ? 0.26
         : isHeavy
           ? 0.2
           : isFlame
@@ -122,26 +159,34 @@ export class SoundEngine {
     noise.start(now);
     noise.stop(now + nDur);
 
-    // Punchy oscillator thump / railgun zap
+    // Punchy oscillator thump / energy zap
     const osc = ctx.createOscillator();
     osc.type = isEnergy ? 'sine' : isHeavy ? 'triangle' : 'sawtooth';
     const startFreq =
-      (isEnergy
-        ? 1120
-        : weapon === 'sniper'
-          ? 125
-          : weapon === 'revolver'
-            ? 175
-            : isHeavy
-              ? 150
-              : weapon === 'smg'
-                ? 280
-                : 230) * pitchJitter;
+      (weapon === 'cryo_carbine'
+        ? 1480
+        : weapon === 'gauss_carbine'
+          ? 960
+          : isEnergy
+            ? 1120
+            : weapon === 'micro_launcher'
+              ? 185
+              : weapon === 'sniper'
+                ? 125
+                : weapon === 'revolver'
+                  ? 175
+                  : isHeavy
+                    ? 150
+                    : weapon === 'smg' || weapon === 'twin9'
+                      ? 295
+                      : weapon === 'vulcan_minigun'
+                        ? 210
+                        : 230) * pitchJitter;
     osc.frequency.setValueAtTime(startFreq, now);
-    osc.frequency.exponentialRampToValueAtTime(isEnergy ? 160 : 38, now + nDur);
+    osc.frequency.exponentialRampToValueAtTime(isEnergy ? 180 : 38, now + nDur);
 
     const oGain = ctx.createGain();
-    oGain.gain.setValueAtTime(isEnergy || isHeavy ? 0.26 : 0.15, now);
+    oGain.gain.setValueAtTime(isEnergy || isHeavy ? 0.25 : 0.15, now);
     oGain.gain.exponentialRampToValueAtTime(0.001, now + nDur);
 
     osc.connect(oGain);
@@ -971,5 +1016,121 @@ export class SoundEngine {
     osc.start(now);
     osc.stop(now + 0.1);
   }
+
+  public playUltimateActivate(): void {
+    const ctx = this.ready();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    [220, 330, 440, 660, 880].forEach((freq, i) => {
+      const t = now + i * 0.045;
+      const osc = ctx.createOscillator();
+      osc.type = i % 2 === 0 ? 'sawtooth' : 'triangle';
+      osc.frequency.setValueAtTime(freq, t);
+      osc.frequency.exponentialRampToValueAtTime(freq * 1.25, t + 0.16);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.14, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.25);
+    });
+  }
+
+  public playExecutionDash(): void {
+    const ctx = this.ready();
+    if (!ctx || !this.noiseBuffer) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(340, now);
+    osc.frequency.exponentialRampToValueAtTime(92, now + 0.18);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.22, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.21);
+  }
+
+  public playCursedPerk(): void {
+    const ctx = this.ready();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    [293.66, 277.18, 220].forEach((freq, i) => {
+      const t = now + i * 0.08;
+      const osc = ctx.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(freq, t);
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(780, t);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.14, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.26);
+    });
+  }
+
+  public playDroneAction(): void {
+    const ctx = this.ready();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(1180, now);
+    osc.frequency.exponentialRampToValueAtTime(620, now + 0.08);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.055, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.085);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.09);
+  }
+
+  public playComboMilestone(): void {
+    const ctx = this.ready();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    [587.33, 880].forEach((freq, i) => {
+      const t = now + i * 0.05;
+      const osc = ctx.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, t);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.09, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.15);
+    });
+  }
+
+  public playCryoShatter(): void {
+    const ctx = this.ready();
+    if (!ctx || !this.noiseBuffer) return;
+    const now = ctx.currentTime;
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.noiseBuffer;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'highpass';
+    filter.frequency.setValueAtTime(1900, now);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.2, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.19);
+    noise.connect(filter);
+    filter.connect(gain);
+    gain.connect(ctx.destination);
+    noise.start(now);
+    noise.stop(now + 0.2);
+  }
 }
+
 

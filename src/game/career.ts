@@ -1,13 +1,17 @@
+import { ALL_DRONE_IDS, DRONE_ORDER, DRONE_SPECS } from './drones';
 import { StorageLike } from './storage';
 import {
   CareerStats,
+  DroneId,
   KillsByEnemyType,
   PermanentUpgradeId,
   PermanentUpgrades,
   SkinId,
   SurvivorClassId,
+  WeaponId,
   ZombieKind,
 } from './types';
+import { PHASE1_ARMORY_WEAPONS, WEAPON_SPECS } from './weapons';
 
 export const CAREER_STORAGE_KEY = 'nightfall_courtyard_career_v1';
 
@@ -633,6 +637,9 @@ export function createDefaultCareerStats(): CareerStats {
     equippedSkinId: 'nightwatch',
     selectedClass: 'vanguard',
     permanentUpgrades: createDefaultPermanentUpgrades(),
+    unlockedWeapons: [],
+    unlockedDrones: [],
+    equippedDrone: 'none',
   };
 }
 
@@ -700,6 +707,35 @@ export function sanitizeCareerStats(raw: unknown): CareerStats {
     base.selectedClass = obj.selectedClass as SurvivorClassId;
   }
 
+  const unlockedWepSet = new Set<WeaponId>();
+  if (Array.isArray(obj.unlockedWeapons)) {
+    for (const w of obj.unlockedWeapons) {
+      if (PHASE1_ARMORY_WEAPONS.includes(w as WeaponId)) {
+        unlockedWepSet.add(w as WeaponId);
+      }
+    }
+  }
+  base.unlockedWeapons = PHASE1_ARMORY_WEAPONS.filter((w) => unlockedWepSet.has(w));
+
+  const unlockedDroneSet = new Set<DroneId>();
+  if (Array.isArray(obj.unlockedDrones)) {
+    for (const d of obj.unlockedDrones) {
+      if (DRONE_ORDER.includes(d as Exclude<DroneId, 'none'>)) {
+        unlockedDroneSet.add(d as DroneId);
+      }
+    }
+  }
+  base.unlockedDrones = DRONE_ORDER.filter((d) => unlockedDroneSet.has(d));
+
+  if (
+    typeof obj.equippedDrone === 'string' &&
+    ALL_DRONE_IDS.includes(obj.equippedDrone as DroneId) &&
+    (obj.equippedDrone === 'none' ||
+      base.unlockedDrones.includes(obj.equippedDrone as DroneId))
+  ) {
+    base.equippedDrone = obj.equippedDrone as DroneId;
+  }
+
   return base;
 }
 
@@ -761,6 +797,54 @@ export function purchasePermanentUpgrade(
   next.scrap -= cost;
   next.permanentUpgrades[id] = currentLv + 1;
   return { purchased: true, career: next, newLevel: currentLv + 1 };
+}
+
+export function unlockArmoryWeapon(
+  career: CareerStats,
+  weaponId: WeaponId,
+): { unlocked: boolean; career: CareerStats } {
+  const next = sanitizeCareerStats(career);
+  if (!PHASE1_ARMORY_WEAPONS.includes(weaponId)) {
+    return { unlocked: false, career: next };
+  }
+  if (next.unlockedWeapons.includes(weaponId)) {
+    return { unlocked: false, career: next };
+  }
+  const cost = WEAPON_SPECS[weaponId].scrapUnlockCost ?? 50;
+  if (next.scrap < cost) {
+    return { unlocked: false, career: next };
+  }
+  next.scrap -= cost;
+  next.unlockedWeapons.push(weaponId);
+  return { unlocked: true, career: next };
+}
+
+export function unlockOrEquipDrone(
+  career: CareerStats,
+  droneId: DroneId,
+): { changed: boolean; purchased: boolean; career: CareerStats } {
+  const next = sanitizeCareerStats(career);
+  if (droneId === 'none') {
+    const changed = next.equippedDrone !== 'none';
+    next.equippedDrone = 'none';
+    return { changed, purchased: false, career: next };
+  }
+  if (!DRONE_ORDER.includes(droneId)) {
+    return { changed: false, purchased: false, career: next };
+  }
+  if (next.unlockedDrones.includes(droneId)) {
+    const toggleOff = next.equippedDrone === droneId;
+    next.equippedDrone = toggleOff ? 'none' : droneId;
+    return { changed: true, purchased: false, career: next };
+  }
+  const cost = DRONE_SPECS[droneId].scrapCost;
+  if (next.scrap < cost) {
+    return { changed: false, purchased: false, career: next };
+  }
+  next.scrap -= cost;
+  next.unlockedDrones.push(droneId);
+  next.equippedDrone = droneId;
+  return { changed: true, purchased: true, career: next };
 }
 
 function getBrowserStorage(): StorageLike | null {

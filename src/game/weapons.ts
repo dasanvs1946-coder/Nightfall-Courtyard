@@ -1,6 +1,6 @@
 import { WeaponId, WeaponRuntimeState, WeaponSpec } from './types';
 
-export const WEAPON_ORDER: WeaponId[] = [
+export const WAVE_WEAPON_ORDER: WeaponId[] = [
   'pistol',
   'smg',
   'shotgun',
@@ -13,6 +13,21 @@ export const WEAPON_ORDER: WeaponId[] = [
   'sniper',
   'flamethrower',
   'railgun',
+];
+
+export const PHASE1_ARMORY_WEAPONS: WeaponId[] = [
+  'twin9',
+  'cryo_carbine',
+  'pulse_katana',
+  'vulcan_minigun',
+  'gauss_carbine',
+  'micro_launcher',
+  'chem_thrower',
+];
+
+export const WEAPON_ORDER: WeaponId[] = [
+  ...WAVE_WEAPON_ORDER,
+  ...PHASE1_ARMORY_WEAPONS,
 ];
 
 export const WEAPON_SPECS: Record<WeaponId, WeaponSpec> = {
@@ -271,14 +286,188 @@ export const WEAPON_SPECS: Record<WeaponId, WeaponSpec> = {
     tracerColor: 0x22d3ee,
     screenShake: 0.42,
   },
+  // --- Phase 1 v3.0.0 Armory & Supply Draft Weapons ---
+  twin9: {
+    id: 'twin9',
+    name: 'Twin-9 Akimbo',
+    shortCode: 'TW9',
+    role: 'Akimbo 9mm · Agile Dual Fire',
+    magSize: 34,
+    infiniteReserve: false,
+    startReserve: 170,
+    maxReserve: 340,
+    ammoCrateAmount: 68,
+    fireInterval: 0.1,
+    reloadDuration: 1.35,
+    damage: 24,
+    pellets: 2,
+    spreadRad: 0.055,
+    range: 25,
+    knockback: 2.2,
+    unlockWave: 99,
+    armoryOnly: true,
+    scrapUnlockCost: 45,
+    ricochetCount: 0,
+    tracerColor: 0x67e8f9,
+    screenShake: 0.14,
+  },
+  cryo_carbine: {
+    id: 'cryo_carbine',
+    name: 'Cryo-Carbine',
+    shortCode: 'CRYO',
+    role: 'Cryo Rifle · Chills Targets',
+    magSize: 28,
+    infiniteReserve: false,
+    startReserve: 140,
+    maxReserve: 280,
+    ammoCrateAmount: 56,
+    fireInterval: 0.115,
+    reloadDuration: 1.45,
+    damage: 27,
+    pellets: 1,
+    spreadRad: 0.036,
+    range: 28,
+    knockback: 2.0,
+    unlockWave: 99,
+    armoryOnly: true,
+    scrapUnlockCost: 55,
+    chillDuration: 3.0,
+    tracerColor: 0x22d3ee,
+    screenShake: 0.11,
+  },
+  pulse_katana: {
+    id: 'pulse_katana',
+    name: 'Pulse Katana',
+    shortCode: 'KAT',
+    role: 'Plasma Blade · Wide Melee Arc',
+    magSize: 1,
+    infiniteReserve: true,
+    startReserve: 999,
+    maxReserve: 999,
+    ammoCrateAmount: 0,
+    fireInterval: 0.28,
+    reloadDuration: 0.35,
+    damage: 112,
+    pellets: 1,
+    spreadRad: 1.15,
+    range: 4.3,
+    knockback: 8.6,
+    unlockWave: 99,
+    armoryOnly: true,
+    scrapUnlockCost: 65,
+    meleeArc: true,
+    tracerColor: 0xc084fc,
+    screenShake: 0.24,
+  },
+  vulcan_minigun: {
+    id: 'vulcan_minigun',
+    name: 'Vulcan Minigun',
+    shortCode: 'VULC',
+    role: 'Rotary Cannon · Spin-Up ROF',
+    magSize: 120,
+    infiniteReserve: false,
+    startReserve: 240,
+    maxReserve: 480,
+    ammoCrateAmount: 120,
+    fireInterval: 0.115,
+    reloadDuration: 2.4,
+    damage: 24,
+    pellets: 1,
+    spreadRad: 0.09,
+    range: 29,
+    knockback: 2.4,
+    unlockWave: 99,
+    armoryOnly: true,
+    scrapUnlockCost: 85,
+    spinUpMax: 1.0,
+    tracerColor: 0xfbbf24,
+    screenShake: 0.14,
+  },
+  gauss_carbine: {
+    id: 'gauss_carbine',
+    name: 'Gauss Rail-Carbine',
+    shortCode: 'GAUS',
+    role: 'Coil Carbine · Hyper-Pierce',
+    magSize: 14,
+    infiniteReserve: false,
+    startReserve: 56,
+    maxReserve: 112,
+    ammoCrateAmount: 28,
+    fireInterval: 0.34,
+    reloadDuration: 1.6,
+    damage: 138,
+    pellets: 1,
+    spreadRad: 0.006,
+    range: 38,
+    knockback: 8.5,
+    pierceCount: 5,
+    unlockWave: 99,
+    armoryOnly: true,
+    scrapUnlockCost: 95,
+    tracerColor: 0x818cf8,
+    screenShake: 0.3,
+  },
+  micro_launcher: {
+    id: 'micro_launcher',
+    name: 'MML-4 Micro-Launcher',
+    shortCode: 'MML4',
+    role: 'Pod Salvo · Homing Rockets',
+    magSize: 6,
+    infiniteReserve: false,
+    startReserve: 24,
+    maxReserve: 48,
+    ammoCrateAmount: 12,
+    fireInterval: 0.62,
+    reloadDuration: 1.85,
+    damage: 94,
+    pellets: 1,
+    spreadRad: 0.14,
+    range: 28,
+    knockback: 7.2,
+    unlockWave: 99,
+    armoryOnly: true,
+    scrapUnlockCost: 110,
+    homingMissiles: 3,
+    tracerColor: 0xf97316,
+    screenShake: 0.32,
+  },
+  chem_thrower: {
+    id: 'chem_thrower',
+    name: 'Chem-Thrower',
+    shortCode: 'CHEM',
+    role: 'Bio-Spray · Corrosive Cone',
+    magSize: 40,
+    infiniteReserve: false,
+    startReserve: 120,
+    maxReserve: 240,
+    ammoCrateAmount: 60,
+    fireInterval: 0.095,
+    reloadDuration: 1.85,
+    damage: 18,
+    pellets: 2,
+    spreadRad: 0.23,
+    range: 13,
+    knockback: 1.6,
+    unlockWave: 99,
+    armoryOnly: true,
+    scrapUnlockCost: 100,
+    createsAcidFire: true,
+    tracerColor: 0x84cc16,
+    screenShake: 0.1,
+  },
 };
 
-export function createInitialWeapons(): WeaponRuntimeState[] {
+export function createInitialWeapons(
+  careerUnlockedWeapons: WeaponId[] = [],
+): WeaponRuntimeState[] {
+  const careerSet = new Set<WeaponId>(careerUnlockedWeapons);
   return WEAPON_ORDER.map((id) => {
     const spec = WEAPON_SPECS[id];
+    const unlocked =
+      (!spec.armoryOnly && spec.unlockWave <= 1) || careerSet.has(id);
     return {
       id,
-      unlocked: spec.unlockWave <= 1,
+      unlocked,
       mag: spec.magSize,
       reserve: spec.startReserve,
     };
@@ -335,6 +524,7 @@ export function unlockWeaponsForWave(
   const newlyUnlocked: WeaponId[] = [];
   for (const w of weapons) {
     const spec = WEAPON_SPECS[w.id];
+    if (spec.armoryOnly) continue;
     if (!w.unlocked && wave >= spec.unlockWave) {
       w.unlocked = true;
       w.mag = getMagSize ? getMagSize(w.id) : spec.magSize;
@@ -343,6 +533,32 @@ export function unlockWeaponsForWave(
     }
   }
   return newlyUnlocked;
+}
+
+export function rollWeaponSupplyDraftChoices(
+  weapons: WeaponRuntimeState[],
+  rng: () => number = Math.random,
+): WeaponId[] {
+  const lockedArmory = PHASE1_ARMORY_WEAPONS.filter((id) => {
+    const state = weapons.find((w) => w.id === id);
+    return !state || !state.unlocked;
+  });
+
+  const pool =
+    lockedArmory.length >= 3
+      ? [...lockedArmory]
+      : [
+          ...lockedArmory,
+          ...PHASE1_ARMORY_WEAPONS.filter((id) => !lockedArmory.includes(id)),
+        ];
+
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    const tmp = pool[i];
+    pool[i] = pool[j];
+    pool[j] = tmp;
+  }
+  return pool.slice(0, 3);
 }
 
 export function grantAmmoCrate(
@@ -399,7 +615,13 @@ export function getPrevUnlockedWeapon(
 export function getEffectiveFireInterval(
   id: WeaponId,
   rapidFireRemaining: number,
+  spinUpRatio = 0,
 ): number {
   const base = WEAPON_SPECS[id].fireInterval;
-  return rapidFireRemaining > 0 ? base * 0.52 : base;
+  let interval = base;
+  if (id === 'vulcan_minigun' && spinUpRatio > 0) {
+    const clamped = Math.max(0, Math.min(1, spinUpRatio));
+    interval = base * (1 - clamped * 0.56);
+  }
+  return rapidFireRemaining > 0 ? interval * 0.52 : interval;
 }

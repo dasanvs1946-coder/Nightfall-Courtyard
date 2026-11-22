@@ -14,6 +14,7 @@ import { TACTICAL_GEAR_ORDER, TACTICAL_GEAR_SPECS } from '../game/tacticalGear';
 import {
   ArenaId,
   CareerStats,
+  DroneId,
   GadgetId,
   GameModeId,
   PermanentUpgradeId,
@@ -22,6 +23,7 @@ import {
   SkinId,
   SurvivorClassId,
   TacticalGearId,
+  WeaponId,
 } from '../game/types';
 import { APP_VERSION } from '../game/version';
 import { BestiaryPanel } from './BestiaryPanel';
@@ -52,6 +54,8 @@ interface TitleScreenProps {
   onEquipSkin: (skinId: SkinId) => void;
   onSelectClass: (classId: SurvivorClassId) => void;
   onBuyPermanentUpgrade: (id: PermanentUpgradeId) => void;
+  onUnlockArmoryWeapon: (weaponId: WeaponId) => void;
+  onSelectOrUnlockDrone: (droneId: DroneId) => void;
   onStartFromBeginning: () => void;
   onStartDailyRun: () => void;
   onResumeInterrupted: () => void;
@@ -86,6 +90,8 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
   onEquipSkin,
   onSelectClass,
   onBuyPermanentUpgrade,
+  onUnlockArmoryWeapon,
+  onSelectOrUnlockDrone,
   onStartFromBeginning,
   onStartDailyRun,
   onResumeInterrupted,
@@ -447,7 +453,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
 
               <div>
                 <div className="mb-1 flex items-center justify-between text-[10px] font-bold tracking-wider uppercase">
-                  <span className="text-slate-400">Gadget [Q]</span>
+                  <span className="text-slate-400">Gadget [E]</span>
                   <span className="font-mono-tabular text-amber-300">
                     {activeGadgetSpec.name}
                   </span>
@@ -574,6 +580,8 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
             career={career}
             onSelectClass={onSelectClass}
             onBuyPermanentUpgrade={onBuyPermanentUpgrade}
+            onUnlockArmoryWeapon={onUnlockArmoryWeapon}
+            onSelectOrUnlockDrone={onSelectOrUnlockDrone}
           />
         </div>
       )}
@@ -587,7 +595,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
       {/* Single flat bottom control hint */}
       {!isSkinsTab && (
         <div className="hud-text-shadow text-center text-[10px] font-medium tracking-wide text-slate-400 sm:text-left sm:text-xs">
-          Left Stick / WASD Move · Right Stick / Mouse Aim &amp; Fire · Space Dash · G Gear · Q Gadget · R Reload
+          Left Stick / WASD Move · Right Stick / Mouse Aim &amp; Fire · Space Dash · Q Ultimate · E Gadget · G Gear · R Reload
         </div>
       )}
     </div>

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Check, Lock, Shield, Wrench } from 'lucide-react';
+import { Bot, Check, Crosshair, Lock, Shield, Wrench, Zap } from 'lucide-react';
 import {
   CLASS_ORDER,
   CLASS_SPECS,
@@ -9,18 +9,31 @@ import {
   PERMANENT_UPGRADE_ORDER,
   PERMANENT_UPGRADE_SPECS,
 } from '../game/career';
-import { CareerStats, PermanentUpgradeId, SurvivorClassId } from '../game/types';
+import { DRONE_ORDER, DRONE_SPECS } from '../game/drones';
+import {
+  CareerStats,
+  DroneId,
+  PermanentUpgradeId,
+  SurvivorClassId,
+  WeaponId,
+} from '../game/types';
+import { ULTIMATE_SPECS } from '../game/ultimates';
+import { PHASE1_ARMORY_WEAPONS, WEAPON_SPECS } from '../game/weapons';
 
 interface WorkshopPanelProps {
   career: CareerStats;
   onSelectClass: (classId: SurvivorClassId) => void;
   onBuyPermanentUpgrade: (id: PermanentUpgradeId) => void;
+  onUnlockArmoryWeapon: (weaponId: WeaponId) => void;
+  onSelectOrUnlockDrone: (droneId: DroneId) => void;
 }
 
 export const WorkshopPanel: React.FC<WorkshopPanelProps> = ({
   career,
   onSelectClass,
   onBuyPermanentUpgrade,
+  onUnlockArmoryWeapon,
+  onSelectOrUnlockDrone,
 }) => {
   return (
     <div
@@ -43,6 +56,7 @@ export const WorkshopPanel: React.FC<WorkshopPanelProps> = ({
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           {CLASS_ORDER.map((id) => {
             const spec = CLASS_SPECS[id];
+            const ult = ULTIMATE_SPECS[id];
             const unlocked = isClassUnlocked(id, career);
             const selected = career.selectedClass === id;
             const progressText = getClassProgressText(id, career);
@@ -75,6 +89,13 @@ export const WorkshopPanel: React.FC<WorkshopPanelProps> = ({
                   <p className="mt-1 text-[11px] leading-snug text-slate-300">
                     {spec.perksSummary}
                   </p>
+                  <div className="mt-1.5 flex items-start gap-1 rounded border border-purple-500/30 bg-purple-950/25 px-1.5 py-1 text-[10px] text-purple-200">
+                    <Zap className="mt-0.5 h-3 w-3 shrink-0 text-purple-300" />
+                    <span>
+                      <strong className="uppercase">Ult [Q]: {ult.name}</strong> —{' '}
+                      {ult.description}
+                    </span>
+                  </div>
                 </div>
 
                 <div className="mt-2 flex items-center justify-between gap-2">
@@ -182,6 +203,143 @@ export const WorkshopPanel: React.FC<WorkshopPanelProps> = ({
                   }`}
                 >
                   {isMax ? 'Maxed' : `${cost} Scrap`}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Autonomous Combat Drones */}
+      <div className="border-t border-slate-800 pt-3">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 text-xs font-extrabold tracking-wider text-white uppercase">
+            <Bot className="h-3.5 w-3.5 text-cyan-300" />
+            <span>Autonomous Combat Drones</span>
+          </div>
+          <span className="font-mono-tabular text-[10px] font-semibold text-slate-400">
+            Active:{' '}
+            {career.equippedDrone === 'none'
+              ? 'None'
+              : DRONE_SPECS[career.equippedDrone].name}
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {DRONE_ORDER.map((id) => {
+            const spec = DRONE_SPECS[id];
+            const unlocked = career.unlockedDrones.includes(id);
+            const equipped = career.equippedDrone === id;
+            const canAfford = career.scrap >= spec.scrapCost;
+
+            return (
+              <div
+                key={id}
+                data-testid={`drone-card-${id}`}
+                className={`flex items-center justify-between gap-2 rounded-xl border p-2.5 ${
+                  equipped
+                    ? 'border-cyan-400 bg-slate-900/95'
+                    : 'border-slate-800 bg-[#0e111a]'
+                }`}
+              >
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span
+                      className="h-2 w-2 shrink-0 rounded-full"
+                      style={{ backgroundColor: spec.accentHex }}
+                    />
+                    <span className="truncate text-xs font-extrabold tracking-wide text-white uppercase">
+                      {spec.name}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 text-[10px] leading-snug text-slate-400">
+                    {spec.description}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  data-testid={`drone-action-${id}`}
+                  disabled={!unlocked && !canAfford}
+                  onClick={(e) => {
+                    e.currentTarget.blur();
+                    onSelectOrUnlockDrone(id);
+                  }}
+                  className={`font-mono-tabular min-h-[36px] shrink-0 cursor-pointer rounded-lg px-2.5 py-1 text-[10px] font-extrabold tracking-wider uppercase ${
+                    equipped
+                      ? 'border border-cyan-400/60 bg-cyan-500/20 text-cyan-200 hover:bg-cyan-500/30'
+                      : unlocked
+                        ? 'bg-slate-800 text-slate-100 hover:bg-slate-700'
+                        : canAfford
+                          ? 'bg-amber-500 text-slate-950 hover:bg-amber-400'
+                          : 'cursor-not-allowed border border-slate-800 bg-slate-950 text-slate-500'
+                  }`}
+                >
+                  {equipped
+                    ? 'Equipped'
+                    : unlocked
+                      ? 'Equip'
+                      : `${spec.scrapCost} Scrap`}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Special Armory Weapons (Unlock Permanently for Wave 1 or Draft Mid-Run) */}
+      <div className="border-t border-slate-800 pt-3">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 text-xs font-extrabold tracking-wider text-white uppercase">
+            <Crosshair className="h-3.5 w-3.5 text-amber-400" />
+            <span>Special Armory Weapons</span>
+          </div>
+          <span className="font-mono-tabular text-[10px] font-semibold text-slate-400">
+            {career.unlockedWeapons.length}/{PHASE1_ARMORY_WEAPONS.length} Unlocked
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {PHASE1_ARMORY_WEAPONS.map((wId) => {
+            const spec = WEAPON_SPECS[wId];
+            const cost = spec.scrapUnlockCost ?? 50;
+            const unlocked = career.unlockedWeapons.includes(wId);
+            const canAfford = !unlocked && career.scrap >= cost;
+
+            return (
+              <div
+                key={wId}
+                data-testid={`armory-weapon-${wId}`}
+                className="flex items-center justify-between gap-2 rounded-xl border border-slate-800 bg-[#0e111a] p-2.5"
+              >
+                <div className="min-w-0">
+                  <div className="truncate text-xs font-extrabold tracking-wide text-white uppercase">
+                    {spec.name}
+                  </div>
+                  <div className="mt-0.5 truncate text-[10px] text-slate-400">
+                    {spec.role}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  data-testid={`unlock-weapon-${wId}`}
+                  disabled={unlocked || !canAfford}
+                  onClick={(e) => {
+                    e.currentTarget.blur();
+                    if (!unlocked && canAfford) {
+                      onUnlockArmoryWeapon(wId);
+                    }
+                  }}
+                  className={`font-mono-tabular min-h-[36px] shrink-0 cursor-pointer rounded-lg px-2.5 py-1 text-[10px] font-extrabold tracking-wider uppercase ${
+                    unlocked
+                      ? 'border border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
+                      : canAfford
+                        ? 'bg-amber-500 text-slate-950 hover:bg-amber-400'
+                        : 'cursor-not-allowed border border-slate-800 bg-slate-950 text-slate-500'
+                  }`}
+                >
+                  {unlocked ? 'Unlocked' : `${cost} Scrap`}
                 </button>
               </div>
             );

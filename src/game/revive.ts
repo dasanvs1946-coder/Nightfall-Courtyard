@@ -58,3 +58,21 @@ export function isAcidPoolClearedByRevive(
 ): boolean {
   return Math.hypot(poolX - playerX, poolZ - playerZ) <= clearRadius + poolRadius;
 }
+
+export const EXECUTION_DASH_HP_THRESHOLD = 0.25;
+
+export function canExecuteDashTarget(hp: number, maxHp: number): boolean {
+  if (hp <= 0 || maxHp <= 0) return false;
+  return hp / maxHp < EXECUTION_DASH_HP_THRESHOLD;
+}
+
+export function computeExecutionRewards(
+  maxHp: number,
+  magSize: number,
+): { hpRestore: number; ammoRestore: number } {
+  return {
+    hpRestore: Math.max(1, Math.round(Math.max(1, maxHp) * 0.1)),
+    ammoRestore: Math.max(1, Math.ceil(Math.max(1, magSize) * 0.1)),
+  };
+}
+

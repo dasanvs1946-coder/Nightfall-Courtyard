@@ -13,6 +13,8 @@ import {
   Zap,
 } from 'lucide-react';
 import { ARENA_SPECS, GAME_MODE_SPECS } from '../game/arenas';
+import { DRONE_SPECS } from '../game/drones';
+import { getEvolvedWeaponDisplay } from '../game/perks';
 import {
   FloatingDamage,
   GadgetId,
@@ -39,6 +41,7 @@ interface HudOverlayProps {
   onSwitchWeapon: () => void;
   onTriggerGear: () => void;
   onTriggerGadget: () => void;
+  onTriggerUltimate: () => void;
   onEquipGear: (id: TacticalGearId) => void;
   onEquipGadget: (id: GadgetId) => void;
   onPrevWeapon: () => void;
@@ -62,6 +65,7 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
   onSwitchWeapon,
   onTriggerGear,
   onTriggerGadget,
+  onTriggerUltimate,
   onEquipGear,
   onEquipGadget,
   onPrevWeapon,
@@ -76,7 +80,9 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
   const activeWeaponState =
     hud.weapons.find((w) => w.id === hud.activeWeapon) ?? hud.weapons[0];
   const unlockedWeapons = hud.weapons.filter((w) => w.unlocked);
-  const nextLockedWeapon = hud.weapons.find((w) => !w.unlocked);
+  const nextLockedWeapon = hud.weapons.find(
+    (w) => !w.unlocked && !WEAPON_SPECS[w.id].armoryOnly,
+  );
   const activeSpec = WEAPON_SPECS[hud.activeWeapon];
   const hpPct = Math.max(0, Math.min(100, (hud.hp / hud.maxHp) * 100));
   const ghostPct = Math.max(hpPct, Math.min(100, (hud.ghostHp / hud.maxHp) * 100));
@@ -100,15 +106,8 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
   const bloodAlpha = Math.max(0, Math.min(1, hud.bloodSplatter));
   const seedShift = (hud.bloodSeed % 5) * 14;
 
-  const isEvolvedShotgun =
-    hud.activeWeapon === 'shotgun' && hud.evolvedWeapons.includes('dragons_breath');
-  const isEvolvedSmg =
-    hud.activeWeapon === 'smg' && hud.evolvedWeapons.includes('rail_smg');
-  const weaponDisplayName = isEvolvedShotgun
-    ? "Dragon's Breath"
-    : isEvolvedSmg
-      ? 'Rail-SMG'
-      : activeSpec.name;
+  const { name: weaponDisplayName, isEvolved: isWeaponEvolved } =
+    getEvolvedWeaponDisplay(hud.activeWeapon, activeSpec.name, hud.evolvedWeapons);
 
   return (
     <div className="pointer-events-none fixed inset-0 z-20 flex flex-col justify-between p-2.5 sm:p-5">
@@ -166,21 +165,29 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
       >
         {floatingDamages.map((d) => {
           const opacity = Math.max(0, 1 - d.age / d.duration);
-          const customColor =
-            !d.blockedByArmor && !d.isWeakpoint && d.isCrit
+          const kind =
+            d.kind ??
+            (d.isWeakpoint ? 'weakpoint' : d.isCrit ? 'crit' : 'normal');
+          const customColor = d.blockedByArmor
+            ? undefined
+            : kind === 'crit'
               ? '#F59E0B'
-              : undefined;
+              : kind === 'cryo' || kind === 'shield' || kind === 'execute'
+                ? '#22D3EE'
+                : undefined;
           return (
             <div
               key={d.id}
               className={`font-mono-tabular hud-text-shadow absolute -translate-x-1/2 -translate-y-1/2 font-bold ${
                 d.blockedByArmor
                   ? 'text-xs text-sky-300'
-                  : d.isWeakpoint
+                  : kind === 'weakpoint'
                     ? 'text-lg font-extrabold text-rose-500'
-                    : d.isCrit
-                      ? 'text-base'
-                      : 'text-sm text-white'
+                    : kind === 'crit' || kind === 'execute'
+                      ? 'text-base font-extrabold'
+                      : kind === 'cryo' || kind === 'shield'
+                        ? 'text-sm font-extrabold'
+                        : 'text-sm text-white'
               }`}
               style={{
                 left: d.x,
@@ -189,7 +196,8 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
                 color: customColor,
               }}
             >
-              {d.amount}
+              {d.label ? `${d.label} ` : ''}
+              {d.amount > 0 ? d.amount : ''}
             </div>
           );
         })}
@@ -276,8 +284,11 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
             activeWeapon={hud.activeWeapon}
             equippedGear={hud.equippedGear}
             equippedGadget={hud.equippedGadget}
+            equippedDrone={hud.equippedDrone}
             ownedPerks={hud.ownedPerks}
+            ownedCursedPerks={hud.ownedCursedPerks}
             evolvedWeapons={hud.evolvedWeapons}
+            activeSynergies={hud.activeSynergies}
             onToggle={onToggleUpgrades}
             onBuyUpgrade={onBuyUpgrade}
             onBuyMastery={onBuyMastery}
@@ -296,9 +307,7 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
               <div className="flex items-baseline gap-1.5 sm:gap-2">
                 <span
                   className={`font-display max-w-[82px] truncate text-xs font-bold tracking-wide uppercase sm:max-w-none sm:text-sm ${
-                    isEvolvedShotgun || isEvolvedSmg
-                      ? 'text-amber-300'
-                      : 'text-slate-100'
+                    isWeaponEvolved ? 'text-amber-300' : 'text-slate-100'
                   }`}
                 >
                   {weaponDisplayName}
@@ -411,6 +420,24 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
                   {modeSpec.shortLabel}
                 </div>
               )}
+              {hud.equippedDrone !== 'none' && (
+                <div
+                  data-testid="drone-badge"
+                  className="font-mono-tabular rounded-xl border border-cyan-400/50 px-2 py-0.5 text-[9px] font-extrabold tracking-wider text-cyan-200 uppercase sm:py-1 sm:text-[10px]"
+                  style={{ backgroundColor: 'rgba(10, 15, 24, 0.88)' }}
+                >
+                  {DRONE_SPECS[hud.equippedDrone].shortLabel}
+                </div>
+              )}
+              {hud.activeSynergies.length > 0 && (
+                <div
+                  data-testid="synergy-badge"
+                  className="font-mono-tabular rounded-xl border border-sky-400/50 px-2 py-0.5 text-[9px] font-extrabold tracking-wider text-sky-200 uppercase sm:py-1 sm:text-[10px]"
+                  style={{ backgroundColor: 'rgba(10, 15, 24, 0.88)' }}
+                >
+                  SYN {hud.activeSynergies.length}
+                </div>
+              )}
               {poweredGenCount > 0 && (
                 <div
                   className="font-mono-tabular flex items-center gap-1 rounded-xl border border-cyan-400/50 px-2 py-0.5 text-[9px] font-extrabold text-cyan-300 uppercase sm:py-1 sm:text-[10px]"
@@ -482,8 +509,31 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
         </div>
       </div>
 
-      {/* Boss Health Bar, Generator Ring Capture & Transient Banners */}
+      {/* Killstreak Combo, Boss Health Bar, Generator Ring Capture & Transient Banners */}
       <div className="pointer-events-none relative z-20 mt-2 mb-auto flex w-[min(360px,92vw)] flex-col items-center gap-1.5 self-center">
+        {hud.comboCount >= 2 && !upgradesOpen && (
+          <div
+            data-testid="combo-badge"
+            className="w-56 rounded-xl border border-amber-400/60 px-3 py-1 sm:w-64"
+            style={{ backgroundColor: 'rgba(14, 16, 26, 0.88)' }}
+          >
+            <div className="flex items-center justify-between gap-2 text-[10px] font-extrabold tracking-wider uppercase sm:text-xs">
+              <span className="font-mono-tabular text-amber-300">
+                {hud.comboCount}x COMBO · x{hud.comboMultiplier.toFixed(1)}
+              </span>
+              {hud.comboCallout && (
+                <span className="text-rose-400">{hud.comboCallout}</span>
+              )}
+            </div>
+            <div className="mt-1 h-1 w-full overflow-hidden rounded-sm bg-slate-900">
+              <div
+                className="h-full bg-amber-400 transition-[width] duration-75"
+                style={{ width: `${Math.round(hud.comboTimerRatio * 100)}%` }}
+              />
+            </div>
+          </div>
+        )}
+
         {hud.activeBoss && !upgradesOpen && (
           <div
             data-testid="boss-health-bar"
@@ -593,6 +643,9 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
             equippedGadget={hud.equippedGadget}
             gadgetCooldownProgress={hud.gadgetCooldownProgress}
             gadgetCooldownRemaining={hud.gadgetCooldownRemaining}
+            ultimateCharge={hud.ultimateCharge}
+            ultimateActiveRemaining={hud.ultimateActiveRemaining}
+            ultimateName={hud.ultimateName}
             isReloading={hud.isReloading}
             reloadProgress={hud.reloadProgress}
             onDash={onDash}
@@ -600,6 +653,7 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
             onSwitchWeapon={onSwitchWeapon}
             onTriggerGear={onTriggerGear}
             onTriggerGadget={onTriggerGadget}
+            onTriggerUltimate={onTriggerUltimate}
           />
           <VirtualThumbstick
             side="right"

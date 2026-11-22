@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { SKIN_SPECS } from '../game/career';
-import { CrateKind, SkinId, WeaponId, ZombieKind } from '../game/types';
+import { DRONE_SPECS } from '../game/drones';
+import { CrateKind, DroneId, SkinId, WeaponId, ZombieKind } from '../game/types';
 import { TexturedSurfaceSet } from './textures';
 
 export interface PlayerRig {
@@ -596,6 +597,136 @@ export function buildPlayerRig(
   railGroup.visible = false;
   weaponAnchor.add(railGroup);
 
+  // 13. Twin-9 Akimbo (Sleek cyan-trimmed dual SMGs)
+  const twin9Group = new THREE.Group();
+  const tw9Mat = new THREE.MeshStandardMaterial({
+    color: 0x06b6d4,
+    emissive: 0x0891b2,
+    emissiveIntensity: 1.4,
+    roughness: 0.25,
+  });
+  for (const xOff of [0, -0.44]) {
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.095, 0.34), gunGripMat);
+    body.position.set(xOff, 0.025, -0.12);
+    const slide = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.04, 0.32), tw9Mat);
+    slide.position.set(xOff, 0.065, -0.14);
+    const mag = new THREE.Mesh(new THREE.BoxGeometry(0.045, 0.16, 0.06), gunMetalMat);
+    mag.position.set(xOff, -0.08, -0.14);
+    twin9Group.add(body, slide, mag);
+  }
+  twin9Group.visible = false;
+  weaponAnchor.add(twin9Group);
+
+  // 14. Cryo-Carbine (Frosted cyan cryo coils & chill canister)
+  const cryoGroup = new THREE.Group();
+  const cryoMat = new THREE.MeshStandardMaterial({
+    color: 0x38bdf8,
+    emissive: 0x0284c7,
+    emissiveIntensity: 1.9,
+    roughness: 0.2,
+  });
+  const crBody = new THREE.Mesh(new THREE.BoxGeometry(0.095, 0.12, 0.5), gunMetalMat);
+  crBody.position.set(0, 0.02, -0.15);
+  const crBarrel = new THREE.Mesh(new THREE.CylinderGeometry(0.032, 0.036, 0.38, 8), cryoMat);
+  crBarrel.rotation.x = Math.PI / 2;
+  crBarrel.position.set(0, 0.04, -0.52);
+  const crTank = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.24, 10), cryoMat);
+  crTank.rotation.x = Math.PI / 2;
+  crTank.position.set(0, -0.065, -0.2);
+  cryoGroup.add(crBody, crBarrel, crTank);
+  cryoGroup.visible = false;
+  weaponAnchor.add(cryoGroup);
+
+  // 15. Pulse Katana (Glowing violet-plasma blade)
+  const katanaWeaponGroup = new THREE.Group();
+  const bladeEdgeMat = new THREE.MeshStandardMaterial({
+    color: 0xd8b4fe,
+    emissive: 0xa855f7,
+    emissiveIntensity: 2.3,
+    roughness: 0.18,
+    metalness: 0.85,
+  });
+  const ktHilt = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.28, 8), gunGripMat);
+  ktHilt.rotation.x = Math.PI / 2;
+  ktHilt.position.set(0, 0.02, 0.04);
+  const ktGuard = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.14, 0.04), drumMat);
+  ktGuard.position.set(0, 0.02, -0.1);
+  const ktBlade = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.09, 1.05), bladeEdgeMat);
+  ktBlade.position.set(0, 0.03, -0.62);
+  katanaWeaponGroup.add(ktHilt, ktGuard, ktBlade);
+  katanaWeaponGroup.visible = false;
+  weaponAnchor.add(katanaWeaponGroup);
+
+  // 16. Vulcan Minigun (Multi-barrel rotary Gatling assembly)
+  const vulcanGroup = new THREE.Group();
+  const vHousing = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.18, 0.44), gunGripMat);
+  vHousing.position.set(0, 0.02, -0.14);
+  const vClamp = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 0.08, 10), flameTipMat);
+  vClamp.rotation.x = Math.PI / 2;
+  vClamp.position.set(0, 0.02, -0.64);
+  const vDrum = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.24, 12), drumMat);
+  vDrum.position.set(-0.08, -0.11, -0.16);
+  vulcanGroup.add(vHousing, vClamp, vDrum);
+  for (let b = 0; b < 4; b++) {
+    const ang = (b / 4) * Math.PI * 2;
+    const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.62, 6), gunMetalMat);
+    bar.rotation.x = Math.PI / 2;
+    bar.position.set(Math.cos(ang) * 0.06, 0.02 + Math.sin(ang) * 0.06, -0.58);
+    vulcanGroup.add(bar);
+  }
+  vulcanGroup.visible = false;
+  weaponAnchor.add(vulcanGroup);
+
+  // 17. Gauss Rail-Carbine (Indigo magnetic accelerator frame)
+  const gaussGroup = new THREE.Group();
+  const gaussMat = new THREE.MeshStandardMaterial({
+    color: 0x818cf8,
+    emissive: 0x6366f1,
+    emissiveIntensity: 2.1,
+    roughness: 0.2,
+  });
+  const gBody = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.13, 0.52), gunGripMat);
+  gBody.position.set(0, 0.02, -0.14);
+  const gCore = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.065, 0.56), gaussMat);
+  gCore.position.set(0, 0.04, -0.45);
+  const gCoils = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.08), gunMetalMat);
+  gCoils.position.set(0, 0.04, -0.56);
+  gaussGroup.add(gBody, gCore, gCoils);
+  gaussGroup.visible = false;
+  weaponAnchor.add(gaussGroup);
+
+  // 18. MML-4 Micro-Launcher (Quad-tube missile pod)
+  const launcherGroup = new THREE.Group();
+  const mlPod = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.2, 0.56), drumMat);
+  mlPod.position.set(0, 0.05, -0.2);
+  const mlTrim = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.06, 0.12), flameTipMat);
+  mlTrim.position.set(0, 0.05, -0.44);
+  const mlGrip = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.14, 0.1), gunGripMat);
+  mlGrip.position.set(0, -0.09, -0.14);
+  launcherGroup.add(mlPod, mlTrim, mlGrip);
+  launcherGroup.visible = false;
+  weaponAnchor.add(launcherGroup);
+
+  // 19. Chem-Thrower (Toxic lime pressurized nozzle & canisters)
+  const chemGroup = new THREE.Group();
+  const chemMat = new THREE.MeshStandardMaterial({
+    color: 0x84cc16,
+    emissive: 0x65a30d,
+    emissiveIntensity: 1.9,
+    roughness: 0.25,
+  });
+  const chBody = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.46), gunMetalMat);
+  chBody.position.set(0, 0.02, -0.14);
+  const chTank = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.3, 10), chemMat);
+  chTank.rotation.x = Math.PI / 2;
+  chTank.position.set(0.07, -0.07, -0.2);
+  const chNozzle = new THREE.Mesh(new THREE.CylinderGeometry(0.042, 0.06, 0.34, 8), chemMat);
+  chNozzle.rotation.x = Math.PI / 2;
+  chNozzle.position.set(0, 0.03, -0.5);
+  chemGroup.add(chBody, chTank, chNozzle);
+  chemGroup.visible = false;
+  weaponAnchor.add(chemGroup);
+
   // Weapon-mounted Tactical Flashlight (SpotLight + subtle beam cone)
   const flashlightSpot = new THREE.SpotLight(
     0xe0f2fe,
@@ -675,6 +806,13 @@ export function buildPlayerRig(
       sniper: sniperGroup,
       flamethrower: flameGroup,
       railgun: railGroup,
+      twin9: twin9Group,
+      cryo_carbine: cryoGroup,
+      pulse_katana: katanaWeaponGroup,
+      vulcan_minigun: vulcanGroup,
+      gauss_carbine: gaussGroup,
+      micro_launcher: launcherGroup,
+      chem_thrower: chemGroup,
     },
     muzzlePoint,
     muzzleFlash,
@@ -2656,4 +2794,128 @@ export function buildMortarTargetRing(radius: number): {
   group.add(outer, fill);
   return { group, fillMat };
 }
+
+export interface CombatDroneRig {
+  root: THREE.Group;
+  coreMat: THREE.MeshStandardMaterial;
+  haloMesh: THREE.Mesh;
+}
+
+export function buildCombatDroneRig(droneId: Exclude<DroneId, 'none'>): CombatDroneRig {
+  const spec = DRONE_SPECS[droneId];
+  const root = new THREE.Group();
+
+  const chassisMat = new THREE.MeshStandardMaterial({
+    color: 0x1e293b,
+    roughness: 0.35,
+    metalness: 0.78,
+  });
+  const coreMat = new THREE.MeshStandardMaterial({
+    color: spec.colorHex,
+    emissive: spec.colorHex,
+    emissiveIntensity: 2.2,
+    roughness: 0.2,
+  });
+
+  const body = new THREE.Mesh(new THREE.OctahedronGeometry(0.22, 0), chassisMat);
+  body.scale.set(1.15, 0.65, 1.3);
+  const eye = new THREE.Mesh(new THREE.SphereGeometry(0.1, 10, 8), coreMat);
+  eye.position.set(0, 0, -0.18);
+
+  const wingGeo = new THREE.BoxGeometry(0.56, 0.04, 0.14);
+  const wings = new THREE.Mesh(wingGeo, chassisMat);
+  wings.position.set(0, 0.04, 0.04);
+
+  const haloMesh = new THREE.Mesh(
+    new THREE.RingGeometry(0.28, 0.34, 20),
+    new THREE.MeshBasicMaterial({
+      color: spec.colorHex,
+      transparent: true,
+      opacity: 0.65,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    }),
+  );
+  haloMesh.rotation.x = -Math.PI / 2;
+  haloMesh.position.y = 0.08;
+
+  root.add(body, eye, wings, haloMesh);
+  return { root, coreMat, haloMesh };
+}
+
+export function buildNanoShieldDomeMesh(): THREE.Group {
+  const group = new THREE.Group();
+  const sphere = new THREE.Mesh(
+    new THREE.SphereGeometry(2.35, 22, 14, 0, Math.PI * 2, 0, Math.PI * 0.56),
+    new THREE.MeshBasicMaterial({
+      color: 0x38bdf8,
+      transparent: true,
+      opacity: 0.22,
+      wireframe: false,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    }),
+  );
+  const wire = new THREE.Mesh(
+    new THREE.SphereGeometry(2.37, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.56),
+    new THREE.MeshBasicMaterial({
+      color: 0x7dd3fc,
+      transparent: true,
+      opacity: 0.38,
+      wireframe: true,
+      depthWrite: false,
+    }),
+  );
+  const baseRing = new THREE.Mesh(
+    new THREE.RingGeometry(2.22, 2.42, 32),
+    new THREE.MeshBasicMaterial({
+      color: 0x38bdf8,
+      transparent: true,
+      opacity: 0.72,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    }),
+  );
+  baseRing.rotation.x = -Math.PI / 2;
+  baseRing.position.y = 0.04;
+  group.add(sphere, wire, baseRing);
+  group.visible = false;
+  return group;
+}
+
+export function buildSingularityVortexMesh(): THREE.Group {
+  const group = new THREE.Group();
+  const core = new THREE.Mesh(
+    new THREE.SphereGeometry(0.45, 14, 12),
+    new THREE.MeshBasicMaterial({
+      color: 0x1e1b4b,
+    }),
+  );
+  core.position.y = 0.85;
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(1.4, 2.1, 28),
+    new THREE.MeshBasicMaterial({
+      color: 0x818cf8,
+      transparent: true,
+      opacity: 0.58,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    }),
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.06;
+  const halo = new THREE.Mesh(
+    new THREE.TorusGeometry(0.95, 0.08, 8, 22),
+    new THREE.MeshBasicMaterial({
+      color: 0xc084fc,
+      transparent: true,
+      opacity: 0.72,
+    }),
+  );
+  halo.rotation.x = Math.PI / 2.4;
+  halo.position.y = 0.85;
+  group.add(core, ring, halo);
+  return group;
+}
+
 
