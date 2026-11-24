@@ -30,12 +30,28 @@ service cloud.firestore {
         && !callsign.matches('^ +$');
     }
 
+    function isValidClanTag(tag) {
+      return tag is string
+        && (tag.size() == 0 || (tag.size() >= 3 && tag.size() <= 4 && tag.matches('^[A-Z0-9]{3,4}$')));
+    }
+
+    function isValidTransferCode(code) {
+      return code is string && code.size() == 6 && code.matches('^[A-Z0-9]{6}$');
+    }
+
     function isValidDateKey(dateKey) {
       return dateKey is string && dateKey.size() == 10 && dateKey.matches('^20[0-9]{2}-[0-9]{2}-[0-9]{2}$');
     }
 
     function isValidArena(arena) {
-      return arena is string && arena in ['courtyard', 'parking_deck', 'helipad'];
+      return arena is string && arena in [
+        'courtyard',
+        'parking_deck',
+        'helipad',
+        'subway',
+        'biolab',
+        'rooftop'
+      ];
     }
 
     function isValidSkin(skinId) {
@@ -71,6 +87,8 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'uid',
           'callsign',
+          'clanTag',
+          'appVersion',
           'wave',
           'kills',
           'score',
@@ -88,6 +106,8 @@ service cloud.firestore {
         && data.uid.matches('^[a-zA-Z0-9_\\-]+$')
         && data.uid == request.auth.uid
         && isValidCallsign(data.callsign)
+        && (!('clanTag' in data) || isValidClanTag(data.clanTag))
+        && (!('appVersion' in data) || (data.appVersion is string && data.appVersion.size() >= 1 && data.appVersion.size() <= 16))
         && data.wave is int
         && data.wave >= 1
         && data.wave <= 200
@@ -98,7 +118,7 @@ service cloud.firestore {
         && data.score >= 0
         && data.score <= 100000000
         && data.mode is string
-        && data.mode in ['normal', 'storm', 'blackout', 'boss_rush', 'daily']
+        && data.mode in ['normal', 'storm', 'blackout', 'boss_rush', 'extraction', 'siege', 'weekly', 'daily']
         && isValidArena(data.arena)
         && isValidSkin(data.skinId)
         && isValidPlatform(data.platform)
@@ -128,6 +148,8 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'uid',
           'callsign',
+          'clanTag',
+          'appVersion',
           'dateKey',
           'mutator',
           'wave',
@@ -147,6 +169,8 @@ service cloud.firestore {
         && data.uid.matches('^[a-zA-Z0-9_\\-]+$')
         && data.uid == request.auth.uid
         && isValidCallsign(data.callsign)
+        && (!('clanTag' in data) || isValidClanTag(data.clanTag))
+        && (!('appVersion' in data) || (data.appVersion is string && data.appVersion.size() >= 1 && data.appVersion.size() <= 16))
         && data.dateKey is string
         && data.dateKey == dateKey
         && data.mutator is string
@@ -172,7 +196,119 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
-    // Public read-only Android APK release metadata (zero PII, admin-managed)
+    function isValidCareerMap(career) {
+      return career is map
+        && career.keys().size() <= 30
+        && career.keys().hasAll(['scrap', 'totalKills', 'bestWave', 'bestScore'])
+        && career.scrap is int
+        && career.scrap >= 0
+        && career.scrap <= 100000000
+        && career.totalKills is int
+        && career.totalKills >= 0
+        && career.totalKills <= 100000000
+        && career.bestWave is int
+        && career.bestWave >= 1
+        && career.bestWave <= 999
+        && career.bestScore is int
+        && career.bestScore >= 0
+        && career.bestScore <= 100000000;
+    }
+
+    function isValidPlayerSave(data) {
+      return data.keys().hasAll([
+          'uid',
+          'callsign',
+          'clanTag',
+          'highScore',
+          'career',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid',
+          'callsign',
+          'clanTag',
+          'highScore',
+          'career',
+          'updatedAt'
+        ])
+        && data.uid is string
+        && isValidId(data.uid)
+        && data.uid == request.auth.uid
+        && isValidCallsign(data.callsign)
+        && isValidClanTag(data.clanTag)
+        && data.highScore is int
+        && data.highScore >= 0
+        && data.highScore <= 100000000
+        && isValidCareerMap(data.career)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidTransferRecord(data, code) {
+      return data.keys().hasAll([
+          'code',
+          'ownerUid',
+          'callsign',
+          'clanTag',
+          'highScore',
+          'career',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'code',
+          'ownerUid',
+          'callsign',
+          'clanTag',
+          'highScore',
+          'career',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.code is string
+        && data.code == code
+        && isValidTransferCode(data.code)
+        && data.ownerUid is string
+        && isValidId(data.ownerUid)
+        && isValidCallsign(data.callsign)
+        && isValidClanTag(data.clanTag)
+        && data.highScore is int
+        && data.highScore >= 0
+        && data.highScore <= 100000000
+        && isValidCareerMap(data.career)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPlayerLogin(data) {
+      return data.keys().hasAll([
+          'uid',
+          'platform',
+          'host',
+          'loginCount',
+          'lastLoginAt'
+        ])
+        && data.keys().hasOnly([
+          'uid',
+          'platform',
+          'host',
+          'loginCount',
+          'lastLoginAt'
+        ])
+        && data.uid is string
+        && isValidId(data.uid)
+        && data.uid == request.auth.uid
+        && data.platform is string
+        && data.platform in ['APK', 'WEB']
+        && data.host is string
+        && data.host.size() >= 1
+        && data.host.size() <= 128
+        && data.loginCount is int
+        && data.loginCount >= 1
+        && data.loginCount <= 10000000
+        && data.lastLoginAt is timestamp;
+    }
+
+    // Public read-only release metadata for APK & Web update checker (zero PII, admin-managed)
     match /config/{configId} {
       allow get: if isValidId(configId) && configId == 'app';
       allow list: if false;
@@ -197,6 +333,8 @@ service cloud.firestore {
         && isValidLeaderboardEntry(incoming())
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'callsign',
+          'clanTag',
+          'appVersion',
           'wave',
           'kills',
           'score',
@@ -237,6 +375,8 @@ service cloud.firestore {
         && isValidDailyLeaderboardEntry(incoming(), dateKey)
         && incoming().diff(existing()).affectedKeys().hasOnly([
           'callsign',
+          'clanTag',
+          'appVersion',
           'mutator',
           'wave',
           'kills',
@@ -257,6 +397,98 @@ service cloud.firestore {
         && isValidDateKey(dateKey)
         && isValidId(playerId)
         && playerId == request.auth.uid;
+    }
+
+    // Cloud save career backup strictly scoped to the owner's anonymous Auth UID
+    match /players/{playerId} {
+      allow get: if isSignedIn() && isValidId(playerId) && playerId == request.auth.uid;
+      allow list: if false;
+
+      allow create: if isSignedIn()
+        && isValidId(playerId)
+        && playerId == request.auth.uid
+        && isValidPlayerSave(incoming())
+        && incoming().updatedAt == request.time;
+
+      allow update: if isSignedIn()
+        && isValidId(playerId)
+        && playerId == request.auth.uid
+        && isValidPlayerSave(incoming())
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'callsign',
+          'clanTag',
+          'highScore',
+          'career',
+          'updatedAt'
+        ])
+        && incoming().uid == existing().uid
+        && incoming().updatedAt == request.time;
+
+      allow delete: if isSignedIn()
+        && isValidId(playerId)
+        && playerId == request.auth.uid;
+    }
+
+    // 6-character cross-device save transfer codes (lookup by exact code only, never listable)
+    match /transfer_codes/{code} {
+      allow get: if isSignedIn() && isValidTransferCode(code);
+      allow list: if false;
+
+      allow create: if isSignedIn()
+        && isValidTransferCode(code)
+        && isValidTransferRecord(incoming(), code)
+        && incoming().ownerUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isSignedIn()
+        && isValidTransferCode(code)
+        && existing().ownerUid == request.auth.uid
+        && isValidTransferRecord(incoming(), code)
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'callsign',
+          'clanTag',
+          'highScore',
+          'career',
+          'updatedAt'
+        ])
+        && incoming().code == existing().code
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time;
+
+      allow delete: if isSignedIn()
+        && isValidTransferCode(code)
+        && existing().ownerUid == request.auth.uid;
+    }
+
+    // Silent platform login tracker per anonymous Auth UID
+    match /player_logins/{playerId} {
+      allow get: if isSignedIn() && isValidId(playerId) && playerId == request.auth.uid;
+      allow list: if false;
+
+      allow create: if isSignedIn()
+        && isValidId(playerId)
+        && playerId == request.auth.uid
+        && isValidPlayerLogin(incoming())
+        && incoming().loginCount == 1
+        && incoming().lastLoginAt == request.time;
+
+      allow update: if isSignedIn()
+        && isValidId(playerId)
+        && playerId == request.auth.uid
+        && isValidPlayerLogin(incoming())
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'platform',
+          'host',
+          'loginCount',
+          'lastLoginAt'
+        ])
+        && incoming().uid == existing().uid
+        && incoming().loginCount >= existing().loginCount
+        && incoming().lastLoginAt == request.time;
+
+      allow delete: if false;
     }
   }
 }

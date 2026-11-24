@@ -1,17 +1,32 @@
 import { ALL_DRONE_IDS, DRONE_ORDER, DRONE_SPECS } from './drones';
+import {
+  createDefaultDailyContractsState,
+  createDefaultTechLabLevels,
+  getDailyContractsForDate,
+  getTechLabUpgradeCost,
+  getUnlockedWeaponCamos,
+  refreshDailyContractsForDate,
+  TECH_LAB_MAX_TIER,
+  TECH_LAB_ORDER,
+  WEAPON_CAMO_ORDER,
+} from './phase3Meta';
 import { StorageLike } from './storage';
 import {
   CareerStats,
   DroneId,
+  EquippedWeaponCamos,
   KillsByEnemyType,
+  KillsByWeapon,
   PermanentUpgradeId,
   PermanentUpgrades,
   SkinId,
   SurvivorClassId,
+  TechLabUpgradeId,
+  WeaponCamoId,
   WeaponId,
   ZombieKind,
 } from './types';
-import { PHASE1_ARMORY_WEAPONS, WEAPON_SPECS } from './weapons';
+import { PHASE1_ARMORY_WEAPONS, WEAPON_ORDER, WEAPON_SPECS } from './weapons';
 
 export const CAREER_STORAGE_KEY = 'nightfall_courtyard_career_v1';
 
@@ -24,6 +39,12 @@ export const ZOMBIE_KIND_ORDER: ZombieKind[] = [
   'breacher',
   'bomber',
   'howler',
+  'juggernaut',
+  'siege_breaker',
+  'necromancer',
+  'matriarch',
+  'crawler',
+  'ravager',
   'boss',
 ];
 
@@ -574,11 +595,59 @@ export const BESTIARY_ENTRIES: BestiaryEntrySpec[] = [
     accentHex: '#38bdf8',
   },
   {
+    kind: 'juggernaut',
+    name: 'Juggernaut Charger',
+    threatLevel: 'Severe',
+    firstWave: 'Wave 4+',
+    intelNote: 'Heavy frontal armor reduces rapid gunfire by 60% until shattered by Gauss, Railgun, Katana, Chem, or explosives. Charges straight through floor traps.',
+    accentHex: '#f59e0b',
+  },
+  {
+    kind: 'siege_breaker',
+    name: 'Siege Breaker',
+    threatLevel: 'Severe',
+    firstWave: 'Wave 5+',
+    intelNote: 'Anti-fortification hunter that prioritizes smashing player Tripmines, Decoys, Wire, Mines, and Auto-Turrets.',
+    accentHex: '#ef4444',
+  },
+  {
+    kind: 'necromancer',
+    name: 'Necromancer',
+    threatLevel: 'Severe',
+    firstWave: 'Wave 6+',
+    intelNote: 'Holds perimeter sightlines, fires dark bolts, and raises nearby fallen corpses with cyan overshields.',
+    accentHex: '#c084fc',
+  },
+  {
+    kind: 'matriarch',
+    name: 'Hive Matriarch',
+    threatLevel: 'Severe',
+    firstWave: 'Wave 8+',
+    intelNote: 'Armored brood carrier continuously spawning Hive Crawlers until eliminated.',
+    accentHex: '#10b981',
+  },
+  {
+    kind: 'crawler',
+    name: 'Hive Crawler',
+    threatLevel: 'Low',
+    firstWave: 'Wave 8+',
+    intelNote: 'Agile swarm scuttler spawned by Hive Matriarchs to overwhelm reloading defenders.',
+    accentHex: '#34d399',
+  },
+  {
+    kind: 'ravager',
+    name: 'Apex Ravager',
+    threatLevel: 'Apex',
+    firstWave: 'Wave 12+',
+    intelNote: 'Mini-boss hunter that side-steps straight-line aim and leaps cleanly over floor traps.',
+    accentHex: '#f43f5e',
+  },
+  {
     kind: 'boss',
     name: 'Iron Warden',
     threatLevel: 'Apex',
     firstWave: 'Every 5th Wave',
-    intelNote: 'Siege colossus that enrages below 50% HP with shock slams and minion summons.',
+    intelNote: '3-Phase Siege Colossus: activates an invulnerable P2 shield backed by 2 Power Pylons at 65% HP and enrages with sweeping beams & mortars below 30% HP.',
     accentHex: '#f43f5e',
   },
 ];
@@ -612,6 +681,12 @@ export function createDefaultKillsByEnemyType(): KillsByEnemyType {
     breacher: 0,
     bomber: 0,
     howler: 0,
+    juggernaut: 0,
+    siege_breaker: 0,
+    necromancer: 0,
+    matriarch: 0,
+    crawler: 0,
+    ravager: 0,
     boss: 0,
   };
 }
@@ -625,18 +700,31 @@ export function createDefaultPermanentUpgrades(): PermanentUpgrades {
   };
 }
 
+export function createDefaultKillsByWeapon(): KillsByWeapon {
+  const out = {} as KillsByWeapon;
+  for (const w of WEAPON_ORDER) {
+    out[w] = 0;
+  }
+  return out;
+}
+
 export function createDefaultCareerStats(): CareerStats {
   return {
     totalKills: 0,
     bestWave: 1,
     bestScore: 0,
     bossesKilled: 0,
+    totalExtractions: 0,
     scrap: 0,
     killsByEnemyType: createDefaultKillsByEnemyType(),
+    killsByWeapon: createDefaultKillsByWeapon(),
+    equippedCamos: {},
     unlockedSkins: ['nightwatch'],
     equippedSkinId: 'nightwatch',
     selectedClass: 'vanguard',
     permanentUpgrades: createDefaultPermanentUpgrades(),
+    techLab: createDefaultTechLabLevels(),
+    dailyContracts: createDefaultDailyContractsState(),
     unlockedWeapons: [],
     unlockedDrones: [],
     equippedDrone: 'none',
@@ -663,6 +751,7 @@ export function sanitizeCareerStats(raw: unknown): CareerStats {
   base.bestWave = Math.max(1, Math.floor(Number(obj.bestWave) || 1));
   base.bestScore = Math.max(0, Math.round(Number(obj.bestScore) || 0));
   base.bossesKilled = Math.max(0, Math.floor(Number(obj.bossesKilled) || 0));
+  base.totalExtractions = Math.max(0, Math.floor(Number(obj.totalExtractions) || 0));
   base.scrap = Math.max(0, Math.floor(Number(obj.scrap) || 0));
 
   if (obj.killsByEnemyType && typeof obj.killsByEnemyType === 'object') {
@@ -670,6 +759,27 @@ export function sanitizeCareerStats(raw: unknown): CareerStats {
       const val = Number(obj.killsByEnemyType[k]);
       base.killsByEnemyType[k] = Number.isFinite(val) && val > 0 ? Math.floor(val) : 0;
     }
+  }
+
+  if (obj.killsByWeapon && typeof obj.killsByWeapon === 'object') {
+    for (const w of WEAPON_ORDER) {
+      const val = Number(obj.killsByWeapon[w]);
+      base.killsByWeapon[w] = Number.isFinite(val) && val > 0 ? Math.floor(val) : 0;
+    }
+  }
+
+  if (obj.equippedCamos && typeof obj.equippedCamos === 'object') {
+    const cleanCamos: EquippedWeaponCamos = {};
+    for (const w of WEAPON_ORDER) {
+      const c = obj.equippedCamos[w];
+      if (typeof c === 'string' && WEAPON_CAMO_ORDER.includes(c as WeaponCamoId)) {
+        const unlocked = getUnlockedWeaponCamos(base.killsByWeapon[w]);
+        if (unlocked.includes(c as WeaponCamoId)) {
+          cleanCamos[w] = c as WeaponCamoId;
+        }
+      }
+    }
+    base.equippedCamos = cleanCamos;
   }
 
   if (obj.permanentUpgrades && typeof obj.permanentUpgrades === 'object') {
@@ -680,6 +790,16 @@ export function sanitizeCareerStats(raw: unknown): CareerStats {
         Number.isFinite(val) && val > 0 ? Math.min(maxLv, Math.floor(val)) : 0;
     }
   }
+
+  if (obj.techLab && typeof obj.techLab === 'object') {
+    for (const k of TECH_LAB_ORDER) {
+      const val = Number(obj.techLab[k]);
+      base.techLab[k] =
+        Number.isFinite(val) && val > 0 ? Math.min(TECH_LAB_MAX_TIER, Math.floor(val)) : 0;
+    }
+  }
+
+  base.dailyContracts = refreshDailyContractsForDate(obj.dailyContracts);
 
   const unlockedSet = new Set<SkinId>(['nightwatch']);
   if (Array.isArray(obj.unlockedSkins)) {
@@ -772,12 +892,15 @@ export function computeRunScrapReward(params: {
   kills: number;
   bossesKilledInRun: number;
   rewardMultiplier?: number;
+  techLabScrapMult?: number;
 }): number {
+  if (params.rewardMultiplier === 0) return 0;
   const w = Math.max(1, Math.floor(params.wave));
   const k = Math.max(0, Math.floor(params.kills));
   const b = Math.max(0, Math.floor(params.bossesKilledInRun));
   const mult = Math.max(1, params.rewardMultiplier ?? 1);
-  return Math.max(5, Math.round((w * 6 + k * 0.35 + b * 20) * mult));
+  const techMult = Math.max(1, params.techLabScrapMult ?? 1);
+  return Math.max(5, Math.round((w * 6 + k * 0.35 + b * 20) * mult * techMult));
 }
 
 export function purchasePermanentUpgrade(
@@ -845,6 +968,66 @@ export function unlockOrEquipDrone(
   next.unlockedDrones.push(droneId);
   next.equippedDrone = droneId;
   return { changed: true, purchased: true, career: next };
+}
+
+export function purchaseTechLabUpgrade(
+  career: CareerStats,
+  id: TechLabUpgradeId,
+): { purchased: boolean; career: CareerStats; newTier: number } {
+  const next = sanitizeCareerStats(career);
+  const currentTier = next.techLab[id] ?? 0;
+  if (currentTier >= TECH_LAB_MAX_TIER) {
+    return { purchased: false, career: next, newTier: currentTier };
+  }
+  const cost = getTechLabUpgradeCost(id, currentTier);
+  if (next.scrap < cost) {
+    return { purchased: false, career: next, newTier: currentTier };
+  }
+  next.scrap -= cost;
+  next.techLab[id] = currentTier + 1;
+  return { purchased: true, career: next, newTier: currentTier + 1 };
+}
+
+export function equipWeaponCamo(
+  career: CareerStats,
+  weaponId: WeaponId,
+  camoId: WeaponCamoId,
+): { changed: boolean; career: CareerStats } {
+  const next = sanitizeCareerStats(career);
+  if (!WEAPON_ORDER.includes(weaponId)) {
+    return { changed: false, career: next };
+  }
+  const kills = next.killsByWeapon[weaponId] ?? 0;
+  const unlocked = getUnlockedWeaponCamos(kills);
+  if (!unlocked.includes(camoId)) {
+    return { changed: false, career: next };
+  }
+  if (next.equippedCamos[weaponId] === camoId) {
+    return { changed: false, career: next };
+  }
+  next.equippedCamos[weaponId] = camoId;
+  return { changed: true, career: next };
+}
+
+export function claimCareerDailyContract(
+  career: CareerStats,
+  contractId: string,
+  dateKey?: string,
+): { claimed: boolean; reward: number; career: CareerStats } {
+  const next = sanitizeCareerStats(career);
+  next.dailyContracts = refreshDailyContractsForDate(next.dailyContracts, dateKey);
+  const active = getDailyContractsForDate(next.dailyContracts.dateKey);
+  const spec = active.find((c) => c.id === contractId);
+  if (!spec) {
+    return { claimed: false, reward: 0, career: next };
+  }
+  const progress = next.dailyContracts.progress[contractId] ?? 0;
+  if (progress < spec.target || next.dailyContracts.claimedIds.includes(contractId)) {
+    return { claimed: false, reward: 0, career: next };
+  }
+  next.dailyContracts.claimedIds.push(contractId);
+  next.scrap += spec.scrapReward;
+  return { claimed: true, reward: spec.scrapReward, career: next };
 }
 
 function getBrowserStorage(): StorageLike | null {

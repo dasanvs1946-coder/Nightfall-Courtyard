@@ -1,5 +1,15 @@
 import React from 'react';
-import { Bot, Check, Crosshair, Lock, Shield, Wrench, Zap } from 'lucide-react';
+import {
+  Bot,
+  CalendarCheck,
+  Check,
+  Cpu,
+  Crosshair,
+  Lock,
+  Shield,
+  Wrench,
+  Zap,
+} from 'lucide-react';
 import {
   CLASS_ORDER,
   CLASS_SPECS,
@@ -11,10 +21,19 @@ import {
 } from '../game/career';
 import { DRONE_ORDER, DRONE_SPECS } from '../game/drones';
 import {
+  getDailyContractsForDate,
+  getTechLabUpgradeCost,
+  refreshDailyContractsForDate,
+  TECH_LAB_MAX_TIER,
+  TECH_LAB_ORDER,
+  TECH_LAB_SPECS,
+} from '../game/phase3Meta';
+import {
   CareerStats,
   DroneId,
   PermanentUpgradeId,
   SurvivorClassId,
+  TechLabUpgradeId,
   WeaponId,
 } from '../game/types';
 import { ULTIMATE_SPECS } from '../game/ultimates';
@@ -24,6 +43,8 @@ interface WorkshopPanelProps {
   career: CareerStats;
   onSelectClass: (classId: SurvivorClassId) => void;
   onBuyPermanentUpgrade: (id: PermanentUpgradeId) => void;
+  onBuyTechLabUpgrade: (id: TechLabUpgradeId) => void;
+  onClaimDailyContract: (contractId: string) => void;
   onUnlockArmoryWeapon: (weaponId: WeaponId) => void;
   onSelectOrUnlockDrone: (droneId: DroneId) => void;
 }
@@ -32,9 +53,17 @@ export const WorkshopPanel: React.FC<WorkshopPanelProps> = ({
   career,
   onSelectClass,
   onBuyPermanentUpgrade,
+  onBuyTechLabUpgrade,
+  onClaimDailyContract,
   onUnlockArmoryWeapon,
   onSelectOrUnlockDrone,
 }) => {
+  const refreshedContracts = refreshDailyContractsForDate(career.dailyContracts);
+  const dailyContractSpecs = getDailyContractsForDate(refreshedContracts.dateKey);
+  const totalTechTiers = TECH_LAB_ORDER.reduce(
+    (sum, id) => sum + (career.techLab[id] ?? 0),
+    0,
+  );
   return (
     <div
       data-testid="workshop-panel"
@@ -203,6 +232,183 @@ export const WorkshopPanel: React.FC<WorkshopPanelProps> = ({
                   }`}
                 >
                   {isMax ? 'Maxed' : `${cost} Scrap`}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Permanent TECH LAB Skill Tree (5 Tiers) */}
+      <div className="border-t border-slate-800 pt-3">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 text-xs font-extrabold tracking-wider text-white uppercase">
+            <Cpu className="h-3.5 w-3.5 text-cyan-300" />
+            <span>TECH LAB Skill Tree</span>
+          </div>
+          <span className="font-mono-tabular text-[10px] font-semibold text-cyan-300">
+            {totalTechTiers}/{TECH_LAB_ORDER.length * TECH_LAB_MAX_TIER} Tiers
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {TECH_LAB_ORDER.map((id) => {
+            const spec = TECH_LAB_SPECS[id];
+            const tier = career.techLab[id] ?? 0;
+            const isMax = tier >= TECH_LAB_MAX_TIER;
+            const cost = getTechLabUpgradeCost(id, tier);
+            const canAfford = !isMax && career.scrap >= cost;
+
+            return (
+              <div
+                key={id}
+                data-testid={`tech-lab-${id}`}
+                className="flex flex-col justify-between gap-2 rounded-xl border border-slate-800 bg-[#0e111a] p-2.5"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span
+                        className="rounded px-1.5 py-0.5 text-[9px] font-extrabold tracking-wider uppercase"
+                        style={{
+                          backgroundColor: `${spec.accentHex}22`,
+                          color: spec.accentHex,
+                        }}
+                      >
+                        {spec.branchTag}
+                      </span>
+                      <span className="truncate text-xs font-extrabold tracking-wide text-white uppercase">
+                        {spec.name}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-[10px] leading-snug text-slate-300">
+                      {spec.effectSummary}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    data-testid={`buy-tech-${id}`}
+                    disabled={!canAfford || isMax}
+                    onClick={(e) => {
+                      e.currentTarget.blur();
+                      if (canAfford && !isMax) {
+                        onBuyTechLabUpgrade(id);
+                      }
+                    }}
+                    className={`font-mono-tabular min-h-[36px] shrink-0 cursor-pointer rounded-lg px-2.5 py-1 text-[10px] font-extrabold tracking-wider uppercase ${
+                      isMax
+                        ? 'border border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
+                        : canAfford
+                          ? 'bg-cyan-400 text-slate-950 hover:bg-cyan-300'
+                          : 'cursor-not-allowed border border-slate-800 bg-slate-950 text-slate-500'
+                    }`}
+                  >
+                    {isMax ? 'Tier 5/5' : `${cost} Scrap`}
+                  </button>
+                </div>
+
+                {/* 5-Tier Segment Bar */}
+                <div className="grid grid-cols-5 gap-1">
+                  {[0, 1, 2, 3, 4].map((idx) => (
+                    <div
+                      key={idx}
+                      className="h-1.5 rounded-sm"
+                      style={{
+                        backgroundColor:
+                          idx < tier ? spec.accentHex : 'rgba(30, 41, 59, 0.9)',
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* 3 Rotating Daily Contracts */}
+      <div className="border-t border-slate-800 pt-3">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 text-xs font-extrabold tracking-wider text-white uppercase">
+            <CalendarCheck className="h-3.5 w-3.5 text-amber-400" />
+            <span>Daily Contracts ({refreshedContracts.dateKey})</span>
+          </div>
+          <span className="font-mono-tabular text-[10px] font-semibold text-slate-400">
+            {refreshedContracts.claimedIds.length}/{dailyContractSpecs.length} Claimed
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 gap-2">
+          {dailyContractSpecs.map((spec) => {
+            const rawProg = Math.min(
+              spec.target,
+              refreshedContracts.progress[spec.id] ?? 0,
+            );
+            const claimed = refreshedContracts.claimedIds.includes(spec.id);
+            const complete = rawProg >= spec.target;
+            const ratio = spec.target > 0 ? Math.min(1, rawProg / spec.target) : 1;
+            const fmtVal = (v: number) =>
+              spec.valueScale
+                ? `${(v / spec.valueScale).toFixed(1)}${spec.valueSuffix ?? ''}`
+                : String(v);
+
+            return (
+              <div
+                key={spec.id}
+                data-testid={`daily-contract-${spec.id}`}
+                className={`flex flex-wrap items-center justify-between gap-2 rounded-xl border p-2.5 ${
+                  complete && !claimed
+                    ? 'border-amber-400/75 bg-amber-950/20'
+                    : 'border-slate-800 bg-[#0e111a]'
+                }`}
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-extrabold tracking-wide text-white uppercase">
+                      {spec.title}
+                    </span>
+                    <span className="font-mono-tabular rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-bold text-amber-300">
+                      +{spec.scrapReward} SCRAP
+                    </span>
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-slate-300">
+                    {spec.description}
+                  </div>
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <div className="h-1.5 flex-1 overflow-hidden rounded-sm bg-slate-950">
+                      <div
+                        className="h-full transition-[width] duration-200"
+                        style={{
+                          width: `${Math.round(ratio * 100)}%`,
+                          backgroundColor: claimed ? '#22c55e' : spec.accentHex,
+                        }}
+                      />
+                    </div>
+                    <span className="font-mono-tabular text-[10px] font-bold text-slate-300">
+                      {fmtVal(rawProg)}/{fmtVal(spec.target)}
+                    </span>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  data-testid={`claim-contract-${spec.id}`}
+                  disabled={!complete || claimed}
+                  onClick={(e) => {
+                    e.currentTarget.blur();
+                    if (complete && !claimed) {
+                      onClaimDailyContract(spec.id);
+                    }
+                  }}
+                  className={`font-mono-tabular min-h-[36px] shrink-0 cursor-pointer rounded-lg px-3 py-1 text-[10px] font-extrabold tracking-wider uppercase ${
+                    claimed
+                      ? 'border border-emerald-500/40 bg-emerald-500/15 text-emerald-300'
+                      : complete
+                        ? 'bg-amber-500 text-slate-950 hover:bg-amber-400'
+                        : 'cursor-not-allowed border border-slate-800 bg-slate-950 text-slate-500'
+                  }`}
+                >
+                  {claimed ? 'Claimed' : complete ? 'Claim Scrap' : 'In Progress'}
                 </button>
               </div>
             );

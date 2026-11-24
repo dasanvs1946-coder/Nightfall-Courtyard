@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   ChevronLeft,
   ChevronRight,
@@ -7,7 +7,10 @@ import {
   CloudRain,
   Moon,
   Pause,
+  PlaneTakeoff,
+  Shield,
   Skull,
+  SlidersHorizontal,
   Volume2,
   VolumeX,
   Zap,
@@ -20,10 +23,11 @@ import {
   GadgetId,
   HudSnapshot,
   TacticalGearId,
+  TouchHudSettings,
   UpgradeId,
   WeaponId,
 } from '../game/types';
-import { WEAPON_SPECS } from '../game/weapons';
+import { WEAPON_ORDER, WEAPON_SPECS } from '../game/weapons';
 import { WEATHER_PRESETS } from '../game/weather';
 import { ActionControls } from './ActionControls';
 import { Minimap } from './Minimap';
@@ -34,6 +38,7 @@ interface HudOverlayProps {
   hud: HudSnapshot;
   floatingDamages: FloatingDamage[];
   upgradesOpen: boolean;
+  touchHud: TouchHudSettings;
   onMoveStick: (x: number, y: number) => void;
   onAimStick: (x: number, y: number, active: boolean) => void;
   onDash: () => void;
@@ -52,12 +57,22 @@ interface HudOverlayProps {
   onToggleUpgrades: () => void;
   onBuyUpgrade: (id: UpgradeId) => void;
   onBuyMastery: (weaponId: WeaponId) => void;
+  onWaveOffExtraction: () => void;
+  onSandboxSpawnEnemy: (
+    kind: 'walker' | 'juggernaut' | 'elite_squad' | 'boss',
+  ) => void;
+  onSandboxEquipWeapon: (weaponId: WeaponId) => void;
+  onSandboxTriggerEvolution: () => void;
+  onSandboxChargeUltimate: () => void;
+  onSandboxRefill: () => void;
+  onSandboxClearEnemies: () => void;
 }
 
 export const HudOverlay: React.FC<HudOverlayProps> = ({
   hud,
   floatingDamages,
   upgradesOpen,
+  touchHud,
   onMoveStick,
   onAimStick,
   onDash,
@@ -76,7 +91,15 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
   onToggleUpgrades,
   onBuyUpgrade,
   onBuyMastery,
+  onWaveOffExtraction,
+  onSandboxSpawnEnemy,
+  onSandboxEquipWeapon,
+  onSandboxTriggerEvolution,
+  onSandboxChargeUltimate,
+  onSandboxRefill,
+  onSandboxClearEnemies,
 }) => {
+  const [sandboxOpen, setSandboxOpen] = useState(true);
   const activeWeaponState =
     hud.weapons.find((w) => w.id === hud.activeWeapon) ?? hud.weapons[0];
   const unlockedWeapons = hud.weapons.filter((w) => w.unlocked);
@@ -208,7 +231,7 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
         {/* Top-Left Column: Health, Wave, Score + Mode Tag + Small Upgrades Tab */}
         <div className="flex flex-col items-start">
           <div
-            className="pointer-events-auto flex w-[142px] flex-col gap-1 rounded-xl border border-slate-700/70 px-2 py-1.5 sm:w-auto sm:min-w-[235px] sm:gap-1.5 sm:px-3 sm:py-2"
+            className="pointer-events-auto flex w-[156px] flex-col gap-1 rounded-xl border border-slate-700/70 px-2 py-1.5 sm:w-auto sm:min-w-[248px] sm:gap-1.5 sm:px-3 sm:py-2"
             style={{ backgroundColor: 'rgba(10, 15, 24, 0.86)' }}
           >
             <div className="flex items-center justify-between gap-1.5 sm:gap-4">
@@ -241,7 +264,7 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
             </div>
 
             {/* Health bar with delayed ghost damage bar */}
-            <div className="relative h-2 w-full overflow-hidden rounded-sm bg-slate-900 sm:h-2.5 sm:w-52">
+            <div className="relative h-2 w-full overflow-hidden rounded-sm bg-slate-900 sm:h-2.5 sm:w-56">
               <div
                 className="absolute inset-y-0 left-0 bg-red-500/75"
                 style={{ width: `${ghostPct}%` }}
@@ -271,6 +294,17 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
                   {hud.highScore}
                 </span>
               </div>
+              <div className="flex items-baseline gap-1">
+                <span className="text-[9px] font-semibold tracking-wider text-cyan-400 uppercase sm:text-[10px]">
+                  Scrap
+                </span>
+                <span
+                  data-testid="in-run-scrap"
+                  className="font-mono-tabular font-bold text-cyan-200"
+                >
+                  {hud.inRunScrap}
+                </span>
+              </div>
             </div>
           </div>
 
@@ -295,6 +329,165 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
             onEquipGear={onEquipGear}
             onEquipGadget={onEquipGadget}
           />
+
+          {/* Collapsible Sandbox Command Panel */}
+          {hud.sandboxMode && !upgradesOpen && (
+            <div
+              data-testid="sandbox-panel"
+              className="pointer-events-auto mt-1.5 w-[210px] rounded-xl border border-slate-700/80 p-2 sm:w-[258px]"
+              style={{ backgroundColor: 'rgba(9, 13, 22, 0.92)' }}
+            >
+              <button
+                type="button"
+                tabIndex={-1}
+                data-testid="sandbox-toggle-btn"
+                onClick={(e) => {
+                  e.currentTarget.blur();
+                  setSandboxOpen((prev) => !prev);
+                }}
+                className="flex w-full cursor-pointer items-center justify-between text-[10px] font-extrabold tracking-wider text-amber-300 uppercase"
+              >
+                <span className="flex items-center gap-1">
+                  <SlidersHorizontal className="h-3 w-3" />
+                  <span>Sandbox Deck</span>
+                </span>
+                <span className="text-slate-400">
+                  {sandboxOpen ? 'Hide' : 'Show'}
+                </span>
+              </button>
+
+              {sandboxOpen && (
+                <div className="mt-2 flex flex-col gap-1.5">
+                  <div className="grid grid-cols-2 gap-1">
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      data-testid="sandbox-spawn-walker"
+                      onClick={(e) => {
+                        e.currentTarget.blur();
+                        onSandboxSpawnEnemy('walker');
+                      }}
+                      className="cursor-pointer rounded border border-slate-700 bg-slate-900 px-1.5 py-1 text-[9px] font-bold text-slate-200 uppercase hover:border-amber-400"
+                    >
+                      + Walker
+                    </button>
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      data-testid="sandbox-spawn-juggernaut"
+                      onClick={(e) => {
+                        e.currentTarget.blur();
+                        onSandboxSpawnEnemy('juggernaut');
+                      }}
+                      className="cursor-pointer rounded border border-amber-500/50 bg-amber-950/35 px-1.5 py-1 text-[9px] font-bold text-amber-200 uppercase hover:border-amber-400"
+                    >
+                      + Juggernaut
+                    </button>
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      data-testid="sandbox-spawn-elite"
+                      onClick={(e) => {
+                        e.currentTarget.blur();
+                        onSandboxSpawnEnemy('elite_squad');
+                      }}
+                      className="cursor-pointer rounded border border-purple-500/50 bg-purple-950/35 px-1.5 py-1 text-[9px] font-bold text-purple-200 uppercase hover:border-purple-400"
+                    >
+                      + Elite Squad
+                    </button>
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      data-testid="sandbox-spawn-boss"
+                      onClick={(e) => {
+                        e.currentTarget.blur();
+                        onSandboxSpawnEnemy('boss');
+                      }}
+                      className="cursor-pointer rounded border border-rose-500/50 bg-rose-950/35 px-1.5 py-1 text-[9px] font-bold text-rose-200 uppercase hover:border-rose-400"
+                    >
+                      + Iron Warden
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-1">
+                    <label
+                      htmlFor="sandbox-weapon-select"
+                      className="text-[9px] font-bold text-slate-400 uppercase"
+                    >
+                      Arm
+                    </label>
+                    <select
+                      id="sandbox-weapon-select"
+                      data-testid="sandbox-weapon-select"
+                      value={hud.activeWeapon}
+                      onChange={(e) => {
+                        onSandboxEquipWeapon(e.target.value as WeaponId);
+                        e.currentTarget.blur();
+                      }}
+                      className="font-mono-tabular h-6 flex-1 rounded border border-slate-700 bg-slate-950 px-1 text-[10px] font-bold text-amber-300 uppercase focus:border-amber-400 focus:outline-none"
+                    >
+                      {WEAPON_ORDER.map((wId) => (
+                        <option key={wId} value={wId}>
+                          {WEAPON_SPECS[wId].shortCode} · {WEAPON_SPECS[wId].name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="grid grid-cols-4 gap-1">
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      data-testid="sandbox-evolve-btn"
+                      onClick={(e) => {
+                        e.currentTarget.blur();
+                        onSandboxTriggerEvolution();
+                      }}
+                      className="cursor-pointer rounded border border-amber-400/60 bg-amber-500/20 px-1 py-1 text-[9px] font-extrabold text-amber-200 uppercase hover:bg-amber-500/35"
+                    >
+                      All Evo
+                    </button>
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      data-testid="sandbox-ult-btn"
+                      onClick={(e) => {
+                        e.currentTarget.blur();
+                        onSandboxChargeUltimate();
+                      }}
+                      className="cursor-pointer rounded border border-purple-400/60 bg-purple-500/20 px-1 py-1 text-[9px] font-extrabold text-purple-200 uppercase hover:bg-purple-500/35"
+                    >
+                      Max Ult
+                    </button>
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      data-testid="sandbox-refill-btn"
+                      onClick={(e) => {
+                        e.currentTarget.blur();
+                        onSandboxRefill();
+                      }}
+                      className="cursor-pointer rounded border border-emerald-400/60 bg-emerald-500/20 px-1 py-1 text-[9px] font-extrabold text-emerald-200 uppercase hover:bg-emerald-500/35"
+                    >
+                      Refill
+                    </button>
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      data-testid="sandbox-clear-btn"
+                      onClick={(e) => {
+                        e.currentTarget.blur();
+                        onSandboxClearEnemies();
+                      }}
+                      className="cursor-pointer rounded border border-slate-600 bg-slate-800 px-1 py-1 text-[9px] font-extrabold text-slate-200 uppercase hover:bg-slate-700"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Top-Right: Weapon, Ammo, Powerups, Mode/Gen Tags, Weather & Utility Buttons */}
@@ -420,6 +613,15 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
                   {modeSpec.shortLabel}
                 </div>
               )}
+              {hud.mode === 'weekly' && hud.weeklyMutatorName && (
+                <div
+                  data-testid="weekly-mutator-hud-badge"
+                  className="font-mono-tabular rounded-xl border border-orange-400/60 px-2 py-0.5 text-[9px] font-extrabold tracking-wider text-orange-300 uppercase sm:py-1 sm:text-[10px]"
+                  style={{ backgroundColor: 'rgba(20, 12, 8, 0.9)' }}
+                >
+                  {hud.weeklyMutatorName}
+                </div>
+              )}
               {hud.equippedDrone !== 'none' && (
                 <div
                   data-testid="drone-badge"
@@ -445,6 +647,16 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
                 >
                   <Zap className="h-3 w-3" />
                   <span>GEN {poweredGenCount}/2</span>
+                </div>
+              )}
+              {hud.overchargeRemaining > 0 && (
+                <div
+                  data-testid="overcharge-badge"
+                  className="font-mono-tabular flex items-center gap-1 rounded-xl border border-amber-400/60 px-2 py-0.5 text-[9px] font-extrabold text-amber-300 uppercase sm:py-1 sm:text-[10px]"
+                  style={{ backgroundColor: 'rgba(10, 15, 24, 0.88)' }}
+                >
+                  <Zap className="h-3 w-3" />
+                  <span>+20% ROF {hud.overchargeRemaining.toFixed(1)}s</span>
                 </div>
               )}
               {hud.showFps && (
@@ -509,8 +721,125 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
         </div>
       </div>
 
-      {/* Killstreak Combo, Boss Health Bar, Generator Ring Capture & Transient Banners */}
+      {/* Killstreak Combo, Next Rival, Boss Health Bar, Generator Ring Capture & Transient Banners */}
       <div className="pointer-events-none relative z-20 mt-2 mb-auto flex w-[min(360px,92vw)] flex-col items-center gap-1.5 self-center">
+        {hud.rivalOvertakenBanner && !upgradesOpen && (
+          <div
+            data-testid="rival-overtaken-banner"
+            className="font-mono-tabular w-full rounded-xl border border-emerald-400/90 px-3 py-1 text-center text-[10px] font-extrabold tracking-wider text-emerald-200 uppercase shadow-[0_0_24px_rgba(34,197,94,0.35)] sm:text-xs"
+            style={{ backgroundColor: 'rgba(6, 28, 18, 0.94)' }}
+          >
+            {hud.rivalOvertakenBanner}
+          </div>
+        )}
+
+        {hud.nextRival && !upgradesOpen && !hud.sandboxMode && (
+          <div
+            data-testid="next-rival-bar"
+            className="font-mono-tabular flex w-full items-center justify-between gap-2 rounded-xl border border-amber-500/45 px-2.5 py-1 text-[9px] font-bold tracking-wider uppercase sm:text-[10px]"
+            style={{ backgroundColor: 'rgba(10, 14, 24, 0.88)' }}
+          >
+            <span className="truncate text-slate-300">
+              NEXT RIVAL{' '}
+              <span className="font-extrabold text-amber-300">
+                #{hud.nextRival.rank}{' '}
+                {hud.nextRival.clanTag ? `[${hud.nextRival.clanTag}] ` : ''}
+                {hud.nextRival.callsign}
+              </span>
+            </span>
+            <span className="shrink-0 font-extrabold text-cyan-300">
+              {hud.nextRival.scoreToOvertake.toLocaleString()} PTS
+            </span>
+          </div>
+        )}
+
+        {hud.reactorCore && !upgradesOpen && (
+          <div
+            data-testid="siege-core-bar"
+            className="w-full rounded-xl border border-cyan-400/75 px-3 py-1.5 shadow-[0_0_22px_rgba(34,211,238,0.2)]"
+            style={{ backgroundColor: 'rgba(8, 18, 28, 0.92)' }}
+          >
+            <div className="flex items-center justify-between gap-2 text-[10px] font-extrabold tracking-wider uppercase sm:text-xs">
+              <span className="flex items-center gap-1.5 text-cyan-300">
+                <Shield className="h-3.5 w-3.5 text-cyan-300" />
+                <span>Power Core Integrity</span>
+              </span>
+              <span className="font-mono-tabular text-cyan-100">
+                {hud.reactorCore.hp}/{hud.reactorCore.maxHp}
+              </span>
+            </div>
+            <div className="mt-1 h-2 w-full overflow-hidden rounded-sm bg-slate-950">
+              <div
+                className={`h-full transition-[width] duration-100 ${
+                  hud.reactorCore.hp / Math.max(1, hud.reactorCore.maxHp) <= 0.3
+                    ? 'bg-rose-500'
+                    : 'bg-cyan-400'
+                }`}
+                style={{
+                  width: `${Math.max(
+                    0,
+                    Math.min(
+                      100,
+                      (hud.reactorCore.hp / Math.max(1, hud.reactorCore.maxHp)) * 100,
+                    ),
+                  )}%`,
+                }}
+              />
+            </div>
+          </div>
+        )}
+
+        {hud.extractionState && hud.extractionState.active && !upgradesOpen && (
+          <div
+            data-testid="extraction-banner"
+            className="pointer-events-auto w-full rounded-xl border border-emerald-400/80 px-3 py-2 shadow-[0_0_26px_rgba(34,197,94,0.28)]"
+            style={{ backgroundColor: 'rgba(8, 24, 18, 0.94)' }}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 text-[10px] font-extrabold tracking-wider text-emerald-300 uppercase sm:text-xs">
+                <PlaneTakeoff className="h-3.5 w-3.5 text-emerald-400" />
+                <span>
+                  Chopper Exfil ({hud.extractionState.multiplier}x Scrap)
+                </span>
+              </div>
+              <button
+                type="button"
+                tabIndex={-1}
+                data-testid="wave-off-extraction"
+                onClick={(e) => {
+                  e.currentTarget.blur();
+                  onWaveOffExtraction();
+                }}
+                className="cursor-pointer rounded border border-amber-400/75 bg-amber-500/20 px-2 py-0.5 text-[10px] font-extrabold tracking-wider text-amber-200 uppercase hover:bg-amber-500 hover:text-slate-950"
+              >
+                Wave Off [X]
+              </button>
+            </div>
+            <div className="font-mono-tabular mt-1 flex items-center justify-between text-[10px] text-emerald-100">
+              <span>Hold Central Landing Pad</span>
+              <span>
+                {hud.extractionState.holdProgress.toFixed(1)}s /{' '}
+                {hud.extractionState.holdSecRequired}s
+              </span>
+            </div>
+            <div className="mt-1 h-2 w-full overflow-hidden rounded-sm bg-slate-950">
+              <div
+                className="h-full bg-emerald-400 transition-[width] duration-75"
+                style={{
+                  width: `${Math.min(
+                    100,
+                    Math.round(
+                      (hud.extractionState.holdProgress /
+                        Math.max(1, hud.extractionState.holdSecRequired)) *
+                        100,
+                    ),
+                  )}%`,
+                }}
+              />
+            </div>
+          </div>
+        )}
+
         {hud.comboCount >= 2 && !upgradesOpen && (
           <div
             data-testid="combo-badge"
@@ -538,31 +867,152 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
           <div
             data-testid="boss-health-bar"
             className={`w-full rounded-xl border px-3 py-1.5 ${
-              hud.activeBoss.phase2
-                ? 'border-amber-400/80 shadow-[0_0_24px_rgba(244,63,94,0.3)]'
-                : 'border-rose-500/60'
+              hud.activeBoss.shielded
+                ? 'border-cyan-400/80 shadow-[0_0_24px_rgba(34,211,238,0.28)]'
+                : hud.activeBoss.phase === 3
+                  ? 'border-rose-400/90 shadow-[0_0_26px_rgba(244,63,94,0.42)]'
+                  : hud.activeBoss.phase === 2 || hud.activeBoss.phase2
+                    ? 'border-amber-400/80 shadow-[0_0_24px_rgba(245,158,11,0.3)]'
+                    : 'border-rose-500/60'
             }`}
             style={{ backgroundColor: 'rgba(16, 10, 18, 0.9)' }}
           >
             <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-1.5">
-                <Skull className="h-3.5 w-3.5 text-rose-400" />
-                <span className="font-display text-xs font-extrabold tracking-wider text-rose-300 uppercase sm:text-sm">
+              <div className="flex min-w-0 items-center gap-1.5">
+                <Skull className="h-3.5 w-3.5 shrink-0 text-rose-400" />
+                <span className="font-display truncate text-xs font-extrabold tracking-wider text-rose-300 uppercase sm:text-sm">
                   {hud.activeBoss.name}
                 </span>
+                <span
+                  className={`font-mono-tabular shrink-0 rounded px-1.5 py-0.5 text-[9px] font-extrabold uppercase ${
+                    hud.activeBoss.shielded
+                      ? 'bg-cyan-500/20 text-cyan-300'
+                      : hud.activeBoss.phase === 3
+                        ? 'bg-rose-500/25 text-rose-200'
+                        : hud.activeBoss.phase === 2
+                          ? 'bg-amber-500/25 text-amber-200'
+                          : 'bg-slate-800 text-slate-300'
+                  }`}
+                >
+                  {hud.activeBoss.shielded
+                    ? `SHIELDED · ${hud.activeBoss.pylonsRemaining} PYLON${hud.activeBoss.pylonsRemaining === 1 ? '' : 'S'}`
+                    : `P${hud.activeBoss.phase}`}
+                </span>
               </div>
-              <span className="font-mono-tabular text-[11px] font-bold text-rose-200">
+              <span className="font-mono-tabular shrink-0 text-[11px] font-bold text-rose-200">
                 {hud.activeBoss.hp}/{hud.activeBoss.maxHp}
               </span>
             </div>
-            <div className="mt-1 h-2 w-full overflow-hidden rounded-sm bg-slate-950">
+            <div className="relative mt-1 h-2 w-full overflow-hidden rounded-sm bg-slate-950">
               <div
                 className={`h-full transition-[width] duration-100 ${
-                  hud.activeBoss.phase2 ? 'bg-amber-500' : 'bg-rose-500'
+                  hud.activeBoss.shielded
+                    ? 'bg-cyan-400'
+                    : hud.activeBoss.phase === 3
+                      ? 'bg-rose-500'
+                      : hud.activeBoss.phase === 2 || hud.activeBoss.phase2
+                        ? 'bg-amber-500'
+                        : 'bg-rose-500'
                 }`}
                 style={{ width: `${bossPct}%` }}
               />
+              <div
+                aria-hidden="true"
+                className="absolute inset-y-0 w-px bg-slate-950/85"
+                style={{ left: '30%' }}
+              />
+              <div
+                aria-hidden="true"
+                className="absolute inset-y-0 w-px bg-slate-950/85"
+                style={{ left: '65%' }}
+              />
             </div>
+          </div>
+        )}
+
+        {hud.hazardWarningBanner && !upgradesOpen && (
+          <div
+            data-testid="hazard-warning-banner"
+            className="font-mono-tabular w-full rounded-xl border border-rose-500/85 px-3 py-1 text-center text-[10px] font-extrabold tracking-wider text-rose-200 uppercase shadow-[0_0_20px_rgba(239,68,68,0.3)] sm:text-xs"
+            style={{ backgroundColor: 'rgba(32, 8, 12, 0.92)' }}
+          >
+            {hud.hazardWarningBanner}
+          </div>
+        )}
+
+        {hud.activeEvent && !upgradesOpen && (
+          <div
+            data-testid="midwave-event-banner"
+            className="w-full rounded-xl border px-3 py-1.5"
+            style={{
+              backgroundColor: 'rgba(10, 15, 24, 0.92)',
+              borderColor: hud.activeEvent.accentHex,
+            }}
+          >
+            <div className="flex items-center justify-between gap-2 text-[10px] font-extrabold tracking-wider uppercase sm:text-xs">
+              <span style={{ color: hud.activeEvent.accentHex }}>
+                {hud.activeEvent.title}
+              </span>
+              {typeof hud.activeEvent.remainingSec === 'number' && (
+                <span className="font-mono-tabular text-slate-200">
+                  {hud.activeEvent.remainingSec.toFixed(1)}s
+                </span>
+              )}
+              {typeof hud.activeEvent.progress === 'number' && (
+                <span className="font-mono-tabular text-sky-200">
+                  {Math.round(hud.activeEvent.progress * 100)}%
+                </span>
+              )}
+            </div>
+            <div className="mt-0.5 text-[10px] text-slate-200">
+              {hud.activeEvent.subtitle}
+            </div>
+            {typeof hud.activeEvent.progress === 'number' && (
+              <div className="mt-1 h-1.5 w-full overflow-hidden rounded-sm bg-slate-900">
+                <div
+                  className="h-full transition-[width] duration-100"
+                  style={{
+                    width: `${Math.round(hud.activeEvent.progress * 100)}%`,
+                    backgroundColor: hud.activeEvent.accentHex,
+                  }}
+                />
+              </div>
+            )}
+          </div>
+        )}
+
+        {hud.activePadPrompt && !upgradesOpen && (
+          <div
+            data-testid="tactical-pad-prompt"
+            className="w-64 rounded-xl border border-amber-400/75 px-3 py-1.5"
+            style={{ backgroundColor: 'rgba(12, 16, 26, 0.92)' }}
+          >
+            <div className="font-mono-tabular flex items-center justify-between text-[10px] font-extrabold uppercase">
+              <span className="text-amber-300">{hud.activePadPrompt.label}</span>
+              <span
+                className={
+                  hud.activePadPrompt.activeRemaining > 0
+                    ? 'text-emerald-300'
+                    : hud.activePadPrompt.affordable
+                      ? 'text-cyan-300'
+                      : 'text-rose-400'
+                }
+              >
+                {hud.activePadPrompt.activeRemaining > 0
+                  ? `ACTIVE ${hud.activePadPrompt.activeRemaining.toFixed(0)}s`
+                  : `${hud.activePadPrompt.cost} SCRAP`}
+              </span>
+            </div>
+            {hud.activePadPrompt.activeRemaining <= 0 && (
+              <div className="mt-1 h-1.5 w-full overflow-hidden rounded-sm bg-slate-900">
+                <div
+                  className={`h-full transition-[width] duration-100 ${
+                    hud.activePadPrompt.affordable ? 'bg-amber-400' : 'bg-rose-500'
+                  }`}
+                  style={{ width: `${Math.round(hud.activePadPrompt.progress * 100)}%` }}
+                />
+              </div>
+            )}
           </div>
         )}
 
@@ -626,6 +1076,8 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
           label="Move Joystick"
           accentColor="#38bdf8"
           testId="move-stick"
+          scale={touchHud.joystickScale}
+          opacity={touchHud.buttonOpacity}
           onChange={(x, y) => onMoveStick(x, y)}
         />
 
@@ -643,11 +1095,14 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
             equippedGadget={hud.equippedGadget}
             gadgetCooldownProgress={hud.gadgetCooldownProgress}
             gadgetCooldownRemaining={hud.gadgetCooldownRemaining}
+            gadgetCharges={hud.gadgetCharges}
+            gadgetMaxCharges={hud.gadgetMaxCharges}
             ultimateCharge={hud.ultimateCharge}
             ultimateActiveRemaining={hud.ultimateActiveRemaining}
             ultimateName={hud.ultimateName}
             isReloading={hud.isReloading}
             reloadProgress={hud.reloadProgress}
+            touchHud={touchHud}
             onDash={onDash}
             onReload={onReload}
             onSwitchWeapon={onSwitchWeapon}
@@ -660,6 +1115,8 @@ export const HudOverlay: React.FC<HudOverlayProps> = ({
             label="Aim and Fire Joystick"
             accentColor="#ef4444"
             testId="aim-stick"
+            scale={touchHud.joystickScale}
+            opacity={touchHud.buttonOpacity}
             onChange={onAimStick}
           />
         </div>

@@ -29,11 +29,25 @@ import {
   getBossCycleHpMultiplier,
   getBossRangedCooldown,
   getBossTitle,
+  getLateGameArmorRatio,
+  getLateGameProjectileSpeedMult,
+  getOverdriveTier,
   isBossWaveNumber,
   isPointInFlashlightCone,
   rollCrateDrop,
   ZOMBIE_SPECS,
 } from './waves';
+import {
+  canApplyHardCc,
+  computeFlankingVector,
+  ELITE_AFFIX_ORDER,
+  getBossPhaseForHp,
+  isJuggernautShatterWeapon,
+  isRooftopEdgeDrop,
+  MID_WAVE_EVENT_ORDER,
+  rollEliteAffixes,
+  rollMidWaveEvent,
+} from './elitesAndEvents';
 import {
   clearRunProgress,
   loadHighScore,
@@ -88,6 +102,7 @@ import {
   getRainQualityScale,
   loadSettings,
   saveSettings,
+  shouldEnableBloom,
   shouldEnableShadows,
 } from './settings';
 import {
@@ -122,8 +137,13 @@ import { GADGET_ORDER, GADGET_SPECS, getNextGadget } from './gadgets';
 import { ARENA_ORDER, ARENA_SPECS, GAME_MODE_ORDER, GAME_MODE_SPECS } from './arenas';
 import { createSeededRng, getDailyChallengeConfig } from './dailyChallenge';
 import {
+  computeNextRival,
   isValidCallsign,
+  isValidClanTag,
+  loadClanTag,
   sanitizeCallsign,
+  sanitizeClanTag,
+  saveClanTag,
 } from './storage';
 import {
   createInitialWeaponMastery,
@@ -142,6 +162,11 @@ import { evaluateActiveSynergies, SYNERGY_ORDER } from './synergies';
 import { DRONE_ORDER, DRONE_SPECS } from './drones';
 import { unlockArmoryWeapon, unlockOrEquipDrone } from './career';
 import {
+  claimCareerDailyContract,
+  equipWeaponCamo,
+  purchaseTechLabUpgrade,
+} from './career';
+import {
   COMBO_DECAY_SEC,
   createInitialComboState,
   getComboCallout,
@@ -149,6 +174,26 @@ import {
   registerComboKill,
   tickComboState,
 } from './combo';
+import {
+  createDefaultDailyContractsState,
+  createDefaultTechLabLevels,
+  EXTRACTION_HOLD_SEC,
+  getClaimableDailyContractsCount,
+  getDailyContractsForDate,
+  getExtractionMultiplier,
+  getTechLabBonuses,
+  getTechLabUpgradeCost,
+  getUnlockedWeaponCamos,
+  getWeaponCamoDamageMultiplier,
+  getWeeklyTrialConfig,
+  isExtractionWave,
+  recordContractEvent,
+  refreshDailyContractsForDate,
+  TECH_LAB_MAX_TIER,
+  TECH_LAB_ORDER,
+  WEAPON_CAMO_ORDER,
+  WEEKLY_MUTATOR_ORDER,
+} from './phase3Meta';
 import { canExecuteDashTarget, computeExecutionRewards } from './revive';
 
 test('weapon progression has 12 wave weapons + 7 armory weapons with next/prev cycling', () => {
@@ -274,7 +319,7 @@ test('v1.1.0 waves introduce 6 regular archetypes and flatten post-Wave 14 scali
   assert.ok(Math.abs(w2.damageMultiplier - 1.005) < 1e-9);
   assert.ok(w6.hpMultiplier > Math.pow(1.025, 5));
   assert.ok(w14.hpMultiplier < 2.0);
-  assert.ok(w25.hpMultiplier > w14.hpMultiplier && w25.hpMultiplier < 3.0);
+  assert.ok(w25.hpMultiplier > w14.hpMultiplier && w25.hpMultiplier < 3.2);
   assert.ok(w50.hpMultiplier > w25.hpMultiplier && w50.hpMultiplier < 5.2);
   assert.ok(w25.damageMultiplier < 1.45);
   assert.ok(w50.damageMultiplier < 1.75);
@@ -504,8 +549,8 @@ test('tactical gear specs and cycling cover mine, turret, and flashbang with lon
   assert.equal(getNextTacticalGear('flashbang'), 'mine');
 });
 
-test('app version matches 2.0.1 release', () => {
-  assert.equal(APP_VERSION, '2.0.1');
+test('app version matches 3.0.0 release', () => {
+  assert.equal(APP_VERSION, '3.0.0');
 });
 
 test('dynamic weather cycles across states, escalates to storm on boss waves, and parses query overrides', () => {
@@ -574,28 +619,50 @@ test('game settings persist and clamp mobile pixelRatio to 1.5 max', () => {
   assert.deepEqual(loadSettings(mockStorage), DEFAULT_GAME_SETTINGS);
   saveSettings(
     {
+      ...DEFAULT_GAME_SETTINGS,
       graphicsQuality: 'medium',
+      fpsCap: 30,
       hapticsEnabled: false,
       autoFire: true,
       showFps: true,
+      masterVolume: 0.6,
+      musicVolume: 0.4,
+      sfxVolume: 0.9,
+      touchHud: {
+        ...DEFAULT_GAME_SETTINGS.touchHud,
+        joystickScale: 1.25,
+        buttonOpacity: 0.75,
+        dashOffset: { x: -24, y: 12 },
+      },
     },
     mockStorage,
   );
   const loaded = loadSettings(mockStorage);
   assert.equal(loaded.graphicsQuality, 'medium');
+  assert.equal(loaded.fpsCap, 30);
   assert.equal(loaded.hapticsEnabled, false);
   assert.equal(loaded.autoFire, true);
   assert.equal(loaded.showFps, true);
+  assert.equal(loaded.masterVolume, 0.6);
+  assert.equal(loaded.musicVolume, 0.4);
+  assert.equal(loaded.sfxVolume, 0.9);
+  assert.equal(loaded.touchHud.joystickScale, 1.25);
+  assert.equal(loaded.touchHud.buttonOpacity, 0.75);
+  assert.deepEqual(loaded.touchHud.dashOffset, { x: -24, y: 12 });
 
-  // Mobile DPR 3.0 clamps strictly to <= 1.5
+  // Mobile DPR 3.0 clamps strictly to <= 1.5, Low quality uses 0.75x scale
   assert.equal(getEffectivePixelRatio('high', 3.0, true, false), 1.5);
   assert.equal(getEffectivePixelRatio('medium', 3.0, true, false), 1.25);
-  assert.equal(getEffectivePixelRatio('low', 3.0, false, false), 1);
+  assert.equal(getEffectivePixelRatio('low', 3.0, false, false), 0.75);
   assert.equal(getEffectivePixelRatio('high', 3.0, false, true), 1);
   assert.equal(getEffectivePixelRatio('high', 2.0, false, false), 2);
   assert.equal(shouldEnableShadows('low', false), false);
   assert.equal(shouldEnableShadows('high', false), true);
   assert.equal(shouldEnableShadows('high', true), false);
+  assert.equal(shouldEnableBloom('low', false), false);
+  assert.equal(shouldEnableBloom('medium', false), false);
+  assert.equal(shouldEnableBloom('high', false), true);
+  assert.equal(shouldEnableBloom('high', true), false);
   assert.equal(getRainQualityScale('low'), 0);
   assert.equal(getRainQualityScale('high'), 1);
 });
@@ -716,25 +783,42 @@ test('dedicated tactical gadgets, 3 arenas, 5 modes, 9-enemy bestiary, daily see
   assert.equal(getNextGadget('mortar'), 'tripmine');
   assert.ok(GADGET_SPECS.mortar.damage > 400);
 
-  assert.deepEqual(ARENA_ORDER, ['courtyard', 'parking_deck', 'helipad']);
+  assert.deepEqual(ARENA_ORDER, [
+    'courtyard',
+    'parking_deck',
+    'helipad',
+    'subway',
+    'biolab',
+    'rooftop',
+  ]);
   for (const arenaId of ARENA_ORDER) {
     const spec = ARENA_SPECS[arenaId];
     assert.ok(spec.barrelCoords.length >= 4);
+    assert.ok(spec.cryoCanisterCoords.length >= 2);
+    assert.equal(spec.tacticalPads.length, 2);
     assert.equal(spec.generatorCoords.length, 2);
     assert.equal(spec.supplyDropCoords.length, 4);
     const minimapObs = getMinimapObstacles(100, spec.obstacles, spec.halfSize);
     assert.equal(minimapObs.length, spec.obstacles.length);
   }
   assert.ok(ARENA_SPECS.helipad.spawnIntervalMultiplier < 1.0);
+  assert.equal(ARENA_SPECS.subway.hasTrainHazard, true);
+  assert.ok((ARENA_SPECS.biolab.toxicVents?.length ?? 0) >= 4);
+  assert.equal(ARENA_SPECS.rooftop.hasOpenDropEdges, true);
 
   assert.deepEqual(GAME_MODE_ORDER, [
     'normal',
     'storm',
     'blackout',
     'boss_rush',
+    'extraction',
+    'siege',
+    'weekly',
+    'sandbox',
     'daily',
   ]);
   assert.equal(GAME_MODE_SPECS.blackout.rewardMultiplier, 2);
+  assert.equal(GAME_MODE_SPECS.sandbox.rewardMultiplier, 0);
   assert.equal(isBossWaveNumber(1, 'boss_rush'), true);
   assert.equal(isBossWaveNumber(1, 'normal'), false);
 
@@ -742,7 +826,7 @@ test('dedicated tactical gadgets, 3 arenas, 5 modes, 9-enemy bestiary, daily see
   const w6 = buildWavePlan(6, () => 0.5);
   assert.equal(w3.queue.includes('bomber'), true);
   assert.equal(w6.queue.includes('howler'), true);
-  assert.equal(BESTIARY_ENTRIES.length, 9);
+  assert.equal(BESTIARY_ENTRIES.length, 15);
 
   // Daily challenge deterministic for same UTC key
   const d1 = getDailyChallengeConfig('2026-11-22');
@@ -934,6 +1018,250 @@ test('v3.0.0 Phase 1 weapons, evolutions, ultimates, cursed perks, synergies, dr
   assert.equal(restoredP1.ultimateCharge, 72);
   assert.equal(restoredP1.weaponDraftPending, true);
 });
+
+test('v3.0.0 Phase 2 elite affixes, Hard-CC DR, mid-wave events, 3-phase boss, Overdrive scaling & flanking work cleanly', () => {
+  // Elites only start naturally at Wave 6+, and Wave 12+ can roll double affixes
+  assert.equal(ELITE_AFFIX_ORDER.length, 5);
+  assert.deepEqual(rollEliteAffixes(5, () => 0.0), []);
+  const w6Elite = rollEliteAffixes(6, () => 0.01);
+  assert.equal(w6Elite.length, 1);
+  const w12Double = rollEliteAffixes(12, () => 0.01);
+  assert.equal(w12Double.length, 2);
+  assert.notEqual(w12Double[0], w12Double[1]);
+
+  // Hard-CC immunity window & cryo_proof affix
+  assert.equal(canApplyHardCc(0, []), true);
+  assert.equal(canApplyHardCc(1.5, []), false);
+  assert.equal(canApplyHardCc(0, ['cryo_proof']), false);
+
+  // Mid-wave events start Wave 3+
+  assert.equal(MID_WAVE_EVENT_ORDER.length, 3);
+  assert.equal(rollMidWaveEvent(2, () => 0.0), null);
+  const ev = rollMidWaveEvent(3, () => 0.01);
+  assert.ok(ev !== null && MID_WAVE_EVENT_ORDER.includes(ev));
+
+  // 3-Phase Boss HP thresholds (>65% P1, 65%..30% P2, <=30% P3)
+  assert.equal(getBossPhaseForHp(1000, 1000), 1);
+  assert.equal(getBossPhaseForHp(660, 1000), 1);
+  assert.equal(getBossPhaseForHp(650, 1000), 2);
+  assert.equal(getBossPhaseForHp(310, 1000), 2);
+  assert.equal(getBossPhaseForHp(300, 1000), 3);
+
+  // Overdrive late-game scaling & new Phase 2 zombie specs
+  assert.equal(getOverdriveTier(9), 0);
+  assert.equal(getOverdriveTier(10), 1);
+  assert.equal(getOverdriveTier(15), 2);
+  assert.equal(getOverdriveTier(20), 3);
+  assert.equal(getLateGameArmorRatio(9), 0);
+  assert.ok(getLateGameArmorRatio(12) > 0);
+  assert.ok(getLateGameProjectileSpeedMult(15) > 1.2);
+  const w9 = buildWavePlan(9, () => 0.5);
+  assert.equal(w9.queue.includes('juggernaut'), true);
+  assert.equal(w9.queue.includes('necromancer'), true);
+  assert.equal(w9.queue.includes('matriarch'), true);
+
+  // Flanking & Neon Rooftop drop checks
+  const flankL = computeFlankingVector(0, 0, 10, 0, 1);
+  const flankR = computeFlankingVector(0, 0, 10, 0, -1);
+  assert.ok(Math.abs(flankL.dirZ + flankR.dirZ) < 1e-6);
+  assert.ok(Math.abs(flankL.dirZ) > 0.2);
+  assert.equal(isRooftopEdgeDrop(21.7, 0, 22, 0.35), true);
+  assert.equal(isRooftopEdgeDrop(10, 10, 22, 0.35), false);
+
+  // Juggernaut armor-shatter weapon check
+  assert.equal(isJuggernautShatterWeapon('gauss_carbine'), true);
+  assert.equal(isJuggernautShatterWeapon('pulse_katana'), true);
+  assert.equal(isJuggernautShatterWeapon('pistol'), false);
+
+  // In-run Scrap persistence
+  const map = new Map<string, string>();
+  const mockStorage: StorageLike = {
+    getItem: (k) => map.get(k) ?? null,
+    setItem: (k, v) => {
+      map.set(k, v);
+    },
+    removeItem: (k) => {
+      map.delete(k);
+    },
+  };
+  saveRunProgress(
+    {
+      lastWave: 8,
+      score: 9400,
+      kills: 150,
+      upgradePoints: 2,
+      upgradeLevels: createInitialUpgradeLevels(),
+      activeWeapon: 'pistol',
+      arena: 'subway',
+      inRunScrap: 45,
+      activeInterrupted: true,
+    },
+    mockStorage,
+  );
+  const restoredP2 = loadRunProgress(mockStorage)!;
+  assert.equal(restoredP2.arena, 'subway');
+  assert.equal(restoredP2.inRunScrap, 45);
+});
+
+test('v3.0.0 Phase 3 new modes, Weekly Mutator rotation, Extraction scaling, Tech Lab, Weapon Camos & Daily Contracts work cleanly', () => {
+  // Extraction waves & multipliers
+  assert.equal(EXTRACTION_HOLD_SEC, 20);
+  assert.equal(isExtractionWave(4), false);
+  assert.equal(isExtractionWave(5), true);
+  assert.equal(isExtractionWave(10), true);
+  assert.equal(getExtractionMultiplier(5), 3);
+  assert.equal(getExtractionMultiplier(10), 4);
+  assert.equal(getExtractionMultiplier(15), 5);
+
+  // Weekly mutator deterministic rotation
+  assert.equal(WEEKLY_MUTATOR_ORDER.length, 5);
+  const w1 = getWeeklyTrialConfig('2026-W47');
+  const w2 = getWeeklyTrialConfig('2026-W47');
+  assert.deepEqual(w1, w2);
+  assert.ok(WEEKLY_MUTATOR_ORDER.includes(w1.mutator));
+
+  // Tech Lab 5-tier skill tree & bonuses
+  assert.equal(TECH_LAB_ORDER.length, 5);
+  assert.equal(TECH_LAB_MAX_TIER, 5);
+  const defaultTech = createDefaultTechLabLevels();
+  const baseBonuses = getTechLabBonuses(defaultTech);
+  assert.equal(baseBonuses.maxHpBonus, 0);
+  assert.equal(baseBonuses.bonusGadgetCharges, 0);
+  assert.equal(baseBonuses.startingPerkRerolls, 0);
+
+  let career = createDefaultCareerStats();
+  career.scrap = 5000;
+  for (let tier = 0; tier < 5; tier++) {
+    const cost = getTechLabUpgradeCost('tactical_rig', tier);
+    assert.ok(cost > 0);
+    const res = purchaseTechLabUpgrade(career, 'tactical_rig');
+    assert.equal(res.purchased, true);
+    assert.equal(res.newTier, tier + 1);
+    career = res.career;
+  }
+  assert.equal(purchaseTechLabUpgrade(career, 'tactical_rig').purchased, false);
+  for (let i = 0; i < 3; i++) {
+    career = purchaseTechLabUpgrade(career, 'salvage_protocol').career;
+    career = purchaseTechLabUpgrade(career, 'reinforced_plating').career;
+  }
+  const upgradedBonuses = getTechLabBonuses(career.techLab);
+  assert.equal(upgradedBonuses.bonusGadgetCharges, 3);
+  assert.equal(upgradedBonuses.startingPerkRerolls, 2);
+  assert.equal(upgradedBonuses.maxHpBonus, 60);
+  assert.ok(Math.abs(upgradedBonuses.armorDrBonus - 0.12) < 1e-9);
+  assert.ok(upgradedBonuses.scrapMult > 1.3);
+
+  // Weapon Mastery Camos & passive kill bonuses
+  assert.equal(WEAPON_CAMO_ORDER.length, 4);
+  assert.deepEqual(getUnlockedWeaponCamos(0), ['none']);
+  assert.deepEqual(getUnlockedWeaponCamos(100), ['none', 'carbon_fiber']);
+  assert.deepEqual(getUnlockedWeaponCamos(500), [
+    'none',
+    'carbon_fiber',
+    'tactical_gold',
+  ]);
+  assert.deepEqual(getUnlockedWeaponCamos(1500), [
+    'none',
+    'carbon_fiber',
+    'tactical_gold',
+    'reactive_neon',
+  ]);
+  assert.equal(getWeaponCamoDamageMultiplier(0), 1);
+  assert.ok(Math.abs(getWeaponCamoDamageMultiplier(100) - 1.05) < 1e-9);
+  assert.ok(Math.abs(getWeaponCamoDamageMultiplier(500) - 1.1) < 1e-9);
+  assert.ok(Math.abs(getWeaponCamoDamageMultiplier(1500) - 1.15) < 1e-9);
+
+  career.killsByWeapon.rifle = 520;
+  assert.equal(equipWeaponCamo(career, 'rifle', 'reactive_neon').changed, false);
+  const goldEquip = equipWeaponCamo(career, 'rifle', 'tactical_gold');
+  assert.equal(goldEquip.changed, true);
+  assert.equal(goldEquip.career.equippedCamos.rifle, 'tactical_gold');
+
+  // 3 Deterministic Rotating Daily Contracts + Claim Scrap
+  const dateKey = '2026-11-24';
+  const contractsA = getDailyContractsForDate(dateKey);
+  const contractsB = getDailyContractsForDate(dateKey);
+  assert.equal(contractsA.length, 3);
+  assert.deepEqual(contractsA, contractsB);
+
+  let cState = createDefaultDailyContractsState(dateKey);
+  const targetSpec = contractsA[0];
+  const evtRes = recordContractEvent(
+    cState,
+    targetSpec.eventType,
+    targetSpec.target,
+    dateKey,
+  );
+  cState = evtRes.state;
+  assert.equal(evtRes.newlyCompleted.length, 1);
+  assert.equal(getClaimableDailyContractsCount(cState, dateKey), 1);
+
+  career.dailyContracts = cState;
+  const scrapBefore = career.scrap;
+  const claimRes = claimCareerDailyContract(career, targetSpec.id, dateKey);
+  assert.equal(claimRes.claimed, true);
+  assert.equal(claimRes.reward, targetSpec.scrapReward);
+  assert.equal(claimRes.career.scrap, scrapBefore + targetSpec.scrapReward);
+  assert.equal(getClaimableDailyContractsCount(claimRes.career.dailyContracts, dateKey), 0);
+  // Repeating claim fails cleanly & date rollover resets contracts
+  assert.equal(
+    claimCareerDailyContract(claimRes.career, targetSpec.id, dateKey).claimed,
+    false,
+  );
+  const nextDay = refreshDailyContractsForDate(claimRes.career.dailyContracts, '2026-11-25');
+  assert.equal(nextDay.dateKey, '2026-11-25');
+  assert.deepEqual(nextDay.claimedIds, []);
+});
+
+test('Phase 4 clan tags and Live Next Rival calculation track overtakes accurately', () => {
+  assert.equal(sanitizeClanTag(' drg!9 '), 'DRG9');
+  assert.equal(isValidClanTag(''), true);
+  assert.equal(isValidClanTag('DR'), false);
+  assert.equal(isValidClanTag('DRG'), true);
+  assert.equal(isValidClanTag('APEX'), true);
+
+  const map = new Map<string, string>();
+  const mockStorage: StorageLike = {
+    getItem: (k) => map.get(k) ?? null,
+    setItem: (k, v) => {
+      map.set(k, v);
+    },
+    removeItem: (k) => {
+      map.delete(k);
+    },
+  };
+  assert.equal(saveClanTag('drg!', mockStorage), 'DRG');
+  assert.equal(loadClanTag(mockStorage), 'DRG');
+  assert.equal(saveClanTag('', mockStorage), '');
+  assert.equal(loadClanTag(mockStorage), '');
+
+  const rivals = [
+    { uid: 'u1', callsign: 'TGROHITH', clanTag: 'DRG', score: 10000 },
+    { uid: 'u2', callsign: 'NIGHTFALL', clanTag: '', score: 5000 },
+    { uid: 'u-self', callsign: 'ME', clanTag: 'DRG', score: 3000 },
+    { uid: 'u3', callsign: 'ROOKIE', clanTag: 'FOX', score: 1500 },
+  ];
+
+  // At 500 pts, closest rival above us is #4 ROOKIE (1500)
+  const r0 = computeNextRival(500, rivals, 'u-self');
+  assert.ok(r0);
+  assert.equal(r0.rank, 4);
+  assert.equal(r0.callsign, 'ROOKIE');
+  assert.equal(r0.scoreToOvertake, 1000);
+
+  // At 3500 pts, skips our own cached row 'u-self' (#3) and targets #2 NIGHTFALL (5000)
+  const r1 = computeNextRival(3500, rivals, 'u-self');
+  assert.ok(r1);
+  assert.equal(r1.rank, 2);
+  assert.equal(r1.callsign, 'NIGHTFALL');
+  assert.equal(r1.scoreToOvertake, 1500);
+
+  // At 12000 pts, we hold #1 and no rivals remain above us
+  assert.equal(computeNextRival(12000, rivals, 'u-self'), null);
+});
+
+
+
 
 
 

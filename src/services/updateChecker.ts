@@ -4,6 +4,10 @@ import { db, handleFirestoreError, OperationType } from '../firebase';
 import { isRemoteVersionNewer } from '../game/semver';
 import { RemoteAppConfig } from '../game/types';
 
+export interface AppUpdateInfo extends RemoteAppConfig {
+  platform: 'APK' | 'WEB';
+}
+
 function isSafeDownloadUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
@@ -13,13 +17,16 @@ function isSafeDownloadUrl(url: string): boolean {
   }
 }
 
-export async function checkForAndroidUpdate(
+export async function checkForAppUpdate(
   localVersion: string,
-): Promise<RemoteAppConfig | null> {
-  // Strictly Android-only native check — never run or display on Web
-  if (!Capacitor.isNativePlatform()) {
-    return null;
-  }
+): Promise<AppUpdateInfo | null> {
+  const isNative = (() => {
+    try {
+      return Capacitor.isNativePlatform();
+    } catch {
+      return false;
+    }
+  })();
 
   const ref = doc(db, 'config', 'app');
   try {
@@ -55,9 +62,45 @@ export async function checkForAndroidUpdate(
       latestVersion: data.latestVersion.trim(),
       downloadUrl,
       changelog,
+      platform: isNative ? 'APK' : 'WEB',
     };
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, 'config/app');
     return null;
+  }
+}
+
+export async function checkForAndroidUpdate(
+  localVersion: string,
+): Promise<RemoteAppConfig | null> {
+  const res = await checkForAppUpdate(localVersion);
+  if (!res || res.platform !== 'APK') return null;
+  return {
+    latestVersion: res.latestVersion,
+    downloadUrl: res.downloadUrl,
+    changelog: res.changelog,
+  };
+}
+
+export async function triggerWebCacheBustReload(): Promise<void> {
+  if (typeof window === 'undefined') return;
+  try {
+    if ('caches' in window && window.caches) {
+      const keys = await window.caches.keys();
+      await Promise.all(keys.map((key) => window.caches.delete(key)));
+    }
+    if ('serviceWorker' in navigator && navigator.serviceWorker?.getRegistrations) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister()));
+    }
+  } catch {
+    // Ignore storage/cache cleanup restrictions
+  }
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.set('_v', String(Date.now()));
+    window.location.replace(url.toString());
+  } catch {
+    window.location.reload();
   }
 }

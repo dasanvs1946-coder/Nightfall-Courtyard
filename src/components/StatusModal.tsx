@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Download, Share2, ShieldCheck, Trophy } from 'lucide-react';
+import { Download, Share2, ShieldCheck, Sliders, Trophy } from 'lucide-react';
 import { ARENA_SPECS, GAME_MODE_SPECS } from '../game/arenas';
 import { HudSnapshot } from '../game/types';
 import { shareOrDownloadBattleCard } from '../services/battleCard';
@@ -13,6 +13,7 @@ interface StatusModalProps {
   onRestartFromBeginning: () => void;
   onTitle: () => void;
   onOpenLeaderboard: () => void;
+  onOpenSettings: () => void;
 }
 
 export const StatusModal: React.FC<StatusModalProps> = ({
@@ -24,6 +25,7 @@ export const StatusModal: React.FC<StatusModalProps> = ({
   onRestartFromBeginning,
   onTitle,
   onOpenLeaderboard,
+  onOpenSettings,
 }) => {
   const [cardState, setCardState] = useState<'idle' | 'saving' | 'done'>('idle');
 
@@ -126,11 +128,16 @@ export const StatusModal: React.FC<StatusModalProps> = ({
   const arenaName = ARENA_SPECS[hud.arena].shortLabel;
   const modeName = GAME_MODE_SPECS[hud.mode].shortLabel;
 
+  const displayIdentity = hud.clanTag
+    ? `[${hud.clanTag}] ${hud.callsign}`
+    : hud.callsign;
+
   const handleBattleCard = async () => {
     if (cardState === 'saving') return;
     setCardState('saving');
     const res = await shareOrDownloadBattleCard({
       callsign: hud.callsign,
+      clanTag: hud.clanTag,
       skinId: hud.equippedSkinId,
       mode: hud.mode,
       arena: hud.arena,
@@ -153,21 +160,47 @@ export const StatusModal: React.FC<StatusModalProps> = ({
         role="dialog"
         aria-modal="true"
         aria-labelledby="modal-heading"
-        className="max-h-[92dvh] w-full max-w-sm overflow-y-auto rounded-2xl border border-slate-700/80 p-5 shadow-2xl sm:p-6"
+        className={`max-h-[92dvh] w-full max-w-sm overflow-y-auto rounded-2xl border p-5 shadow-2xl sm:p-6 ${
+          isGameOver && hud.extractedVictory
+            ? 'border-emerald-400/75 shadow-[0_0_36px_rgba(34,197,94,0.22)]'
+            : 'border-slate-700/80'
+        }`}
         style={{ backgroundColor: 'rgba(13, 19, 30, 0.96)' }}
       >
-        <div className="text-[11px] font-semibold tracking-widest text-amber-400 uppercase">
+        <div
+          className={`text-[11px] font-semibold tracking-widest uppercase ${
+            isGameOver && hud.extractedVictory ? 'text-emerald-400' : 'text-amber-400'
+          }`}
+        >
           {isGameOver
-            ? `${hud.callsign} · ${arenaName} · ${modeName}`
+            ? hud.extractedVictory
+              ? `${displayIdentity} · ${arenaName} · EXFIL COMPLETE`
+              : `${displayIdentity} · ${arenaName} · ${modeName}`
             : 'Simulation Paused'}
         </div>
 
         <h2
           id="modal-heading"
-          className="font-display mt-1 text-3xl font-extrabold tracking-tight text-white uppercase sm:text-4xl"
+          data-testid="status-modal-heading"
+          className={`font-display mt-1 text-3xl font-extrabold tracking-tight uppercase sm:text-4xl ${
+            isGameOver && hud.extractedVictory ? 'text-emerald-300' : 'text-white'
+          }`}
         >
-          {isGameOver ? 'Game Over' : 'Paused'}
+          {isGameOver
+            ? hud.extractedVictory
+              ? 'Extraction Complete'
+              : hud.customGameOverTitle || 'Game Over'
+            : 'Paused'}
         </h2>
+
+        {isGameOver && hud.extractedVictory && (
+          <div
+            data-testid="extraction-victory-badge"
+            className="mt-1.5 text-xs font-extrabold tracking-wider text-emerald-300 uppercase"
+          >
+            Chopper Evacuated · Bonus Scrap Banked
+          </div>
+        )}
 
         {isGameOver && hud.isNewHighScore && (
           <div className="mt-1.5 text-xs font-bold tracking-wider text-emerald-400 uppercase">
@@ -230,16 +263,30 @@ export const StatusModal: React.FC<StatusModalProps> = ({
 
         <div className="mt-4 flex flex-col gap-2">
           {!isGameOver && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.currentTarget.blur();
-                onResume();
-              }}
-              className="min-h-[46px] w-full cursor-pointer rounded-xl bg-amber-500 px-5 py-2.5 text-sm font-bold tracking-wide text-slate-950 uppercase hover:bg-amber-400"
-            >
-              Resume
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.currentTarget.blur();
+                  onResume();
+                }}
+                className="min-h-[46px] w-full cursor-pointer rounded-xl bg-amber-500 px-5 py-2.5 text-sm font-bold tracking-wide text-slate-950 uppercase hover:bg-amber-400"
+              >
+                Resume
+              </button>
+              <button
+                type="button"
+                data-testid="pause-open-settings"
+                onClick={(e) => {
+                  e.currentTarget.blur();
+                  onOpenSettings();
+                }}
+                className="flex min-h-[42px] w-full cursor-pointer items-center justify-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900/85 px-5 py-2 text-xs font-bold tracking-wide text-slate-200 uppercase hover:border-amber-400/70 hover:text-amber-200"
+              >
+                <Sliders className="h-3.5 w-3.5 text-amber-400" />
+                <span>Settings &amp; HUD</span>
+              </button>
+            </>
           )}
 
           {isGameOver && (

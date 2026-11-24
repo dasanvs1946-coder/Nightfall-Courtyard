@@ -4,7 +4,12 @@ import { Calendar, Check, Globe, RefreshCw, Trophy, X } from 'lucide-react';
 import { ARENA_SPECS, GAME_MODE_SPECS } from '../game/arenas';
 import { SKIN_SPECS } from '../game/career';
 import { getUtcDateKey } from '../game/dailyChallenge';
-import { isValidCallsign, sanitizeCallsign } from '../game/storage';
+import {
+  isValidCallsign,
+  isValidClanTag,
+  sanitizeCallsign,
+  sanitizeClanTag,
+} from '../game/storage';
 import {
   fetchDailyTop20,
   fetchGlobalTop20,
@@ -16,7 +21,8 @@ interface LeaderboardModalProps {
   user: User | null;
   authErrorCode: string | null;
   currentCallsign: string;
-  onSaveCallsign: (raw: string) => Promise<void>;
+  currentClanTag: string;
+  onSaveIdentity: (callsign: string, clanTag: string) => Promise<void>;
   onClose: () => void;
 }
 
@@ -27,7 +33,8 @@ export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
   user,
   authErrorCode,
   currentCallsign,
-  onSaveCallsign,
+  currentClanTag,
+  onSaveIdentity,
   onClose,
 }) => {
   const [boardTab, setBoardTab] = useState<BoardTab>('global');
@@ -35,13 +42,15 @@ export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [nameDraft, setNameDraft] = useState(currentCallsign);
+  const [clanDraft, setClanDraft] = useState(currentClanTag);
   const [savingName, setSavingName] = useState(false);
   const [savedNotice, setSavedNotice] = useState(false);
   const dateKey = getUtcDateKey();
 
   useEffect(() => {
     setNameDraft(currentCallsign);
-  }, [currentCallsign, open]);
+    setClanDraft(currentClanTag);
+  }, [currentCallsign, currentClanTag, open]);
 
   const loadBoard = useCallback(async () => {
     setLoading(true);
@@ -70,14 +79,18 @@ export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
     }
   }, [open, loadBoard]);
 
-  const handleSaveName = async () => {
+  const handleSaveIdentity = async () => {
     const trimmed = nameDraft.trim();
-    if (!isValidCallsign(trimmed) || savingName) return;
+    const cleanedClan = sanitizeClanTag(clanDraft);
+    if (!isValidCallsign(trimmed) || !isValidClanTag(cleanedClan) || savingName) {
+      return;
+    }
     setSavingName(true);
     setSavedNotice(false);
     try {
-      await onSaveCallsign(trimmed);
+      await onSaveIdentity(trimmed, cleanedClan);
       setNameDraft(trimmed);
+      setClanDraft(cleanedClan);
       setSavedNotice(true);
       await loadBoard();
     } finally {
@@ -89,7 +102,10 @@ export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
 
   const isOnline = Boolean(user);
   const nameValid = isValidCallsign(nameDraft);
-  const nameChanged = nameDraft.trim() !== currentCallsign;
+  const clanValid = isValidClanTag(clanDraft);
+  const identityChanged =
+    nameDraft.trim() !== currentCallsign ||
+    sanitizeClanTag(clanDraft) !== currentClanTag;
 
   return (
     <div
@@ -142,6 +158,11 @@ export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
               </div>
               <p className="font-mono-tabular text-[11px] text-slate-400">
                 Active Player:{' '}
+                {currentClanTag && (
+                  <span className="mr-1 rounded bg-cyan-500/20 px-1 py-0.5 text-[10px] font-extrabold text-cyan-300">
+                    [{currentClanTag}]
+                  </span>
+                )}
                 <span className="font-bold text-amber-300">{currentCallsign}</span>
               </p>
             </div>
@@ -169,16 +190,36 @@ export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
           </div>
         </div>
 
-        {/* Player Name + Board Scope Tabs */}
+        {/* Player Name + Clan Tag + Board Scope Tabs */}
         <div className="mt-3 flex flex-col gap-2.5">
           <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-800 bg-slate-950/80 px-3 py-2">
             <label
               htmlFor="leaderboard-player-name"
               className="text-[10px] font-extrabold tracking-wider text-slate-400 uppercase"
             >
-              Player Name
+              Clan &amp; Name
             </label>
             <div className="flex flex-wrap items-center gap-1.5">
+              <input
+                id="leaderboard-clan-tag"
+                data-testid="leaderboard-clantag-input"
+                type="text"
+                maxLength={4}
+                aria-label="Clan Tag (3-4 chars optional)"
+                value={clanDraft}
+                onChange={(e) => {
+                  setClanDraft(sanitizeClanTag(e.target.value));
+                  setSavedNotice(false);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    void handleSaveIdentity();
+                  }
+                }}
+                placeholder="TAG"
+                className="font-mono-tabular h-8 w-16 rounded-lg border border-slate-700 bg-slate-900 px-2 text-center text-xs font-extrabold tracking-wider text-cyan-300 uppercase focus:border-cyan-400 focus:outline-none"
+              />
               <input
                 id="leaderboard-player-name"
                 data-testid="leaderboard-player-name-input"
@@ -193,31 +234,41 @@ export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
                     e.preventDefault();
-                    void handleSaveName();
+                    void handleSaveIdentity();
                   }
                 }}
                 placeholder="SURVIVOR 01"
-                className="font-mono-tabular h-8 w-40 rounded-lg border border-slate-700 bg-slate-900 px-2.5 text-xs font-bold tracking-wide text-amber-300 focus:border-amber-400 focus:outline-none sm:w-44"
+                className="font-mono-tabular h-8 w-36 rounded-lg border border-slate-700 bg-slate-900 px-2.5 text-xs font-bold tracking-wide text-amber-300 focus:border-amber-400 focus:outline-none sm:w-40"
               />
               <button
                 type="button"
                 data-testid="leaderboard-save-name"
-                disabled={!nameValid || savingName || (!nameChanged && !savedNotice)}
-                onClick={() => void handleSaveName()}
+                disabled={
+                  !nameValid ||
+                  !clanValid ||
+                  savingName ||
+                  (!identityChanged && !savedNotice)
+                }
+                onClick={() => void handleSaveIdentity()}
                 className="flex h-8 cursor-pointer items-center gap-1 rounded-lg border border-amber-500/60 bg-amber-500/15 px-2.5 text-[10px] font-extrabold tracking-wider text-amber-200 uppercase hover:bg-amber-500 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-45"
               >
-                {savedNotice && !nameChanged ? (
+                {savedNotice && !identityChanged ? (
                   <>
                     <Check className="h-3 w-3 text-emerald-400" />
                     <span>Saved</span>
                   </>
                 ) : (
-                  <span>{savingName ? 'Saving...' : 'Save Name'}</span>
+                  <span>{savingName ? 'Saving...' : 'Save'}</span>
                 )}
               </button>
               {!nameValid && (
                 <span className="text-[10px] font-bold text-rose-400">
-                  3–15 chars
+                  Name 3–15
+                </span>
+              )}
+              {!clanValid && (
+                <span className="text-[10px] font-bold text-rose-400">
+                  Tag 3–4 or empty
                 </span>
               )}
             </div>
@@ -328,6 +379,11 @@ export const LeaderboardModal: React.FC<LeaderboardModalProps> = ({
 
                       <div className="min-w-0">
                         <div className="flex items-center gap-1.5">
+                          {entry.clanTag && (
+                            <span className="shrink-0 rounded bg-cyan-500/20 px-1 py-0.5 text-[9px] font-extrabold text-cyan-300">
+                              [{entry.clanTag}]
+                            </span>
+                          )}
                           <span className="font-mono-tabular truncate font-extrabold text-white">
                             {entry.callsign}
                           </span>

@@ -7,6 +7,7 @@ import { WEAPON_SPECS } from '../game/weapons';
 import {
   GadgetId,
   TacticalGearId,
+  TouchHudSettings,
   UpgradeLevels,
   WeaponId,
   WeaponRuntimeState,
@@ -23,11 +24,14 @@ interface ActionControlsProps {
   equippedGadget: GadgetId;
   gadgetCooldownProgress: number; // 1 = ready
   gadgetCooldownRemaining: number;
+  gadgetCharges?: number;
+  gadgetMaxCharges?: number;
   ultimateCharge: number; // 0..100
   ultimateActiveRemaining: number;
   ultimateName: string;
   isReloading: boolean;
   reloadProgress: number; // 0..1
+  touchHud?: TouchHudSettings;
   onDash: () => void;
   onReload: () => void;
   onSwitchWeapon: () => void;
@@ -47,11 +51,14 @@ export const ActionControls: React.FC<ActionControlsProps> = ({
   equippedGadget,
   gadgetCooldownProgress,
   gadgetCooldownRemaining,
+  gadgetCharges = 1,
+  gadgetMaxCharges = 1,
   ultimateCharge,
   ultimateActiveRemaining,
   ultimateName,
   isReloading,
   reloadProgress,
+  touchHud,
   onDash,
   onReload,
   onSwitchWeapon,
@@ -61,7 +68,7 @@ export const ActionControls: React.FC<ActionControlsProps> = ({
 }) => {
   const dashReady = dashCooldownProgress >= 0.999;
   const gearReady = gearCooldownProgress >= 0.999;
-  const gadgetReady = gadgetCooldownProgress >= 0.999;
+  const gadgetReady = gadgetCharges > 0 || gadgetCooldownProgress >= 0.999;
   const ultActive = ultimateActiveRemaining > 0.05;
   const ultReady = !ultActive && ultimateCharge >= 99.9;
   const ultPct = Math.max(0, Math.min(100, Math.round(ultimateCharge)));
@@ -76,6 +83,15 @@ export const ActionControls: React.FC<ActionControlsProps> = ({
     activeState !== undefined &&
     activeState.mag < magCapacity &&
     (spec.infiniteReserve || activeState.reserve > 0);
+
+  const buttonOpacity = Math.max(
+    0.4,
+    Math.min(1, touchHud?.buttonOpacity ?? 0.92),
+  );
+  const ultOff = touchHud?.ultimateOffset ?? { x: 0, y: 0 };
+  const gadgetOff = touchHud?.gadgetOffset ?? { x: 0, y: 0 };
+  const reloadOff = touchHud?.reloadOffset ?? { x: 0, y: 0 };
+  const dashOff = touchHud?.dashOffset ?? { x: 0, y: 0 };
 
   const GearIcon =
     equippedGear === 'mine'
@@ -94,104 +110,128 @@ export const ActionControls: React.FC<ActionControlsProps> = ({
           : Target;
 
   return (
-    <div className="pointer-events-auto flex flex-col items-end gap-2">
+    <div
+      className="pointer-events-auto flex flex-col items-end gap-2"
+      style={{ opacity: buttonOpacity }}
+    >
       {/* Ultimate, Gadget & Tactical Gear Row */}
       <div className="flex items-center gap-1 sm:gap-1.5">
-        <button
-          type="button"
-          tabIndex={-1}
-          data-testid="ultimate-btn"
-          aria-label={`Activate Ultimate: ${ultimateName}`}
-          onPointerDown={(e) => {
-            e.stopPropagation();
-            onTriggerUltimate();
-            e.currentTarget.blur();
-          }}
-          className={`relative flex h-9 min-w-[68px] items-center justify-center gap-1 overflow-hidden rounded-xl border px-1.5 text-white transition-transform active:scale-95 sm:h-10 sm:min-w-[88px] sm:px-2 ${
-            ultReady ? 'shadow-[0_0_16px_rgba(168,85,247,0.5)]' : ''
-          }`}
+        <div
           style={{
-            backgroundColor: ultActive
-              ? 'rgba(147, 51, 234, 0.45)'
-              : ultReady
-                ? 'rgba(168, 85, 247, 0.34)'
-                : 'rgba(15, 23, 42, 0.88)',
-            borderColor: ultActive || ultReady
-              ? 'rgba(192, 132, 252, 0.95)'
-              : 'rgba(148, 163, 184, 0.35)',
+            transform: `translate3d(${ultOff.x}px, ${ultOff.y}px, 0)`,
           }}
         >
-          {!ultReady && !ultActive && (
-            <div
-              aria-hidden="true"
-              className="absolute inset-y-0 left-0 bg-purple-500/30"
-              style={{ width: `${ultPct}%` }}
-            />
-          )}
-          <Zap
-            className={`relative z-10 h-3.5 w-3.5 shrink-0 ${
-              ultActive || ultReady ? 'text-purple-200' : 'text-slate-400'
+          <button
+            type="button"
+            tabIndex={-1}
+            data-testid="ultimate-btn"
+            aria-label={`Activate Ultimate: ${ultimateName}`}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              onTriggerUltimate();
+              e.currentTarget.blur();
+            }}
+            className={`relative flex h-9 min-w-[68px] items-center justify-center gap-1 overflow-hidden rounded-xl border px-1.5 text-white transition-transform active:scale-95 sm:h-10 sm:min-w-[88px] sm:px-2 ${
+              ultReady ? 'shadow-[0_0_16px_rgba(168,85,247,0.5)]' : ''
             }`}
-          />
-          <span className="relative z-10 text-[9px] font-extrabold tracking-wider uppercase sm:text-[10px]">
-            ULT
-          </span>
-          <span
-            className={`font-mono-tabular relative z-10 text-[9px] font-bold sm:text-[10px] ${
-              ultActive || ultReady ? 'text-purple-200' : 'text-slate-300'
-            }`}
+            style={{
+              backgroundColor: ultActive
+                ? 'rgba(147, 51, 234, 0.45)'
+                : ultReady
+                  ? 'rgba(168, 85, 247, 0.34)'
+                  : 'rgba(15, 23, 42, 0.88)',
+              borderColor:
+                ultActive || ultReady
+                  ? 'rgba(192, 132, 252, 0.95)'
+                  : 'rgba(148, 163, 184, 0.35)',
+            }}
           >
-            {ultActive
-              ? `${ultimateActiveRemaining.toFixed(1)}s`
-              : ultReady
-                ? 'Q'
-                : `${ultPct}%`}
-          </span>
-        </button>
+            {!ultReady && !ultActive && (
+              <div
+                aria-hidden="true"
+                className="absolute inset-y-0 left-0 bg-purple-500/30"
+                style={{ width: `${ultPct}%` }}
+              />
+            )}
+            <Zap
+              className={`relative z-10 h-3.5 w-3.5 shrink-0 ${
+                ultActive || ultReady ? 'text-purple-200' : 'text-slate-400'
+              }`}
+            />
+            <span className="relative z-10 text-[9px] font-extrabold tracking-wider uppercase sm:text-[10px]">
+              ULT
+            </span>
+            <span
+              className={`font-mono-tabular relative z-10 text-[9px] font-bold sm:text-[10px] ${
+                ultActive || ultReady ? 'text-purple-200' : 'text-slate-300'
+              }`}
+            >
+              {ultActive
+                ? `${ultimateActiveRemaining.toFixed(1)}s`
+                : ultReady
+                  ? 'Q'
+                  : `${ultPct}%`}
+            </span>
+          </button>
+        </div>
 
-        <button
-          type="button"
-          tabIndex={-1}
-          data-testid="gadget-btn"
-          aria-label={`Deploy ${gadgetSpec.name}`}
-          onPointerDown={(e) => {
-            e.stopPropagation();
-            onTriggerGadget();
-            e.currentTarget.blur();
-          }}
-          className="relative flex h-9 min-w-[70px] items-center justify-center gap-1 overflow-hidden rounded-xl border px-1.5 text-white transition-transform active:scale-95 sm:h-10 sm:min-w-[88px] sm:px-2"
+        <div
           style={{
-            backgroundColor: gadgetReady
-              ? 'rgba(245, 158, 11, 0.24)'
-              : 'rgba(15, 23, 42, 0.88)',
-            borderColor: gadgetReady
-              ? 'rgba(245, 158, 11, 0.85)'
-              : 'rgba(148, 163, 184, 0.35)',
+            transform: `translate3d(${gadgetOff.x}px, ${gadgetOff.y}px, 0)`,
           }}
         >
-          {!gadgetReady && (
-            <div
-              aria-hidden="true"
-              className="absolute inset-y-0 left-0 bg-amber-500/28"
-              style={{ width: `${Math.round(gadgetCooldownProgress * 100)}%` }}
-            />
-          )}
-          <GadgetIcon
-            className={`relative z-10 h-3.5 w-3.5 shrink-0 ${
-              gadgetReady ? 'text-amber-300' : 'text-slate-400'
-            }`}
-          />
-          <span className="relative z-10 text-[9px] font-extrabold tracking-wider uppercase sm:text-[10px]">
-            {gadgetSpec.shortLabel}
-          </span>
-          <span
-            className={`font-mono-tabular relative z-10 text-[9px] font-bold sm:text-[10px] ${
-              gadgetReady ? 'text-amber-300' : 'text-slate-300'
-            }`}
+          <button
+            type="button"
+            tabIndex={-1}
+            data-testid="gadget-btn"
+            aria-label={`Deploy ${gadgetSpec.name}`}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              onTriggerGadget();
+              e.currentTarget.blur();
+            }}
+            className="relative flex h-9 min-w-[70px] items-center justify-center gap-1 overflow-hidden rounded-xl border px-1.5 text-white transition-transform active:scale-95 sm:h-10 sm:min-w-[88px] sm:px-2"
+            style={{
+              backgroundColor: gadgetReady
+                ? 'rgba(245, 158, 11, 0.24)'
+                : 'rgba(15, 23, 42, 0.88)',
+              borderColor: gadgetReady
+                ? 'rgba(245, 158, 11, 0.85)'
+                : 'rgba(148, 163, 184, 0.35)',
+            }}
           >
-            {gadgetReady ? 'E' : `${Math.ceil(gadgetCooldownRemaining)}s`}
-          </span>
-        </button>
+            {!gadgetReady && (
+              <div
+                aria-hidden="true"
+                className="absolute inset-y-0 left-0 bg-amber-500/28"
+                style={{ width: `${Math.round(gadgetCooldownProgress * 100)}%` }}
+              />
+            )}
+            <GadgetIcon
+              className={`relative z-10 h-3.5 w-3.5 shrink-0 ${
+                gadgetReady ? 'text-amber-300' : 'text-slate-400'
+              }`}
+            />
+            <span className="relative z-10 text-[9px] font-extrabold tracking-wider uppercase sm:text-[10px]">
+              {gadgetSpec.shortLabel}
+            </span>
+            {gadgetMaxCharges > 1 && (
+              <span
+                data-testid="gadget-charges-badge"
+                className="font-mono-tabular relative z-10 rounded bg-amber-500/25 px-1 text-[8px] font-extrabold text-amber-200 sm:text-[9px]"
+              >
+                {gadgetCharges}/{gadgetMaxCharges}
+              </span>
+            )}
+            <span
+              className={`font-mono-tabular relative z-10 text-[9px] font-bold sm:text-[10px] ${
+                gadgetReady ? 'text-amber-300' : 'text-slate-300'
+              }`}
+            >
+              {gadgetReady ? 'E' : `${Math.ceil(gadgetCooldownRemaining)}s`}
+            </span>
+          </button>
+        </div>
 
         <button
           type="button"
@@ -281,92 +321,106 @@ export const ActionControls: React.FC<ActionControlsProps> = ({
         </button>
 
         {/* Reload Button */}
-        <button
-          type="button"
-          tabIndex={-1}
-          aria-label="Reload Weapon"
-          disabled={!canReload && !isReloading}
-          onPointerDown={(e) => {
-            e.stopPropagation();
-            onReload();
-            e.currentTarget.blur();
-          }}
-          className="relative flex h-12 w-12 flex-col items-center justify-center overflow-hidden rounded-xl border text-slate-100 transition-transform active:scale-95 disabled:opacity-45 sm:h-13 sm:w-13"
+        <div
           style={{
-            backgroundColor: 'rgba(15, 23, 42, 0.85)',
-            borderColor: isReloading
-              ? 'rgba(245, 158, 11, 0.85)'
-              : 'rgba(245, 158, 11, 0.5)',
+            transform: `translate3d(${reloadOff.x}px, ${reloadOff.y}px, 0)`,
           }}
         >
-          {isReloading && (
-            <div
-              aria-hidden="true"
-              className="absolute inset-x-0 bottom-0 bg-amber-500/35"
-              style={{ height: `${Math.round(reloadProgress * 100)}%` }}
-            />
-          )}
-          <svg
-            viewBox="0 0 24 24"
-            className="relative z-10 h-4.5 w-4.5 text-amber-400 sm:h-5 sm:w-5"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
+          <button
+            type="button"
+            tabIndex={-1}
+            data-testid="reload-btn"
+            aria-label="Reload Weapon"
+            disabled={!canReload && !isReloading}
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              onReload();
+              e.currentTarget.blur();
+            }}
+            className="relative flex h-12 w-12 flex-col items-center justify-center overflow-hidden rounded-xl border text-slate-100 transition-transform active:scale-95 disabled:opacity-45 sm:h-13 sm:w-13"
+            style={{
+              backgroundColor: 'rgba(15, 23, 42, 0.85)',
+              borderColor: isReloading
+                ? 'rgba(245, 158, 11, 0.85)'
+                : 'rgba(245, 158, 11, 0.5)',
+            }}
           >
-            <path d="M21 12a9 9 0 1 1-2.64-6.36" />
-            <polyline points="21 3 21 9 15 9" />
-          </svg>
-          <span className="relative z-10 mt-0.5 text-[9px] font-semibold tracking-wider text-amber-300 uppercase">
-            {isReloading ? '...' : 'Reload'}
-          </span>
-        </button>
+            {isReloading && (
+              <div
+                aria-hidden="true"
+                className="absolute inset-x-0 bottom-0 bg-amber-500/35"
+                style={{ height: `${Math.round(reloadProgress * 100)}%` }}
+              />
+            )}
+            <svg
+              viewBox="0 0 24 24"
+              className="relative z-10 h-4.5 w-4.5 text-amber-400 sm:h-5 sm:w-5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+              <polyline points="21 3 21 9 15 9" />
+            </svg>
+            <span className="relative z-10 mt-0.5 text-[9px] font-semibold tracking-wider text-amber-300 uppercase">
+              {isReloading ? '...' : 'Reload'}
+            </span>
+          </button>
+        </div>
 
         {/* Dash Button with Cooldown Indicator */}
-        <button
-          type="button"
-          tabIndex={-1}
-          aria-label="Dash"
-          onPointerDown={(e) => {
-            e.stopPropagation();
-            onDash();
-            e.currentTarget.blur();
-          }}
-          className="relative flex h-13 w-13 flex-col items-center justify-center overflow-hidden rounded-xl border text-white transition-transform active:scale-95 sm:h-14 sm:w-14"
+        <div
           style={{
-            backgroundColor: dashReady
-              ? 'rgba(14, 165, 233, 0.28)'
-              : 'rgba(15, 23, 42, 0.85)',
-            borderColor: dashReady
-              ? 'rgba(56, 189, 248, 0.9)'
-              : 'rgba(148, 163, 184, 0.35)',
+            transform: `translate3d(${dashOff.x}px, ${dashOff.y}px, 0)`,
           }}
         >
-          {!dashReady && (
-            <div
-              aria-hidden="true"
-              className="absolute inset-x-0 bottom-0 bg-sky-500/30"
-              style={{ height: `${Math.round(dashCooldownProgress * 100)}%` }}
-            />
-          )}
-          <svg
-            viewBox="0 0 24 24"
-            className="relative z-10 h-5 w-5 text-sky-300"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
+          <button
+            type="button"
+            tabIndex={-1}
+            data-testid="dash-btn"
+            aria-label="Dash"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              onDash();
+              e.currentTarget.blur();
+            }}
+            className="relative flex h-13 w-13 flex-col items-center justify-center overflow-hidden rounded-xl border text-white transition-transform active:scale-95 sm:h-14 sm:w-14"
+            style={{
+              backgroundColor: dashReady
+                ? 'rgba(14, 165, 233, 0.28)'
+                : 'rgba(15, 23, 42, 0.85)',
+              borderColor: dashReady
+                ? 'rgba(56, 189, 248, 0.9)'
+                : 'rgba(148, 163, 184, 0.35)',
+            }}
           >
-            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
-          </svg>
-          <span className="relative z-10 mt-0.5 text-[9px] font-bold tracking-wider text-sky-200 uppercase">
-            {dashReady ? 'Dash' : `${Math.round(dashCooldownProgress * 100)}%`}
-          </span>
-        </button>
+            {!dashReady && (
+              <div
+                aria-hidden="true"
+                className="absolute inset-x-0 bottom-0 bg-sky-500/30"
+                style={{ height: `${Math.round(dashCooldownProgress * 100)}%` }}
+              />
+            )}
+            <svg
+              viewBox="0 0 24 24"
+              className="relative z-10 h-5 w-5 text-sky-300"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+            </svg>
+            <span className="relative z-10 mt-0.5 text-[9px] font-bold tracking-wider text-sky-200 uppercase">
+              {dashReady ? 'Dash' : `${Math.round(dashCooldownProgress * 100)}%`}
+            </span>
+          </button>
+        </div>
       </div>
     </div>
   );

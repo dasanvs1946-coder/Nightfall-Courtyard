@@ -19,6 +19,19 @@
           "pattern": "^[A-Za-z0-9 ]{3,15}$",
           "description": "Public player name (3-15 letters, numbers, or spaces, zero PII)."
         },
+        "clanTag": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 4,
+          "pattern": "^(|[A-Z0-9]{3,4})$",
+          "description": "Optional 3-4 uppercase alphanumeric clan/squad tag."
+        },
+        "appVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16,
+          "description": "Client build version string (e.g. '3.0.0')."
+        },
         "wave": {
           "type": "integer",
           "description": "Highest wave reached in the recorded run (1..200)."
@@ -33,12 +46,12 @@
         },
         "mode": {
           "type": "string",
-          "enum": ["normal", "storm", "blackout", "boss_rush", "daily"],
+          "enum": ["normal", "storm", "blackout", "boss_rush", "extraction", "siege", "weekly", "daily"],
           "description": "Game mode played during the recorded run."
         },
         "arena": {
           "type": "string",
-          "enum": ["courtyard", "parking_deck", "helipad"],
+          "enum": ["courtyard", "parking_deck", "helipad", "subway", "biolab", "rooftop"],
           "description": "Arena map selected during the recorded run."
         },
         "skinId": {
@@ -107,6 +120,19 @@
           "pattern": "^[A-Za-z0-9 ]{3,15}$",
           "description": "Public player name (3-15 letters, numbers, or spaces)."
         },
+        "clanTag": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 4,
+          "pattern": "^(|[A-Z0-9]{3,4})$",
+          "description": "Optional 3-4 uppercase alphanumeric clan/squad tag."
+        },
+        "appVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16,
+          "description": "Client build version string."
+        },
         "dateKey": {
           "type": "string",
           "minLength": 10,
@@ -139,7 +165,7 @@
         },
         "arena": {
           "type": "string",
-          "enum": ["courtyard", "parking_deck", "helipad"],
+          "enum": ["courtyard", "parking_deck", "helipad", "subway", "biolab", "rooftop"],
           "description": "Deterministic arena for this UTC date."
         },
         "skinId": {
@@ -191,14 +217,145 @@
         "updatedAt"
       ]
     },
+    "PlayerSave": {
+      "title": "PlayerSave",
+      "description": "Cloud save backup for player career progression (Scrap, skins, classes, Tech Lab, camos, mastery, daily contracts) tied to silent anonymous Firebase Auth UID.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Owner Firebase Auth UID."
+        },
+        "callsign": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 15,
+          "pattern": "^[A-Za-z0-9 ]{3,15}$",
+          "description": "Player callsign."
+        },
+        "clanTag": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 4,
+          "pattern": "^(|[A-Z0-9]{3,4})$",
+          "description": "Optional 3-4 character clan tag."
+        },
+        "highScore": {
+          "type": "integer",
+          "description": "Saved personal best score."
+        },
+        "career": {
+          "type": "object",
+          "description": "Sanitized CareerStats map (Scrap, skins, classes, weapons, drones, Tech Lab, kills, contracts)."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the last cloud backup."
+        }
+      },
+      "required": ["uid", "callsign", "clanTag", "highScore", "career", "updatedAt"]
+    },
+    "TransferCodeRecord": {
+      "title": "TransferCodeRecord",
+      "description": "Short 6-character cross-device save transfer payload stored under transfer_codes/{code}.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 6,
+          "maxLength": 6,
+          "pattern": "^[A-Z0-9]{6}$",
+          "description": "6-character uppercase alphanumeric transfer code."
+        },
+        "ownerUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "UID of the device that generated the transfer code."
+        },
+        "callsign": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 15,
+          "pattern": "^[A-Za-z0-9 ]{3,15}$",
+          "description": "Transferred player callsign."
+        },
+        "clanTag": {
+          "type": "string",
+          "minLength": 0,
+          "maxLength": 4,
+          "pattern": "^(|[A-Z0-9]{3,4})$",
+          "description": "Transferred clan tag."
+        },
+        "highScore": {
+          "type": "integer",
+          "description": "Transferred personal best score."
+        },
+        "career": {
+          "type": "object",
+          "description": "Full sanitized CareerStats progression snapshot."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when code was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when code was refreshed."
+        }
+      },
+      "required": ["code", "ownerUid", "callsign", "clanTag", "highScore", "career", "createdAt", "updatedAt"]
+    },
+    "PlayerLoginRecord": {
+      "title": "PlayerLoginRecord",
+      "description": "Silent platform analytics record tracking APK vs WEB login counts per anonymous UID (zero PII).",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Authenticated Firebase UID matching the document ID."
+        },
+        "platform": {
+          "type": "string",
+          "enum": ["APK", "WEB"],
+          "description": "Client runtime platform ('APK' or 'WEB')."
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "description": "Client hostname (window.location.hostname)."
+        },
+        "loginCount": {
+          "type": "integer",
+          "description": "Cumulative login session count."
+        },
+        "lastLoginAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the latest anonymous auth login."
+        }
+      },
+      "required": ["uid", "platform", "host", "loginCount", "lastLoginAt"]
+    },
     "AppConfig": {
       "title": "AppConfig",
-      "description": "Public read-only Android APK release metadata stored at config/app.",
+      "description": "Public read-only release metadata stored at config/app for Android APK and Web update banners.",
       "type": "object",
       "properties": {
         "latestVersion": {
           "type": "string",
-          "description": "Semantic version string (e.g. '2.0.1' or 'v2.0.1')."
+          "description": "Semantic version string (e.g. '3.0.0' or 'v3.0.0')."
         },
         "downloadUrl": {
           "type": "string",
@@ -226,11 +383,29 @@
       },
       "description": "Daily Seeded Challenge leaderboard entries keyed by UTC date and authenticated player UID."
     },
+    "/players/{playerId}": {
+      "schema": {
+        "$ref": "#/entities/PlayerSave"
+      },
+      "description": "Private cloud save progression keyed by authenticated player UID."
+    },
+    "/transfer_codes/{code}": {
+      "schema": {
+        "$ref": "#/entities/TransferCodeRecord"
+      },
+      "description": "Cross-device 6-character save transfer snapshots."
+    },
+    "/player_logins/{playerId}": {
+      "schema": {
+        "$ref": "#/entities/PlayerLoginRecord"
+      },
+      "description": "Silent platform login analytics keyed by authenticated player UID."
+    },
     "/config/{configId}": {
       "schema": {
         "$ref": "#/entities/AppConfig"
       },
-      "description": "Public read-only app configuration document (config/app) for native Android update checks."
+      "description": "Public read-only app configuration document (config/app) for update checks."
     }
   }
 }

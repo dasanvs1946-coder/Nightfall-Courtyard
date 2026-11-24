@@ -30,15 +30,54 @@ export type ZombieKind =
   | 'breacher'
   | 'bomber'
   | 'howler'
+  | 'juggernaut'
+  | 'siege_breaker'
+  | 'necromancer'
+  | 'matriarch'
+  | 'crawler'
+  | 'ravager'
   | 'boss';
 
 export type TacticalGearId = 'mine' | 'turret' | 'flashbang';
 
 export type GadgetId = 'tripmine' | 'decoy' | 'wire' | 'mortar';
 
-export type ArenaId = 'courtyard' | 'parking_deck' | 'helipad';
+export type ArenaId =
+  | 'courtyard'
+  | 'parking_deck'
+  | 'helipad'
+  | 'subway'
+  | 'biolab'
+  | 'rooftop';
 
-export type GameModeId = 'normal' | 'storm' | 'blackout' | 'boss_rush' | 'daily';
+export type EliteAffixId =
+  | 'emp_jammer'
+  | 'cryo_proof'
+  | 'phase_blinker'
+  | 'vampiric'
+  | 'berserker';
+
+export type MidWaveEventId = 'orbital_supply' | 'blood_moon' | 'emp_outage';
+
+export type TacticalPadKind = 'auto_turret' | 'overcharge_light';
+
+export type GameModeId =
+  | 'normal'
+  | 'storm'
+  | 'blackout'
+  | 'boss_rush'
+  | 'daily'
+  | 'extraction'
+  | 'siege'
+  | 'weekly'
+  | 'sandbox';
+
+export type WeeklyMutatorId =
+  | 'one_hit_chaos'
+  | 'explosives_only'
+  | 'hyper_speed_2x'
+  | 'zero_reload'
+  | 'all_elite_nightmare';
 
 export type DailyMutatorId =
   | 'acid_rain'
@@ -112,11 +151,32 @@ export type WeaponMasteryLevels = Record<WeaponId, number>;
 
 export type GraphicsQuality = 'low' | 'medium' | 'high';
 
+export type FpsCap = 30 | 60 | 120;
+
+export interface TouchButtonOffset {
+  x: number; // -80..80 px
+  y: number; // -80..80 px
+}
+
+export interface TouchHudSettings {
+  joystickScale: number; // 0.75..1.35
+  buttonOpacity: number; // 0.4..1.0
+  dashOffset: TouchButtonOffset;
+  ultimateOffset: TouchButtonOffset;
+  gadgetOffset: TouchButtonOffset;
+  reloadOffset: TouchButtonOffset;
+}
+
 export interface GameSettings {
   graphicsQuality: GraphicsQuality;
+  fpsCap: FpsCap;
   hapticsEnabled: boolean;
   autoFire: boolean;
   showFps: boolean;
+  masterVolume: number; // 0..1
+  musicVolume: number; // 0..1
+  sfxVolume: number; // 0..1
+  touchHud: TouchHudSettings;
 }
 
 export type SkinId =
@@ -141,19 +201,71 @@ export type PermanentUpgradeId =
 
 export type PermanentUpgrades = Record<PermanentUpgradeId, number>;
 
+export type TechLabUpgradeId =
+  | 'reinforced_plating'
+  | 'kinetic_thrusters'
+  | 'precision_optics'
+  | 'tactical_rig'
+  | 'salvage_protocol';
+
+export type TechLabLevels = Record<TechLabUpgradeId, number>;
+
+export type WeaponCamoId =
+  | 'none'
+  | 'carbon_fiber'
+  | 'tactical_gold'
+  | 'reactive_neon';
+
+export type DailyContractEventType =
+  | 'juggernaut_shatter'
+  | 'reach_combo'
+  | 'emp_elite_kill'
+  | 'boss_kill'
+  | 'extraction_complete'
+  | 'gadget_deploy'
+  | 'rifle_smg_kill'
+  | 'blackout_siege_wave';
+
+export interface DailyContractSpec {
+  id: string;
+  title: string;
+  description: string;
+  eventType: DailyContractEventType;
+  target: number;
+  scrapReward: number;
+  accentHex: string;
+  valueScale?: number;
+  valueSuffix?: string;
+}
+
+export interface DailyContractsState {
+  dateKey: string;
+  progress: Record<string, number>;
+  claimedIds: string[];
+}
+
 export type KillsByEnemyType = Record<ZombieKind, number>;
+
+export type KillsByWeapon = Record<WeaponId, number>;
+
+export type EquippedWeaponCamos = Partial<Record<WeaponId, WeaponCamoId>>;
 
 export interface CareerStats {
   totalKills: number;
   bestWave: number;
   bestScore: number;
   bossesKilled: number;
+  totalExtractions: number;
   scrap: number;
   killsByEnemyType: KillsByEnemyType;
+  killsByWeapon: KillsByWeapon;
+  equippedCamos: EquippedWeaponCamos;
   unlockedSkins: SkinId[];
   equippedSkinId: SkinId;
   selectedClass: SurvivorClassId;
   permanentUpgrades: PermanentUpgrades;
+  techLab: TechLabLevels;
+  dailyContracts: DailyContractsState;
   unlockedWeapons: WeaponId[];
   unlockedDrones: DroneId[];
   equippedDrone: DroneId;
@@ -227,11 +339,12 @@ export interface SavedRunProgress {
   perkDraftSeedCursor?: number;
   weaponDraftPending?: boolean;
   activeInterrupted?: boolean;
+  inRunScrap?: number;
 }
 
 export interface ObstacleBox {
   id: string;
-  kind: 'car' | 'crate' | 'lamp' | 'planter' | 'pillar';
+  kind: 'car' | 'crate' | 'lamp' | 'planter' | 'pillar' | 'pod' | 'pillar_tech';
   x: number;
   z: number;
   halfW: number;
@@ -240,6 +353,8 @@ export interface ObstacleBox {
   rotationY: number; // radians
   blocksBullets: boolean;
   colorVariant?: number;
+  destructible?: boolean;
+  maxHp?: number;
 }
 
 export interface FloatingDamage {
@@ -262,6 +377,27 @@ export interface BossHudState {
   maxHp: number;
   wave: number;
   phase2?: boolean;
+  phase: 1 | 2 | 3;
+  shielded: boolean;
+  pylonsRemaining: number;
+}
+
+export interface ActiveEventHudState {
+  id: MidWaveEventId;
+  title: string;
+  subtitle: string;
+  progress?: number; // 0..1
+  remainingSec?: number;
+  accentHex: string;
+}
+
+export interface PadPromptHudState {
+  kind: TacticalPadKind;
+  label: string;
+  cost: number;
+  progress: number; // 0..1
+  affordable: boolean;
+  activeRemaining: number;
 }
 
 export type WeatherKind = 'clear' | 'mist' | 'rain' | 'storm';
@@ -271,6 +407,7 @@ export interface MinimapEnemy {
   z: number;
   kind: ZombieKind;
   revealed?: boolean;
+  isElite?: boolean;
 }
 
 export interface MinimapPickup {
@@ -287,11 +424,21 @@ export interface MinimapHazard {
     | 'mine'
     | 'turret'
     | 'barrel'
+    | 'cryo_canister'
     | 'generator_on'
     | 'generator_off'
     | 'decoy'
     | 'wire'
-    | 'tripmine';
+    | 'tripmine'
+    | 'pylon'
+    | 'train_lane'
+    | 'toxic_vent'
+    | 'breaker_switch'
+    | 'pad_turret'
+    | 'pad_overcharge'
+    | 'orbital_pod'
+    | 'reactor_core'
+    | 'extraction_zone';
 }
 
 export interface MinimapSnapshot {
@@ -310,6 +457,14 @@ export interface GeneratorHudStatus {
   powered: boolean;
   progress: number; // 0..1
   playerInside: boolean;
+}
+
+export interface NextRivalInfo {
+  rank: number;
+  callsign: string;
+  clanTag: string;
+  targetScore: number;
+  scoreToOvertake: number;
 }
 
 export interface HudSnapshot {
@@ -368,9 +523,17 @@ export interface HudSnapshot {
   dailyMutatorLabel: string | null;
   generators: GeneratorHudStatus[];
   barrelsReady: number;
+  inRunScrap: number;
+  activeEvent: ActiveEventHudState | null;
+  activePadPrompt: PadPromptHudState | null;
+  overchargeRemaining: number;
+  hazardWarningBanner: string | null;
   bossPhase2Active: boolean;
   bossesKilledInRun: number;
   callsign: string;
+  clanTag: string;
+  nextRival: NextRivalInfo | null;
+  rivalOvertakenBanner: string | null;
   activeBoss: BossHudState | null;
   weather: WeatherKind;
   bloodSplatter: number; // 0..1 screen blood splatter intensity
@@ -382,5 +545,22 @@ export interface HudSnapshot {
   equippedSkinId: SkinId;
   selectedClass: SurvivorClassId;
   lastScrapEarned: number;
+  weeklyMutatorId: WeeklyMutatorId | null;
+  weeklyMutatorName: string | null;
+  reactorCore: { hp: number; maxHp: number } | null;
+  extractionState: {
+    wave: number;
+    holdProgress: number;
+    holdSecRequired: number;
+    multiplier: number;
+    active: boolean;
+    wavedOff: boolean;
+  } | null;
+  extractedVictory: boolean;
+  customGameOverTitle: string | null;
+  gadgetCharges: number;
+  gadgetMaxCharges: number;
+  perkRerollsRemaining: number;
+  sandboxMode: boolean;
   minimap: MinimapSnapshot;
 }

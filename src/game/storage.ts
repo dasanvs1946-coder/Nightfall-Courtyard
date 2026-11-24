@@ -10,6 +10,7 @@ import {
   EvolutionId,
   GadgetId,
   GameModeId,
+  NextRivalInfo,
   PerkId,
   SavedRunProgress,
   TacticalGearId,
@@ -29,6 +30,15 @@ import { createInitialWeapons, WEAPON_ORDER, WEAPON_SPECS } from './weapons';
 const HIGH_SCORE_KEY = 'nightfall_courtyard_high_score_v1';
 const RUN_PROGRESS_KEY = 'nightfall_courtyard_run_progress_v1';
 const CALLSIGN_KEY = 'nightfall_courtyard_callsign_v1';
+const CLAN_TAG_KEY = 'nightfall_courtyard_clan_tag_v1';
+const CACHED_TOP20_KEY = 'nightfall_courtyard_cached_top20_v1';
+
+export interface CachedRivalEntry {
+  uid: string;
+  callsign: string;
+  clanTag: string;
+  score: number;
+}
 
 export interface StorageLike {
   getItem(key: string): string | null;
@@ -97,6 +107,134 @@ export function saveCallsign(
     }
   }
   return valid;
+}
+
+export function sanitizeClanTag(raw: string): string {
+  return raw
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, 4);
+}
+
+export function isValidClanTag(raw: string): boolean {
+  const clean = sanitizeClanTag(raw);
+  return clean.length === 0 || (clean.length >= 3 && clean.length <= 4);
+}
+
+export function loadClanTag(
+  storage: StorageLike | null = getBrowserStorage(),
+): string {
+  if (!storage) return '';
+  try {
+    const raw = storage.getItem(CLAN_TAG_KEY);
+    if (!raw) return '';
+    const clean = sanitizeClanTag(raw);
+    return clean.length >= 3 && clean.length <= 4 ? clean : '';
+  } catch {
+    return '';
+  }
+}
+
+export function saveClanTag(
+  raw: string,
+  storage: StorageLike | null = getBrowserStorage(),
+): string {
+  const clean = sanitizeClanTag(raw);
+  const valid = clean.length >= 3 && clean.length <= 4 ? clean : '';
+  if (storage) {
+    try {
+      if (valid) {
+        storage.setItem(CLAN_TAG_KEY, valid);
+      } else if (storage.removeItem) {
+        storage.removeItem(CLAN_TAG_KEY);
+      } else {
+        storage.setItem(CLAN_TAG_KEY, '');
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  }
+  return valid;
+}
+
+export function loadCachedTop20Rivals(
+  storage: StorageLike | null = getBrowserStorage(),
+): CachedRivalEntry[] {
+  if (!storage) return [];
+  try {
+    const raw = storage.getItem(CACHED_TOP20_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const list: CachedRivalEntry[] = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== 'object') continue;
+      const obj = item as Partial<CachedRivalEntry>;
+      const score = Math.max(0, Math.round(Number(obj.score) || 0));
+      const callsign = sanitizeCallsign(String(obj.callsign ?? '')).trim();
+      if (!callsign || score <= 0) continue;
+      list.push({
+        uid: String(obj.uid ?? ''),
+        callsign,
+        clanTag: sanitizeClanTag(String(obj.clanTag ?? '')),
+        score,
+      });
+    }
+    list.sort((a, b) => b.score - a.score);
+    return list.slice(0, 20);
+  } catch {
+    return [];
+  }
+}
+
+export function saveCachedTop20Rivals(
+  entries: CachedRivalEntry[],
+  storage: StorageLike | null = getBrowserStorage(),
+): void {
+  if (!storage) return;
+  try {
+    const clean = entries
+      .filter((e) => e && e.score > 0 && e.callsign.trim().length > 0)
+      .slice(0, 20)
+      .map((e) => ({
+        uid: String(e.uid || ''),
+        callsign: sanitizeCallsign(e.callsign).trim(),
+        clanTag: sanitizeClanTag(e.clanTag || ''),
+        score: Math.max(0, Math.round(e.score)),
+      }))
+      .sort((a, b) => b.score - a.score);
+    storage.setItem(CACHED_TOP20_KEY, JSON.stringify(clean));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+export function computeNextRival(
+  currentScore: number,
+  rivals: CachedRivalEntry[],
+  selfUid?: string | null,
+): NextRivalInfo | null {
+  if (!rivals.length) return null;
+  const sorted = [...rivals].sort((a, b) => b.score - a.score);
+  // Find the lowest-ranked (closest target) rival whose score is still strictly above currentScore
+  let targetIdx = -1;
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const entry = sorted[i];
+    if (selfUid && entry.uid === selfUid) continue;
+    if (entry.score > currentScore) {
+      targetIdx = i;
+      break;
+    }
+  }
+  if (targetIdx === -1) return null;
+  const target = sorted[targetIdx];
+  return {
+    rank: targetIdx + 1,
+    callsign: target.callsign,
+    clanTag: target.clanTag,
+    targetScore: target.score,
+    scoreToOvertake: Math.max(1, target.score - Math.floor(currentScore)),
+  };
 }
 
 export function loadHighScore(storage: StorageLike | null = getBrowserStorage()): number {
@@ -264,6 +402,9 @@ export function loadRunProgress(
         : 'courtyard';
 
     let mode: GameModeId | 'survival' = 'normal';
+    if (parsed.mode === 'sandbox') {
+      return null;
+    }
     if (parsed.mode === 'survival') {
       mode = 'survival';
     } else if (
@@ -312,6 +453,7 @@ export function loadRunProgress(
       ),
       weaponDraftPending: Boolean(parsed.weaponDraftPending),
       activeInterrupted: parsed.activeInterrupted !== false,
+      inRunScrap: Math.max(0, Math.floor(Number(parsed.inRunScrap) || 0)),
     };
   } catch {
     return null;
@@ -322,7 +464,7 @@ export function saveRunProgress(
   progress: SavedRunProgress,
   storage: StorageLike | null = getBrowserStorage(),
 ): void {
-  if (!storage) return;
+  if (!storage || progress.mode === 'sandbox') return;
   try {
     const clean: SavedRunProgress = {
       lastWave: Math.max(1, Math.floor(progress.lastWave)),
@@ -348,6 +490,7 @@ export function saveRunProgress(
       perkDraftSeedCursor: Math.max(0, Math.floor(progress.perkDraftSeedCursor ?? 0)),
       weaponDraftPending: Boolean(progress.weaponDraftPending),
       activeInterrupted: progress.activeInterrupted ?? true,
+      inRunScrap: Math.max(0, Math.floor(progress.inRunScrap ?? 0)),
     };
     storage.setItem(RUN_PROGRESS_KEY, JSON.stringify(clean));
   } catch {

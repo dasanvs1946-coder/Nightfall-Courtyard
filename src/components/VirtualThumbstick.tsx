@@ -5,6 +5,8 @@ interface VirtualThumbstickProps {
   label: string;
   accentColor: string;
   testId: string;
+  scale?: number;
+  opacity?: number;
   onChange: (x: number, y: number, active: boolean) => void;
 }
 
@@ -16,8 +18,12 @@ export const VirtualThumbstick: React.FC<VirtualThumbstickProps> = ({
   label,
   accentColor,
   testId,
+  scale = 1,
+  opacity = 0.92,
   onChange,
 }) => {
+  const safeScale = Math.max(0.75, Math.min(1.35, scale));
+  const safeOpacity = Math.max(0.4, Math.min(1, opacity));
   const zoneRef = useRef<HTMLDivElement | null>(null);
   const pointerIdRef = useRef<number | null>(null);
   const originClientRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -38,13 +44,14 @@ export const VirtualThumbstick: React.FC<VirtualThumbstickProps> = ({
     const dy = clientY - cy;
     const dist = Math.hypot(dx, dy);
 
-    const clamped = Math.min(dist, KNOB_MAX_TRAVEL);
+    const maxTravelScreen = KNOB_MAX_TRAVEL * safeScale;
+    const clamped = Math.min(dist, maxTravelScreen);
     const angle = Math.atan2(dy, dx);
-    const ox = dist > 0.5 ? Math.cos(angle) * clamped : 0;
-    const oy = dist > 0.5 ? Math.sin(angle) * clamped : 0;
+    const oxScreen = dist > 0.5 ? Math.cos(angle) * clamped : 0;
+    const oyScreen = dist > 0.5 ? Math.sin(angle) * clamped : 0;
 
-    setKnobOffset({ x: ox, y: oy });
-    onChange(ox / KNOB_MAX_TRAVEL, oy / KNOB_MAX_TRAVEL, true);
+    setKnobOffset({ x: oxScreen / safeScale, y: oyScreen / safeScale });
+    onChange(oxScreen / maxTravelScreen, oyScreen / maxTravelScreen, true);
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -62,8 +69,14 @@ export const VirtualThumbstick: React.FC<VirtualThumbstickProps> = ({
     if (e.pointerType === 'touch') {
       // Floating thumbstick spawns where the player's thumb touches inside the zone
       const maxShift = 28;
-      const shiftX = Math.max(-maxShift, Math.min(maxShift, e.clientX - centerX));
-      const shiftY = Math.max(-maxShift, Math.min(maxShift, e.clientY - centerY));
+      const shiftX = Math.max(
+        -maxShift,
+        Math.min(maxShift, (e.clientX - centerX) / safeScale),
+      );
+      const shiftY = Math.max(
+        -maxShift,
+        Math.min(maxShift, (e.clientY - centerY) / safeScale),
+      );
       setOriginOffset({ x: shiftX, y: shiftY });
       originClientRef.current = { x: e.clientX, y: e.clientY };
       setActive(true);
@@ -106,6 +119,11 @@ export const VirtualThumbstick: React.FC<VirtualThumbstickProps> = ({
       onPointerMove={handlePointerMove}
       onPointerUp={release}
       onPointerCancel={release}
+      style={{
+        transform: `scale(${safeScale})`,
+        transformOrigin: side === 'left' ? 'bottom left' : 'bottom right',
+        opacity: safeOpacity,
+      }}
       className="pointer-events-auto relative flex h-[132px] w-[132px] items-center justify-center touch-none select-none sm:h-[140px] sm:w-[140px]"
     >
       {/* Floating outer base ring */}

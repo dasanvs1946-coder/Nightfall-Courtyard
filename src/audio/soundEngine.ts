@@ -1,12 +1,25 @@
 import { CrateKind, TacticalGearId, WeaponId } from '../game/types';
 
+export interface AdaptiveMusicState {
+  activeGameplay: boolean;
+  isBossWave: boolean;
+  bloodMoonActive: boolean;
+  hpRatio: number; // 0..1
+}
+
 export class SoundEngine {
   private ctx: AudioContext | null = null;
   private noiseBuffer: AudioBuffer | null = null;
+  private masterGain: GainNode | null = null;
+  private sfxGain: GainNode | null = null;
+  private musicGain: GainNode | null = null;
   private muted = false;
+  private masterVolume = 0.85;
+  private musicVolume = 0.7;
+  private sfxVolume = 0.85;
   private bossIntensityActive = false;
-  private bossPulseCooldown = 0;
-  private bossBeatStep = 0;
+  private musicPulseCooldown = 0;
+  private musicStep = 0;
 
   public isMuted(): boolean {
     return this.muted;
@@ -14,11 +27,29 @@ export class SoundEngine {
 
   public setMuted(muted: boolean): void {
     this.muted = muted;
+    this.syncGainLevels();
   }
 
   public toggleMute(): boolean {
     this.muted = !this.muted;
+    this.syncGainLevels();
     return this.muted;
+  }
+
+  public setVolumes(master: number, music: number, sfx: number): void {
+    this.masterVolume = Math.max(0, Math.min(1, master));
+    this.musicVolume = Math.max(0, Math.min(1, music));
+    this.sfxVolume = Math.max(0, Math.min(1, sfx));
+    this.syncGainLevels();
+  }
+
+  private syncGainLevels(): void {
+    if (!this.ctx || !this.masterGain || !this.sfxGain || !this.musicGain) return;
+    const now = this.ctx.currentTime;
+    const effectiveMaster = this.muted ? 0 : this.masterVolume;
+    this.masterGain.gain.setTargetAtTime(effectiveMaster, now, 0.02);
+    this.sfxGain.gain.setTargetAtTime(this.sfxVolume, now, 0.02);
+    this.musicGain.gain.setTargetAtTime(this.musicVolume, now, 0.02);
   }
 
   public unlock(): void {
@@ -37,6 +68,13 @@ export class SoundEngine {
       if (!AudioCtx) return;
       this.ctx = new AudioCtx();
       this.noiseBuffer = this.createNoiseBuffer(this.ctx);
+      this.masterGain = this.ctx.createGain();
+      this.sfxGain = this.ctx.createGain();
+      this.musicGain = this.ctx.createGain();
+      this.sfxGain.connect(this.masterGain);
+      this.musicGain.connect(this.masterGain);
+      this.masterGain.connect(this.ctx.destination);
+      this.syncGainLevels();
     }
     if (this.ctx.state === 'suspended') {
       void this.ctx.resume().catch(() => {});
@@ -54,9 +92,17 @@ export class SoundEngine {
   }
 
   private ready(): AudioContext | null {
-    if (this.muted) return null;
+    if (this.muted || this.masterVolume <= 0.001) return null;
     if (!this.ctx || this.ctx.state !== 'running') return null;
     return this.ctx;
+  }
+
+  private getSfxOut(ctx: AudioContext): AudioNode {
+    return this.sfxGain ?? ctx.destination;
+  }
+
+  private getMusicOut(ctx: AudioContext): AudioNode {
+    return this.musicGain ?? ctx.destination;
   }
 
   public playShoot(weapon: WeaponId): void {
@@ -79,7 +125,7 @@ export class SoundEngine {
       gain.gain.exponentialRampToValueAtTime(0.001, now + 0.17);
       slash.connect(filter);
       filter.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getSfxOut(ctx));
       slash.start(now);
       slash.stop(now + 0.18);
 
@@ -91,7 +137,7 @@ export class SoundEngine {
       cGain.gain.setValueAtTime(0.14, now);
       cGain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
       chime.connect(cGain);
-      cGain.connect(ctx.destination);
+      cGain.connect(this.getSfxOut(ctx));
       chime.start(now);
       chime.stop(now + 0.16);
       return;
@@ -155,7 +201,7 @@ export class SoundEngine {
 
     noise.connect(filter);
     filter.connect(nGain);
-    nGain.connect(ctx.destination);
+    nGain.connect(this.getSfxOut(ctx));
     noise.start(now);
     noise.stop(now + nDur);
 
@@ -190,7 +236,7 @@ export class SoundEngine {
     oGain.gain.exponentialRampToValueAtTime(0.001, now + nDur);
 
     osc.connect(oGain);
-    oGain.connect(ctx.destination);
+    oGain.connect(this.getSfxOut(ctx));
     osc.start(now);
     osc.stop(now + nDur);
   }
@@ -207,7 +253,7 @@ export class SoundEngine {
     gain.gain.setValueAtTime(0.06, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.035);
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxOut(ctx));
     osc.start(now);
     osc.stop(now + 0.04);
   }
@@ -224,7 +270,7 @@ export class SoundEngine {
     gain.gain.setValueAtTime(0.11, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.075);
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxOut(ctx));
     osc.start(now);
     osc.stop(now + 0.08);
   }
@@ -243,7 +289,7 @@ export class SoundEngine {
       gain.gain.setValueAtTime(0.12, t);
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getSfxOut(ctx));
       osc.start(t);
       osc.stop(t + 0.065);
     });
@@ -262,7 +308,7 @@ export class SoundEngine {
     gain.gain.setValueAtTime(heavy ? 0.14 : 0.09, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.07);
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxOut(ctx));
     osc.start(now);
     osc.stop(now + 0.075);
   }
@@ -282,7 +328,7 @@ export class SoundEngine {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
     noise.connect(filter);
     filter.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxOut(ctx));
     noise.start(now);
     noise.stop(now + 0.17);
   }
@@ -299,7 +345,7 @@ export class SoundEngine {
     gain.gain.setValueAtTime(0.24, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.23);
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxOut(ctx));
     osc.start(now);
     osc.stop(now + 0.24);
   }
@@ -320,7 +366,7 @@ export class SoundEngine {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
     noise.connect(filter);
     filter.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxOut(ctx));
     noise.start(now);
     noise.stop(now + 0.17);
   }
@@ -344,7 +390,7 @@ export class SoundEngine {
       gain.gain.setValueAtTime(0.12, t);
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getSfxOut(ctx));
       osc.start(t);
       osc.stop(t + 0.13);
     });
@@ -362,7 +408,7 @@ export class SoundEngine {
     gain.gain.setValueAtTime(0.12, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.36);
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxOut(ctx));
     osc.start(now);
     osc.stop(now + 0.37);
   }
@@ -381,7 +427,7 @@ export class SoundEngine {
       gain.gain.setValueAtTime(0.14, t);
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getSfxOut(ctx));
       osc.start(t);
       osc.stop(t + 0.29);
     });
@@ -406,7 +452,7 @@ export class SoundEngine {
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.38);
       osc.connect(filter);
       filter.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getSfxOut(ctx));
       osc.start(t);
       osc.stop(t + 0.4);
     });
@@ -424,7 +470,7 @@ export class SoundEngine {
     gain.gain.setValueAtTime(0.14, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.23);
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxOut(ctx));
     osc.start(now);
     osc.stop(now + 0.24);
   }
@@ -442,7 +488,7 @@ export class SoundEngine {
       gain.gain.setValueAtTime(0.11, t);
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getSfxOut(ctx));
       osc.start(t);
       osc.stop(t + 0.15);
     });
@@ -465,7 +511,7 @@ export class SoundEngine {
     crackGain.gain.exponentialRampToValueAtTime(0.001, now + 0.42);
     crack.connect(crackFilter);
     crackFilter.connect(crackGain);
-    crackGain.connect(ctx.destination);
+    crackGain.connect(this.getSfxOut(ctx));
     crack.start(now);
     crack.stop(now + 0.44);
 
@@ -483,7 +529,7 @@ export class SoundEngine {
     rGain.gain.exponentialRampToValueAtTime(0.001, now + 0.9);
     rumble.connect(lowpass);
     lowpass.connect(rGain);
-    rGain.connect(ctx.destination);
+    rGain.connect(this.getSfxOut(ctx));
     rumble.start(now);
     rumble.stop(now + 0.92);
   }
@@ -505,7 +551,7 @@ export class SoundEngine {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.19);
     osc.connect(filter);
     filter.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxOut(ctx));
     osc.start(now);
     osc.stop(now + 0.2);
   }
@@ -526,7 +572,7 @@ export class SoundEngine {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.23);
     noise.connect(filter);
     filter.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxOut(ctx));
     noise.start(now);
     noise.stop(now + 0.24);
   }
@@ -543,7 +589,7 @@ export class SoundEngine {
     gain.gain.setValueAtTime(0.11, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxOut(ctx));
     osc.start(now);
     osc.stop(now + 0.17);
   }
@@ -561,7 +607,7 @@ export class SoundEngine {
       gain.gain.setValueAtTime(0.09, now);
       gain.gain.exponentialRampToValueAtTime(0.001, now + 0.085);
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getSfxOut(ctx));
       osc.start(now);
       osc.stop(now + 0.09);
     });
@@ -586,7 +632,7 @@ export class SoundEngine {
       gain.gain.setValueAtTime(0.12, t);
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.09);
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getSfxOut(ctx));
       osc.start(t);
       osc.stop(t + 0.095);
     });
@@ -607,7 +653,7 @@ export class SoundEngine {
     nGain.gain.exponentialRampToValueAtTime(0.001, now + 0.44);
     noise.connect(filter);
     filter.connect(nGain);
-    nGain.connect(ctx.destination);
+    nGain.connect(this.getSfxOut(ctx));
     noise.start(now);
     noise.stop(now + 0.45);
 
@@ -619,7 +665,7 @@ export class SoundEngine {
     oGain.gain.setValueAtTime(0.3, now);
     oGain.gain.exponentialRampToValueAtTime(0.001, now + 0.36);
     osc.connect(oGain);
-    oGain.connect(ctx.destination);
+    oGain.connect(this.getSfxOut(ctx));
     osc.start(now);
     osc.stop(now + 0.38);
   }
@@ -638,7 +684,7 @@ export class SoundEngine {
     nGain.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
     noise.connect(filter);
     filter.connect(nGain);
-    nGain.connect(ctx.destination);
+    nGain.connect(this.getSfxOut(ctx));
     noise.start(now);
     noise.stop(now + 0.26);
 
@@ -650,7 +696,7 @@ export class SoundEngine {
     oGain.gain.setValueAtTime(0.09, now);
     oGain.gain.exponentialRampToValueAtTime(0.001, now + 0.46);
     osc.connect(oGain);
-    oGain.connect(ctx.destination);
+    oGain.connect(this.getSfxOut(ctx));
     osc.start(now);
     osc.stop(now + 0.48);
   }
@@ -669,7 +715,7 @@ export class SoundEngine {
     bassGain.gain.setValueAtTime(0.28, now);
     bassGain.gain.exponentialRampToValueAtTime(0.001, now + 0.36);
     bass.connect(bassGain);
-    bassGain.connect(ctx.destination);
+    bassGain.connect(this.getSfxOut(ctx));
     bass.start(now);
     bass.stop(now + 0.38);
 
@@ -684,7 +730,7 @@ export class SoundEngine {
       gain.gain.setValueAtTime(0.14, t);
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getSfxOut(ctx));
       osc.start(t);
       osc.stop(t + 0.25);
     });
@@ -709,7 +755,7 @@ export class SoundEngine {
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.32);
       osc.connect(filter);
       filter.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getSfxOut(ctx));
       osc.start(t);
       osc.stop(t + 0.33);
     });
@@ -719,57 +765,133 @@ export class SoundEngine {
     if (this.bossIntensityActive === active) return;
     this.bossIntensityActive = active;
     if (active) {
-      this.bossPulseCooldown = 0.05;
-      this.bossBeatStep = 0;
+      this.musicPulseCooldown = Math.min(this.musicPulseCooldown, 0.05);
     }
   }
 
-  public updateDynamicMusic(dt: number, activeGameplay: boolean): void {
-    if (!activeGameplay || !this.bossIntensityActive) return;
+  public updateDynamicMusic(
+    dt: number,
+    stateOrPlaying: boolean | AdaptiveMusicState,
+  ): void {
+    const state: AdaptiveMusicState =
+      typeof stateOrPlaying === 'boolean'
+        ? {
+            activeGameplay: stateOrPlaying,
+            isBossWave: this.bossIntensityActive,
+            bloodMoonActive: false,
+            hpRatio: 1,
+          }
+        : stateOrPlaying;
+    if (!state.activeGameplay || this.musicVolume <= 0.001) return;
     const ctx = this.ready();
     if (!ctx) return;
 
-    this.bossPulseCooldown -= dt;
-    if (this.bossPulseCooldown > 0) return;
-    this.bossPulseCooldown = 0.44;
+    const isLowHp = state.hpRatio > 0 && state.hpRatio <= 0.25;
+    const isHighThreat = state.isBossWave || state.bloodMoonActive;
+    const stepInterval = state.bloodMoonActive
+      ? 0.28
+      : state.isBossWave
+        ? 0.34
+        : isLowHp
+          ? 0.38
+          : 0.56;
+
+    this.musicPulseCooldown -= dt;
+    if (this.musicPulseCooldown > 0) return;
+    this.musicPulseCooldown = stepInterval;
 
     const now = ctx.currentTime;
-    const bassNotes = [55.0, 55.0, 61.74, 51.91]; // Dark minor tension progression (A1 -> B1 -> G#1)
-    const freq = bassNotes[this.bossBeatStep % bassNotes.length];
-    const accented = this.bossBeatStep % 4 === 0;
-    this.bossBeatStep += 1;
+    const musicOut = this.getMusicOut(ctx);
+    const step = this.musicStep;
+    this.musicStep += 1;
+
+    // Layer 1: Atmospheric sub/mid combat synth bass (always present subtly during runs)
+    const bassProg = state.bloodMoonActive
+      ? [61.74, 65.41, 73.42, 55.0]
+      : state.isBossWave
+        ? [55.0, 55.0, 61.74, 51.91]
+        : [55.0, 65.41, 49.0, 55.0];
+    const freq = bassProg[step % bassProg.length];
+    const accented = step % 4 === 0;
 
     const osc = ctx.createOscillator();
-    osc.type = 'sawtooth';
+    osc.type = isHighThreat ? 'sawtooth' : 'triangle';
     osc.frequency.setValueAtTime(freq, now);
     const filter = ctx.createBiquadFilter();
     filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(accented ? 340 : 220, now);
-    filter.frequency.exponentialRampToValueAtTime(95, now + 0.36);
+    filter.frequency.setValueAtTime(
+      isHighThreat ? (accented ? 360 : 230) : accented ? 200 : 140,
+      now,
+    );
+    filter.frequency.exponentialRampToValueAtTime(75, now + stepInterval * 0.85);
 
-    const gain = ctx.createGain();
-    gain.gain.setValueAtTime(accented ? 0.11 : 0.075, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.38);
+    const bassGain = ctx.createGain();
+    const baseAmp = isHighThreat
+      ? accented
+        ? 0.115
+        : 0.075
+      : accented
+        ? 0.055
+        : 0.036;
+    bassGain.gain.setValueAtTime(baseAmp, now);
+    bassGain.gain.exponentialRampToValueAtTime(0.001, now + stepInterval * 0.9);
     osc.connect(filter);
-    filter.connect(gain);
-    gain.connect(ctx.destination);
+    filter.connect(bassGain);
+    bassGain.connect(musicOut);
     osc.start(now);
-    osc.stop(now + 0.4);
+    osc.stop(now + stepInterval * 0.92);
 
-    if (this.noiseBuffer && accented) {
-      const hat = ctx.createBufferSource();
-      hat.buffer = this.noiseBuffer;
-      const hp = ctx.createBiquadFilter();
-      hp.type = 'highpass';
-      hp.frequency.setValueAtTime(3800, now);
-      const hGain = ctx.createGain();
-      hGain.gain.setValueAtTime(0.035, now);
-      hGain.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
-      hat.connect(hp);
-      hp.connect(hGain);
-      hGain.connect(ctx.destination);
-      hat.start(now);
-      hat.stop(now + 0.1);
+    // Layer 2: High-threat arpeggio & industrial hi-hat on Boss / Blood Moon
+    if (isHighThreat) {
+      if (this.noiseBuffer && step % 2 === 0) {
+        const hat = ctx.createBufferSource();
+        hat.buffer = this.noiseBuffer;
+        const hp = ctx.createBiquadFilter();
+        hp.type = 'highpass';
+        hp.frequency.setValueAtTime(4200, now);
+        const hGain = ctx.createGain();
+        hGain.gain.setValueAtTime(accented ? 0.042 : 0.022, now);
+        hGain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+        hat.connect(hp);
+        hp.connect(hGain);
+        hGain.connect(musicOut);
+        hat.start(now);
+        hat.stop(now + 0.09);
+      }
+
+      if (state.bloodMoonActive || accented) {
+        const leadNotes = state.bloodMoonActive
+          ? [220, 261.63, 293.66, 246.94]
+          : [164.81, 196.0, 220.0, 174.61];
+        const lead = ctx.createOscillator();
+        lead.type = 'triangle';
+        lead.frequency.setValueAtTime(leadNotes[step % leadNotes.length], now);
+        const lGain = ctx.createGain();
+        lGain.gain.setValueAtTime(state.bloodMoonActive ? 0.045 : 0.03, now);
+        lGain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+        lead.connect(lGain);
+        lGain.connect(musicOut);
+        lead.start(now);
+        lead.stop(now + 0.19);
+      }
+    }
+
+    // Layer 3: Critical Low-HP (<25%) double-thump heartbeat pulse
+    if (isLowHp && step % 2 === 0) {
+      [0, 0.13].forEach((offset, idx) => {
+        const t = now + offset;
+        const hb = ctx.createOscillator();
+        hb.type = 'sine';
+        hb.frequency.setValueAtTime(idx === 0 ? 68 : 54, t);
+        hb.frequency.exponentialRampToValueAtTime(34, t + 0.1);
+        const hGain = ctx.createGain();
+        hGain.gain.setValueAtTime(idx === 0 ? 0.095 : 0.07, t);
+        hGain.gain.exponentialRampToValueAtTime(0.001, t + 0.11);
+        hb.connect(hGain);
+        hGain.connect(musicOut);
+        hb.start(t);
+        hb.stop(t + 0.12);
+      });
     }
   }
 
@@ -785,7 +907,7 @@ export class SoundEngine {
     gain.gain.setValueAtTime(0.14, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.17);
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxOut(ctx));
     osc.start(now);
     osc.stop(now + 0.18);
   }
@@ -806,7 +928,7 @@ export class SoundEngine {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
     noise.connect(filter);
     filter.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxOut(ctx));
     noise.start(now);
     noise.stop(now + 0.26);
   }
@@ -826,7 +948,7 @@ export class SoundEngine {
     nGain.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
     noise.connect(filter);
     filter.connect(nGain);
-    nGain.connect(ctx.destination);
+    nGain.connect(this.getSfxOut(ctx));
     noise.start(now);
     noise.stop(now + 0.42);
 
@@ -838,7 +960,7 @@ export class SoundEngine {
     gain.gain.setValueAtTime(0.24, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxOut(ctx));
     osc.start(now);
     osc.stop(now + 0.36);
   }
@@ -861,7 +983,7 @@ export class SoundEngine {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.5);
     osc.connect(filter);
     filter.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxOut(ctx));
     osc.start(now);
     osc.stop(now + 0.52);
   }
@@ -883,7 +1005,7 @@ export class SoundEngine {
       gain.gain.exponentialRampToValueAtTime(0.001, now + 0.68);
       osc.connect(filter);
       filter.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getSfxOut(ctx));
       osc.start(now + i * 0.04);
       osc.stop(now + 0.7);
     });
@@ -902,7 +1024,7 @@ export class SoundEngine {
       gain.gain.setValueAtTime(0.14, t);
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getSfxOut(ctx));
       osc.start(t);
       osc.stop(t + 0.23);
     });
@@ -921,7 +1043,7 @@ export class SoundEngine {
       gain.gain.setValueAtTime(0.16, t);
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.34);
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getSfxOut(ctx));
       osc.start(t);
       osc.stop(t + 0.36);
     });
@@ -944,7 +1066,7 @@ export class SoundEngine {
       gain.gain.setValueAtTime(0.13, t);
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.2);
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getSfxOut(ctx));
       osc.start(t);
       osc.stop(t + 0.22);
     });
@@ -963,7 +1085,7 @@ export class SoundEngine {
       gain.gain.setValueAtTime(0.12, t);
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getSfxOut(ctx));
       osc.start(t);
       osc.stop(t + 0.18);
     });
@@ -990,7 +1112,7 @@ export class SoundEngine {
       gain.gain.setValueAtTime(0.12, t);
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getSfxOut(ctx));
       osc.start(t);
       osc.stop(t + 0.12);
     });
@@ -1012,7 +1134,7 @@ export class SoundEngine {
     gain.gain.setValueAtTime(0.085, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.095);
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxOut(ctx));
     osc.start(now);
     osc.stop(now + 0.1);
   }
@@ -1031,7 +1153,7 @@ export class SoundEngine {
       gain.gain.setValueAtTime(0.14, t);
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getSfxOut(ctx));
       osc.start(t);
       osc.stop(t + 0.25);
     });
@@ -1049,7 +1171,7 @@ export class SoundEngine {
     gain.gain.setValueAtTime(0.22, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxOut(ctx));
     osc.start(now);
     osc.stop(now + 0.21);
   }
@@ -1071,7 +1193,7 @@ export class SoundEngine {
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
       osc.connect(filter);
       filter.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getSfxOut(ctx));
       osc.start(t);
       osc.stop(t + 0.26);
     });
@@ -1089,7 +1211,7 @@ export class SoundEngine {
     gain.gain.setValueAtTime(0.055, now);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.085);
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxOut(ctx));
     osc.start(now);
     osc.stop(now + 0.09);
   }
@@ -1107,7 +1229,7 @@ export class SoundEngine {
       gain.gain.setValueAtTime(0.09, t);
       gain.gain.exponentialRampToValueAtTime(0.001, t + 0.14);
       osc.connect(gain);
-      gain.connect(ctx.destination);
+      gain.connect(this.getSfxOut(ctx));
       osc.start(t);
       osc.stop(t + 0.15);
     });
@@ -1127,9 +1249,302 @@ export class SoundEngine {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.19);
     noise.connect(filter);
     filter.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(this.getSfxOut(ctx));
     noise.start(now);
     noise.stop(now + 0.2);
+  }
+
+  public playTrainHorn(): void {
+    const ctx = this.ready();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    [185, 233, 277].forEach((freq) => {
+      const osc = ctx.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(freq, now);
+      osc.frequency.linearRampToValueAtTime(freq * 0.96, now + 0.72);
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(920, now);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.linearRampToValueAtTime(0.11, now + 0.06);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.75);
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(this.getSfxOut(ctx));
+      osc.start(now);
+      osc.stop(now + 0.78);
+    });
+  }
+
+  public playTrainWhoosh(): void {
+    const ctx = this.ready();
+    if (!ctx || !this.noiseBuffer) return;
+    const now = ctx.currentTime;
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.noiseBuffer;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(180, now);
+    filter.frequency.exponentialRampToValueAtTime(640, now + 0.24);
+    filter.frequency.exponentialRampToValueAtTime(140, now + 0.56);
+    filter.Q.setValueAtTime(1.2, now);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.28, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.58);
+    noise.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.getSfxOut(ctx));
+    noise.start(now);
+    noise.stop(now + 0.6);
+  }
+
+  public playCryoCanisterNova(): void {
+    this.playCryoShatter();
+    const ctx = this.ready();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(1320, now);
+    osc.frequency.exponentialRampToValueAtTime(240, now + 0.34);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.18, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.36);
+    osc.connect(gain);
+    gain.connect(this.getSfxOut(ctx));
+    osc.start(now);
+    osc.stop(now + 0.38);
+  }
+
+  public playSirenEvent(): void {
+    const ctx = this.ready();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    [0, 0.26].forEach((offset) => {
+      const t = now + offset;
+      const osc = ctx.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(420, t);
+      osc.frequency.linearRampToValueAtTime(760, t + 0.12);
+      osc.frequency.linearRampToValueAtTime(420, t + 0.24);
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(1350, t);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.11, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.24);
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(this.getSfxOut(ctx));
+      osc.start(t);
+      osc.stop(t + 0.25);
+    });
+  }
+
+  public playPodShatter(): void {
+    this.playCryoShatter();
+  }
+
+  public playGasVentHiss(): void {
+    const ctx = this.ready();
+    if (!ctx || !this.noiseBuffer) return;
+    const now = ctx.currentTime;
+    const noise = ctx.createBufferSource();
+    noise.buffer = this.noiseBuffer;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.frequency.setValueAtTime(1650, now);
+    filter.Q.setValueAtTime(1.8, now);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.12, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.38);
+    noise.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.getSfxOut(ctx));
+    noise.start(now);
+    noise.stop(now + 0.4);
+  }
+
+  public playPylonBreak(): void {
+    const ctx = this.ready();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    [660, 440, 260].forEach((freq, i) => {
+      const t = now + i * 0.05;
+      const osc = ctx.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, t);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.16, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+      osc.connect(gain);
+      gain.connect(this.getSfxOut(ctx));
+      osc.start(t);
+      osc.stop(t + 0.17);
+    });
+  }
+
+  public playBossShieldBreak(): void {
+    const ctx = this.ready();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    [523.25, 659.25, 783.99, 1046.5].forEach((freq, i) => {
+      const t = now + i * 0.055;
+      const osc = ctx.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(freq, t);
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(2200, t);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.15, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.28);
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(this.getSfxOut(ctx));
+      osc.start(t);
+      osc.stop(t + 0.3);
+    });
+  }
+
+  public playEmpOutage(): void {
+    this.playGeneratorDisable();
+  }
+
+  public playBreakerFlip(): void {
+    this.playGeneratorOnline();
+  }
+
+  public playPadActivate(): void {
+    this.playGeneratorOnline();
+  }
+
+  public playRoofFall(): void {
+    const ctx = this.ready();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(420, now);
+    osc.frequency.exponentialRampToValueAtTime(85, now + 0.34);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.12, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+    osc.connect(gain);
+    gain.connect(this.getSfxOut(ctx));
+    osc.start(now);
+    osc.stop(now + 0.36);
+  }
+
+  public playNecroRevive(): void {
+    const ctx = this.ready();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(240, now);
+    osc.frequency.exponentialRampToValueAtTime(620, now + 0.22);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.11, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.24);
+    osc.connect(gain);
+    gain.connect(this.getSfxOut(ctx));
+    osc.start(now);
+    osc.stop(now + 0.25);
+  }
+
+  public playExtractionChopper(): void {
+    const ctx = this.ready();
+    if (!ctx || !this.noiseBuffer) return;
+    const now = ctx.currentTime;
+    for (let i = 0; i < 6; i++) {
+      const t = now + i * 0.085;
+      const noise = ctx.createBufferSource();
+      noise.buffer = this.noiseBuffer;
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(260, t);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.16, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.075);
+      noise.connect(filter);
+      filter.connect(gain);
+      gain.connect(this.getSfxOut(ctx));
+      noise.start(t);
+      noise.stop(t + 0.08);
+    }
+    const flare = ctx.createOscillator();
+    flare.type = 'triangle';
+    flare.frequency.setValueAtTime(440, now);
+    flare.frequency.exponentialRampToValueAtTime(880, now + 0.35);
+    const fGain = ctx.createGain();
+    fGain.gain.setValueAtTime(0.12, now);
+    fGain.gain.exponentialRampToValueAtTime(0.001, now + 0.38);
+    flare.connect(fGain);
+    fGain.connect(this.getSfxOut(ctx));
+    flare.start(now);
+    flare.stop(now + 0.4);
+  }
+
+  public playExtractionComplete(): void {
+    const ctx = this.ready();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    [523.25, 659.25, 783.99, 1046.5].forEach((freq, idx) => {
+      const t = now + idx * 0.08;
+      const osc = ctx.createOscillator();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, t);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.16, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.42);
+      osc.connect(gain);
+      gain.connect(this.getSfxOut(ctx));
+      osc.start(t);
+      osc.stop(t + 0.44);
+    });
+  }
+
+  public playReactorHit(): void {
+    const ctx = this.ready();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(190, now);
+    osc.frequency.exponentialRampToValueAtTime(88, now + 0.14);
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(750, now);
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.14, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(this.getSfxOut(ctx));
+    osc.start(now);
+    osc.stop(now + 0.16);
+  }
+
+  public playContractClaim(): void {
+    const ctx = this.ready();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    [587.33, 880, 1174.66].forEach((freq, idx) => {
+      const t = now + idx * 0.055;
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, t);
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.14, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+      osc.connect(gain);
+      gain.connect(this.getSfxOut(ctx));
+      osc.start(t);
+      osc.stop(t + 0.24);
+    });
   }
 }
 

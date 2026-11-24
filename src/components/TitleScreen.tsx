@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Calendar, Download, MapPin, Sliders, Trophy } from 'lucide-react';
+import { Calendar, Download, MapPin, RefreshCw, Sliders, Trophy } from 'lucide-react';
 import {
   ARENA_ORDER,
   ARENA_SPECS,
@@ -9,6 +9,10 @@ import {
 import { CLASS_SPECS, SKIN_SPECS } from '../game/career';
 import { getDailyChallengeConfig } from '../game/dailyChallenge';
 import { GADGET_ORDER, GADGET_SPECS } from '../game/gadgets';
+import {
+  getClaimableDailyContractsCount,
+  getWeeklyTrialConfig,
+} from '../game/phase3Meta';
 import { isValidCallsign, sanitizeCallsign } from '../game/storage';
 import { TACTICAL_GEAR_ORDER, TACTICAL_GEAR_SPECS } from '../game/tacticalGear';
 import {
@@ -18,14 +22,16 @@ import {
   GadgetId,
   GameModeId,
   PermanentUpgradeId,
-  RemoteAppConfig,
   SavedRunProgress,
   SkinId,
   SurvivorClassId,
   TacticalGearId,
+  TechLabUpgradeId,
+  WeaponCamoId,
   WeaponId,
 } from '../game/types';
 import { APP_VERSION } from '../game/version';
+import { AppUpdateInfo } from '../services/updateChecker';
 import { BestiaryPanel } from './BestiaryPanel';
 import { SkinsPanel } from './SkinsPanel';
 import { WorkshopPanel } from './WorkshopPanel';
@@ -40,9 +46,11 @@ interface TitleScreenProps {
   arena: ArenaId;
   mode: GameModeId;
   callsign: string;
+  clanTag: string;
   isOnline: boolean;
   career: CareerStats;
-  androidUpdate: RemoteAppConfig | null;
+  appUpdate: AppUpdateInfo | null;
+  onTriggerWebUpdate: () => void;
   onChangeCallsign: (raw: string) => void;
   onSelectArena: (id: ArenaId) => void;
   onSelectMode: (id: GameModeId) => void;
@@ -54,6 +62,9 @@ interface TitleScreenProps {
   onEquipSkin: (skinId: SkinId) => void;
   onSelectClass: (classId: SurvivorClassId) => void;
   onBuyPermanentUpgrade: (id: PermanentUpgradeId) => void;
+  onBuyTechLabUpgrade: (id: TechLabUpgradeId) => void;
+  onClaimDailyContract: (contractId: string) => void;
+  onEquipWeaponCamo: (weaponId: WeaponId, camoId: WeaponCamoId) => void;
   onUnlockArmoryWeapon: (weaponId: WeaponId) => void;
   onSelectOrUnlockDrone: (droneId: DroneId) => void;
   onStartFromBeginning: () => void;
@@ -76,9 +87,11 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
   arena,
   mode,
   callsign,
+  clanTag,
   isOnline,
   career,
-  androidUpdate,
+  appUpdate,
+  onTriggerWebUpdate,
   onChangeCallsign,
   onSelectArena,
   onSelectMode,
@@ -90,6 +103,9 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
   onEquipSkin,
   onSelectClass,
   onBuyPermanentUpgrade,
+  onBuyTechLabUpgrade,
+  onClaimDailyContract,
+  onEquipWeaponCamo,
   onUnlockArmoryWeapon,
   onSelectOrUnlockDrone,
   onStartFromBeginning,
@@ -129,6 +145,8 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
   const activeModeId: GameModeId = mode === 'daily' ? 'normal' : mode;
   const activeModeSpec = GAME_MODE_SPECS[activeModeId];
   const dailyConfig = getDailyChallengeConfig();
+  const weeklyTrial = getWeeklyTrialConfig();
+  const claimableContracts = getClaimableDailyContractsCount(career.dailyContracts);
   const isSkinsTab = tab === 'skins';
   const callsignValid = isValidCallsign(callsignDraft);
 
@@ -203,6 +221,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
         >
           {TAB_ITEMS.map((item) => {
             const active = tab === item.id;
+            const hasAlert = item.id === 'classes' && claimableContracts > 0;
             return (
               <button
                 key={item.id}
@@ -214,36 +233,42 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
                   e.currentTarget.blur();
                   setTab(item.id);
                 }}
-                className={`min-h-[34px] cursor-pointer rounded-lg px-2 py-1 text-[11px] font-extrabold tracking-wider uppercase transition-colors ${
+                className={`relative min-h-[34px] cursor-pointer rounded-lg px-2 py-1 text-[11px] font-extrabold tracking-wider uppercase transition-colors ${
                   active
                     ? 'bg-amber-500 text-slate-950'
                     : 'text-slate-300 hover:bg-slate-800/80 hover:text-white'
                 }`}
               >
-                {item.label}
+                <span>{item.label}</span>
+                {hasAlert && (
+                  <span
+                    data-testid="contracts-claimable-dot"
+                    className="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-amber-400 align-middle"
+                  />
+                )}
               </button>
             );
           })}
         </div>
 
-        {/* Android-Only Native Update Banner (Never renders on Web) */}
-        {androidUpdate && (
+        {/* Android APK Update Banner or Non-Blocking Web Auto-Update Banner */}
+        {appUpdate && appUpdate.platform === 'APK' && (
           <div
             data-testid="android-update-banner"
             className="flex max-w-lg flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-400/75 bg-amber-950/90 px-3.5 py-2 text-xs shadow-lg"
           >
             <div>
               <div className="font-extrabold tracking-wide text-amber-300 uppercase">
-                Update Available ({androidUpdate.latestVersion})
+                Update Available ({appUpdate.latestVersion})
               </div>
-              {androidUpdate.changelog && (
+              {appUpdate.changelog && (
                 <div className="text-[11px] text-slate-200">
-                  {androidUpdate.changelog}
+                  {appUpdate.changelog}
                 </div>
               )}
             </div>
             <a
-              href={androidUpdate.downloadUrl}
+              href={appUpdate.downloadUrl}
               target="_blank"
               rel="noreferrer"
               className="flex min-h-[36px] items-center gap-1 rounded-lg bg-amber-400 px-3 py-1 text-[11px] font-extrabold tracking-wider text-slate-950 uppercase hover:bg-amber-300"
@@ -252,6 +277,33 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
               <span>Download</span>
             </a>
           </div>
+        )}
+
+        {appUpdate && appUpdate.platform === 'WEB' && (
+          <button
+            type="button"
+            data-testid="web-update-banner"
+            onClick={(e) => {
+              e.currentTarget.blur();
+              onTriggerWebUpdate();
+            }}
+            className="flex max-w-lg cursor-pointer items-center justify-between gap-3 rounded-xl border border-cyan-400/75 bg-cyan-950/90 px-3.5 py-2 text-left text-xs shadow-lg transition-colors hover:border-cyan-300 hover:bg-cyan-900/90"
+          >
+            <div>
+              <div className="font-extrabold tracking-wide text-cyan-200 uppercase">
+                v{appUpdate.latestVersion.replace(/^v/i, '')} UPDATE LIVE — TAP TO RELOAD
+              </div>
+              {appUpdate.changelog && (
+                <div className="text-[11px] text-slate-200">
+                  {appUpdate.changelog}
+                </div>
+              )}
+            </div>
+            <span className="flex shrink-0 items-center gap-1 rounded-lg bg-cyan-400 px-2.5 py-1 text-[10px] font-extrabold tracking-wider text-slate-950 uppercase">
+              <RefreshCw className="h-3 w-3" />
+              <span>Reload</span>
+            </span>
+          </button>
         )}
       </div>
 
@@ -303,6 +355,14 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
                 >
                   Player Name (3-15)
                 </label>
+                {clanTag && (
+                  <span
+                    data-testid="title-clan-tag"
+                    className="font-mono-tabular rounded border border-cyan-500/45 bg-cyan-500/15 px-1.5 py-0.5 text-[10px] font-extrabold text-cyan-300"
+                  >
+                    [{clanTag}]
+                  </span>
+                )}
                 {isOnline && (
                   <span
                     data-testid="title-online-status"
@@ -356,7 +416,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
                 </span>
                 <span className="truncate text-slate-300">{activeArenaSpec.subtitle}</span>
               </div>
-              <div className="grid grid-cols-3 gap-1.5">
+              <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-3">
                 {ARENA_ORDER.map((id) => {
                   const spec = ARENA_SPECS[id];
                   const active = id === arena;
@@ -414,6 +474,32 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
                   );
                 })}
               </div>
+              {activeModeId === 'weekly' && (
+                <div
+                  data-testid="weekly-mutator-preview"
+                  className="mt-1.5 flex flex-wrap items-center justify-between gap-2 rounded-lg border px-2.5 py-1.5 text-[10px]"
+                  style={{
+                    borderColor: `${weeklyTrial.spec.accentHex}88`,
+                    backgroundColor: 'rgba(15, 23, 42, 0.85)',
+                  }}
+                >
+                  <div className="flex items-center gap-1.5">
+                    <span
+                      className="rounded px-1.5 py-0.5 text-[9px] font-extrabold tracking-wider uppercase"
+                      style={{
+                        backgroundColor: `${weeklyTrial.spec.accentHex}26`,
+                        color: weeklyTrial.spec.accentHex,
+                      }}
+                    >
+                      {weeklyTrial.weekKey} · {weeklyTrial.spec.badge}
+                    </span>
+                    <span className="font-extrabold text-white uppercase">
+                      {weeklyTrial.spec.name}
+                    </span>
+                  </div>
+                  <span className="text-slate-300">{weeklyTrial.spec.description}</span>
+                </div>
+              )}
             </div>
 
             {/* Tactical Gear + Dedicated Gadget Loadout */}
@@ -580,6 +666,8 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
             career={career}
             onSelectClass={onSelectClass}
             onBuyPermanentUpgrade={onBuyPermanentUpgrade}
+            onBuyTechLabUpgrade={onBuyTechLabUpgrade}
+            onClaimDailyContract={onClaimDailyContract}
             onUnlockArmoryWeapon={onUnlockArmoryWeapon}
             onSelectOrUnlockDrone={onSelectOrUnlockDrone}
           />
@@ -588,7 +676,10 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
 
       {tab === 'intel' && (
         <div className="my-auto flex w-full justify-center">
-          <BestiaryPanel career={career} />
+          <BestiaryPanel
+            career={career}
+            onEquipWeaponCamo={onEquipWeaponCamo}
+          />
         </div>
       )}
 

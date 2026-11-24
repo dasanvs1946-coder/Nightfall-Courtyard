@@ -1,5 +1,9 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { SoundEngine } from '../audio/soundEngine';
 import {
   ARENA_HALF_SIZE,
@@ -9,11 +13,17 @@ import {
   resolveArenaCollisions,
 } from '../game/collision';
 import {
+  CachedRivalEntry,
   clearRunProgress,
+  computeNextRival,
+  loadCachedTop20Rivals,
   loadCallsign,
+  loadClanTag,
   loadHighScore,
   loadRunProgress,
+  saveCachedTop20Rivals,
   saveCallsign,
+  saveClanTag,
   saveHighScore,
   saveRunProgress,
 } from '../game/storage';
@@ -28,13 +38,16 @@ import {
   shouldFlashInvulnMesh,
 } from '../game/revive';
 import {
+  ActiveEventHudState,
   ArenaId,
   CareerStats,
   CrateKind,
   CursedPerkId,
+  DailyContractEventType,
   DailyMutatorId,
   DamageNumberKind,
   DroneId,
+  EliteAffixId,
   EvolutionId,
   FloatingDamage,
   GadgetId,
@@ -43,8 +56,12 @@ import {
   GameSettings,
   GeneratorHudStatus,
   HudSnapshot,
+  MidWaveEventId,
   MinimapHazard,
   MinimapPickup,
+  NextRivalInfo,
+  ObstacleBox,
+  PadPromptHudState,
   PerkId,
   PermanentUpgradeId,
   SavedRunProgress,
@@ -52,15 +69,31 @@ import {
   SurvivorClassId,
   SynergyId,
   TacticalGearId,
+  TacticalPadKind,
+  TechLabUpgradeId,
   UpgradeId,
   UpgradeLevels,
+  WeaponCamoId,
   WeaponId,
   WeaponMasteryLevels,
   WeaponRuntimeState,
   WeatherKind,
+  WeeklyMutatorId,
   ZombieKind,
 } from '../game/types';
 import { ARENA_SPECS, GAME_MODE_SPECS } from '../game/arenas';
+import {
+  CC_IMMUNITY_DURATION_SEC,
+  canApplyHardCc,
+  computeFlankingVector,
+  ELITE_AFFIX_SPECS,
+  getBossPhaseForHp,
+  isJuggernautShatterWeapon,
+  isRooftopEdgeDrop,
+  MID_WAVE_EVENT_SPECS,
+  rollEliteAffixes,
+  rollMidWaveEvent,
+} from '../game/elitesAndEvents';
 import {
   COMBO_DECAY_SEC,
   ComboState,
@@ -122,6 +155,9 @@ import {
   getBossCycleHpMultiplier,
   getBossRangedCooldown,
   getBossTitle,
+  getLateGameArmorRatio,
+  getLateGameProjectileSpeedMult,
+  getOverdriveTier,
   isBossWaveNumber,
   isPointInFlashlightCone,
   rollCrateDrop,
@@ -146,30 +182,43 @@ import {
 import {
   applyBossPhase2Glow,
   applyPlayerSkin,
+  applyWeaponCamoToGroup,
   buildBarbedWireMesh,
+  buildBiolabGlassPod,
+  buildBossPowerPylon,
+  buildBreakerSwitchMesh,
   buildCarMesh,
   buildCombatDroneRig,
   buildConcretePillar,
   buildCornerBrazier,
   buildCrateCluster,
+  buildCryoCanister,
   buildDecoyFlare,
   buildDeployableTurretRig,
   buildDumpster,
   buildExplosiveBarrel,
+  buildExtractionZoneRig,
   buildFloodlightGenerator,
   buildJerseyBarrier,
   buildLaserTripmine,
   buildMortarTargetRing,
   buildNanoShieldDomeMesh,
+  buildOrbitalPodMesh,
   buildPickupCrate,
   buildPlayerRig,
   buildProximityMineMesh,
   buildRiskSupplyCrate,
+  buildSiegeReactorCoreMesh,
   buildSingularityVortexMesh,
   buildStreetLamp,
+  buildSubwayTrainMesh,
+  buildTacticalPadStation,
+  buildTechPillarMesh,
+  buildToxicVentMesh,
   buildZombieRig,
   CombatDroneRig,
   DeployableTurretRig,
+  disposeObject3DTree,
   disposeSharedModelGeometries,
   ExplosiveBarrelRig,
   FloodlightGeneratorRig,
@@ -180,8 +229,10 @@ import {
   ZombieRig,
 } from './models';
 import {
+  claimCareerDailyContract,
   CLASS_SPECS,
   computeRunScrapReward,
+  equipWeaponCamo,
   evaluateSkinUnlocks,
   getBestiaryMasteryMultiplier,
   getPermanentBaseHpBonus,
@@ -190,17 +241,31 @@ import {
   getPermanentStartingUpBonus,
   loadCareerStats,
   purchasePermanentUpgrade,
+  purchaseTechLabUpgrade,
   saveCareerStats,
   SKIN_SPECS,
   unlockArmoryWeapon,
   unlockOrEquipDrone,
 } from '../game/career';
 import {
+  EXTRACTION_HOLD_SEC,
+  getExtractionMultiplier,
+  getHighestUnlockedCamo,
+  getTechLabBonuses,
+  getWeaponCamoDamageMultiplier,
+  getWeeklyTrialConfig,
+  isExtractionWave,
+  recordContractEvent,
+  refreshDailyContractsForDate,
+  WEAPON_CAMO_SPECS,
+} from '../game/phase3Meta';
+import {
   getEffectivePixelRatio,
   getRainQualityScale,
   isMobileDeviceViewport,
   loadSettings,
   saveSettings,
+  shouldEnableBloom,
   shouldEnableShadows,
 } from '../game/settings';
 
@@ -286,6 +351,18 @@ interface ActiveZombie {
   burnDps: number;
   phase2Triggered: boolean;
   bossSlamCooldown: number;
+  affixes: EliteAffixId[];
+  juggernautArmorIntact: boolean;
+  ccImmunityTimer: number;
+  overshieldHp: number;
+  specialCooldown: number;
+  fallingTimer: number;
+  bossPhase: 1 | 2 | 3;
+  p2Spawned: boolean;
+  p3Spawned: boolean;
+  sweepTimer: number;
+  sweepAngle: number;
+  lastHitWeaponId?: WeaponId;
 }
 
 interface ActiveBarrel {
@@ -455,6 +532,84 @@ interface ActiveTurret {
   life: number;
   fireTimer: number;
   flashTimer: number;
+  hp: number;
+  maxHp: number;
+  isPadTurret?: boolean;
+}
+
+interface ActiveRuntimeObstacle extends ObstacleBox {
+  hp: number;
+  mesh?: THREE.Group;
+}
+
+interface ActiveCryoCanister {
+  id: string;
+  root: THREE.Group;
+  x: number;
+  z: number;
+  active: boolean;
+  respawnTimer: number;
+}
+
+interface ActiveTacticalPad {
+  kind: TacticalPadKind;
+  label: string;
+  cost: number;
+  x: number;
+  z: number;
+  root: THREE.Group;
+  ringMat: THREE.MeshBasicMaterial;
+  standProgress: number;
+  playerInside: boolean;
+  activeRemaining: number;
+}
+
+interface ActiveToxicVent {
+  x: number;
+  z: number;
+  root: THREE.Group;
+  ringMat: THREE.MeshBasicMaterial;
+  tickTimer: number;
+}
+
+interface ActiveBossPylon {
+  id: number;
+  x: number;
+  z: number;
+  hp: number;
+  maxHp: number;
+  root: THREE.Group;
+}
+
+interface ActiveOrbitalPod {
+  x: number;
+  z: number;
+  root: THREE.Group;
+  ringMat: THREE.MeshBasicMaterial;
+  progress: number;
+}
+
+interface ActiveBreakerSwitch {
+  x: number;
+  z: number;
+  root: THREE.Group;
+}
+
+interface CorpseRecord {
+  kind: ZombieKind;
+  x: number;
+  z: number;
+  age: number;
+}
+
+interface ActiveBossMortar {
+  group: THREE.Group;
+  fillMat: THREE.MeshBasicMaterial;
+  x: number;
+  z: number;
+  age: number;
+  duration: number;
+  damage: number;
 }
 
 interface FlashRing {
@@ -627,6 +782,7 @@ export class GameEngine {
   private moonLight!: THREE.DirectionalLight;
   private hemiLight!: THREE.HemisphereLight;
   private groundMat!: THREE.MeshStandardMaterial;
+  private groundMesh!: THREE.Mesh;
 
   private tracerMesh!: THREE.InstancedMesh;
   private tracers: TracerSlot[] = [];
@@ -663,6 +819,10 @@ export class GameEngine {
   private frameId = 0;
   private disposed = false;
   private lastTimestamp = 0;
+  private lastFrameRenderMs = 0;
+  private composer: EffectComposer | null = null;
+  private bloomPass: UnrealBloomPass | null = null;
+  private bloomActive = false;
   private resizeObserver: ResizeObserver;
   private viewportW = 1;
   private viewportH = 1;
@@ -725,6 +885,12 @@ export class GameEngine {
   private seededRng: (() => number) | null = null;
   private perkDraftSeedCursor = 0;
   private callsign = loadCallsign();
+  private clanTag = loadClanTag();
+  private selfUid: string | null = null;
+  private cachedRivals: CachedRivalEntry[] = loadCachedTop20Rivals();
+  private currentNextRival: NextRivalInfo | null = null;
+  private rivalOvertakenBanner: string | null = null;
+  private rivalOvertakenTimer = 0;
 
   private arenaResources!: {
     sidewalkTex: THREE.CanvasTexture;
@@ -749,8 +915,38 @@ export class GameEngine {
   private flashRings: FlashRing[] = [];
   private flashRingGeo = new THREE.RingGeometry(0.82, 1.0, 32);
 
-  // Interactive Arena Mechanics
+  // Interactive Arena Mechanics & Phase 2 Map Hazards / Events
+  private runtimeObstacles: ActiveRuntimeObstacle[] = [];
   private barrels: ActiveBarrel[] = [];
+  private cryoCanisters: ActiveCryoCanister[] = [];
+  private tacticalPads: ActiveTacticalPad[] = [];
+  private toxicVents: ActiveToxicVent[] = [];
+  private toxicVentCycleTimer = 9.0;
+  private toxicVentState: 'idle' | 'warning' | 'active' = 'idle';
+  private subwayTrainMesh: THREE.Group | null = null;
+  private subwayTrainWarningMesh: THREE.Mesh | null = null;
+  private subwayTrainWarningMat: THREE.MeshBasicMaterial | null = null;
+  private subwayTrainActive = false;
+  private subwayTrainX = -34;
+  private subwayTrainCooldown = 14;
+  private subwayTrainWarningTimer = 0;
+  private subwayTrainHitIds = new Set<number>();
+  private inRunScrap = 0;
+  private overchargeTimer = 0;
+  private hazardWarningBanner: string | null = null;
+  private hazardWarningTimer = 0;
+  private activeEventId: MidWaveEventId | null = null;
+  private activeOrbitalPod: ActiveOrbitalPod | null = null;
+  private activeBreakerSwitch: ActiveBreakerSwitch | null = null;
+  private bloodMoonRemaining = 0;
+  private empActive = false;
+  private waveEventTriggerTimer = 6.5;
+  private waveEventTriggeredThisWave = false;
+  private bossPylons: ActiveBossPylon[] = [];
+  private bossMortars: ActiveBossMortar[] = [];
+  private recentCorpses: CorpseRecord[] = [];
+  private wavesSincePropRespawn = 0;
+  private empJammerDisableActive = false;
   private generators: ActiveGenerator[] = [];
   private supplyCrate: ActiveSupplyCrate | null = null;
   private supplyDropTimer = 18;
@@ -768,6 +964,38 @@ export class GameEngine {
   private evolutionBanner: string | null = null;
   private evolutionBannerTimer = 0;
   private vampiricKillCounter = 0;
+
+  // Phase 3: Weekly Trials, Siege Reactor Core, Extraction Chopper, Multi-Charge Gadgets & Rerolls
+  private weeklyMutator: WeeklyMutatorId | null = null;
+  private weeklyMutatorName: string | null = null;
+  private reactorCore: {
+    x: number;
+    z: number;
+    radius: number;
+    hp: number;
+    maxHp: number;
+    group: THREE.Group;
+    coreMat: THREE.MeshStandardMaterial;
+    crystal: THREE.Mesh;
+  } | null = null;
+  private extractionZone: {
+    x: number;
+    z: number;
+    active: boolean;
+    wavedOff: boolean;
+    wave: number;
+    holdProgress: number;
+    root: THREE.Group;
+    ringMat: THREE.MeshBasicMaterial;
+    chopper: THREE.Group;
+    rotor: THREE.Group;
+  } | null = null;
+  private extractedVictory = false;
+  private customGameOverTitle: string | null = null;
+  private gadgetCharges = 1;
+  private gadgetMaxCharges = 1;
+  private perkRerollsRemaining = 0;
+  private extractionPressureTimer = 4.0;
 
   // Ultimates, Drones, Execution Dash, Killstreak Combo & Phase 1 Projectiles
   private ultimateCharge = 0;
@@ -863,6 +1091,13 @@ export class GameEngine {
   private aimStickX = 0;
   private aimStickY = 0;
   private aimStickActive = false;
+  private gamepadMoveX = 0;
+  private gamepadMoveY = 0;
+  private gamepadAimX = 0;
+  private gamepadAimY = 0;
+  private gamepadAimActive = false;
+  private gamepadFireHeld = false;
+  private prevGamepadButtons: boolean[] = [];
 
   constructor(
     container: HTMLElement,
@@ -878,6 +1113,7 @@ export class GameEngine {
 
     this.renderer = new THREE.WebGLRenderer({
       antialias: !this.isSoftwareGl,
+      preserveDrawingBuffer: this.isSoftwareGl,
       powerPreference: 'high-performance',
     });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -914,6 +1150,11 @@ export class GameEngine {
     this.applyClassFlashlightVisuals();
     this.syncEquippedDroneVisuals();
     setHapticsEnabled(this.settings.hapticsEnabled);
+    this.sound.setVolumes(
+      this.settings.masterVolume,
+      this.settings.musicVolume,
+      this.settings.sfxVolume,
+    );
     this.resizeObserver = new ResizeObserver(() => this.updateSize());
     this.resizeObserver.observe(this.container);
 
@@ -948,7 +1189,7 @@ export class GameEngine {
     } else {
       this.setPhase('title');
       this.updateTitleCamera(0);
-      this.renderer.render(this.scene, this.camera);
+      this.renderFrame();
       this.emitHudSnapshot(true);
     }
 
@@ -1032,6 +1273,7 @@ export class GameEngine {
     const ground = new THREE.Mesh(groundGeo, this.groundMat);
     ground.rotation.x = -Math.PI / 2;
     ground.receiveShadow = true;
+    this.groundMesh = ground;
     this.scene.add(ground);
 
     this.scene.add(this.arenaGroup);
@@ -1064,7 +1306,7 @@ export class GameEngine {
   }
 
   private getObstacles() {
-    return ARENA_SPECS[this.arena].obstacles;
+    return this.runtimeObstacles;
   }
 
   private getHalfSize(): number {
@@ -1081,384 +1323,573 @@ export class GameEngine {
       hazardTex,
     } = this.arenaResources;
 
-    // Cleanly dispose previous arenaGroup geometry/materials
-    this.arenaGroup.traverse((obj) => {
-      if ((obj as THREE.Mesh).isMesh) {
-        const m = obj as THREE.Mesh;
-        if (m.geometry && !m.geometry.userData?.shared) {
-          m.geometry.dispose();
-        }
-        if (Array.isArray(m.material)) {
-          m.material.forEach((mat) => mat.dispose());
-        } else {
-          m.material?.dispose();
-        }
-      }
-    });
+    // Cleanly dispose previous arenaGroup geometry/materials while preserving shared geo/mat
+    disposeObject3DTree(this.arenaGroup);
     while (this.arenaGroup.children.length > 0) {
       this.arenaGroup.remove(this.arenaGroup.children[0]);
     }
     this.streetLamps = [];
     this.cornerEmbers = [];
     this.barrels = [];
+    this.cryoCanisters = [];
+    this.tacticalPads = [];
+    this.toxicVents = [];
     this.generators = [];
+    this.subwayTrainMesh = null;
+    this.subwayTrainWarningMesh = null;
+    this.subwayTrainWarningMat = null;
+    this.subwayTrainActive = false;
+    this.subwayTrainWarningTimer = 0;
 
     const arenaSpec = ARENA_SPECS[this.arena];
     const halfSize = arenaSpec.halfSize;
+    this.runtimeObstacles = arenaSpec.obstacles.map((o) => ({
+      ...o,
+      hp: o.maxHp ?? 100,
+    }));
 
-    // Concrete Perimeter Sidewalk & Curb Walkways
-    const sidewalkMat = new THREE.MeshStandardMaterial({
-      map: sidewalkTex,
-      color: this.arena === 'parking_deck' ? 0xcbd5e1 : 0xffffff,
-      roughness: 0.88,
-      metalness: 0.04,
-      polygonOffset: true,
-      polygonOffsetFactor: -1,
-      polygonOffsetUnits: -1,
-    });
-    const swWidth = 2.4;
-    const swSpan = halfSize * 2;
-    const swOffset = halfSize - swWidth / 2;
-    const swSegments: [number, number, number, number][] = [
-      [0, -swOffset, swSpan, swWidth],
-      [0, swOffset, swSpan, swWidth],
-      [-swOffset, 0, swWidth, swSpan - swWidth * 2],
-      [swOffset, 0, swWidth, swSpan - swWidth * 2],
-    ];
-    for (const [sx, sz, sw, sd] of swSegments) {
-      const walk = new THREE.Mesh(new THREE.BoxGeometry(sw, 0.08, sd), sidewalkMat);
-      walk.position.set(sx, 0.04, sz);
-      walk.receiveShadow = true;
-      this.arenaGroup.add(walk);
+    if (this.groundMesh) {
+      this.groundMesh.visible = !arenaSpec.hasOpenDropEdges;
     }
 
-    // Arena-specific floor markings
-    if (this.arena === 'courtyard') {
-      const plazaEmblem = new THREE.Mesh(
-        new THREE.PlaneGeometry(9.6, 9.6),
-        new THREE.MeshBasicMaterial({
-          map: plazaEmblemTex,
+    if (arenaSpec.hasOpenDropEdges) {
+      // Neon Rooftop suspended deck slab over distant lower skyline abyss
+      const roofDeck = new THREE.Mesh(
+        new THREE.BoxGeometry(halfSize * 2, 1.4, halfSize * 2),
+        new THREE.MeshStandardMaterial({
+          color: 0x0f1624,
+          roughness: 0.2,
+          metalness: 0.65,
+        }),
+      );
+      roofDeck.position.set(0, -0.7, 0);
+      roofDeck.receiveShadow = true;
+      this.arenaGroup.add(roofDeck);
+
+      const trimMat = new THREE.MeshBasicMaterial({
+        color: 0xf59e0b,
+        transparent: true,
+        opacity: 0.78,
+      });
+      const edgeSpan = halfSize * 2;
+      const edgeBars: [number, number, number, number][] = [
+        [0, -halfSize + 0.14, edgeSpan, 0.24],
+        [0, halfSize - 0.14, edgeSpan, 0.24],
+        [-halfSize + 0.14, 0, 0.24, edgeSpan],
+        [halfSize - 0.14, 0, 0.24, edgeSpan],
+      ];
+      for (const [ex, ez, ew, ed] of edgeBars) {
+        const edge = new THREE.Mesh(new THREE.BoxGeometry(ew, 0.08, ed), trimMat);
+        edge.position.set(ex, 0.04, ez);
+        this.arenaGroup.add(edge);
+      }
+      const gridMat = new THREE.MeshBasicMaterial({
+        color: 0x38bdf8,
+        transparent: true,
+        opacity: 0.16,
+      });
+      for (let g = -16; g <= 16; g += 8) {
+        const g1 = new THREE.Mesh(new THREE.PlaneGeometry(edgeSpan - 2, 0.12), gridMat);
+        g1.rotation.x = -Math.PI / 2;
+        g1.position.set(0, 0.02, g);
+        const g2 = new THREE.Mesh(new THREE.PlaneGeometry(0.12, edgeSpan - 2), gridMat);
+        g2.rotation.x = -Math.PI / 2;
+        g2.position.set(g, 0.02, 0);
+        this.arenaGroup.add(g1, g2);
+      }
+
+      // Lower skyscraper roofs surrounding the abyss
+      const abyssMat = new THREE.MeshStandardMaterial({
+        color: 0x090e1a,
+        roughness: 0.7,
+        metalness: 0.25,
+      });
+      const neonAccent = new THREE.MeshBasicMaterial({ color: 0xf97316 });
+      const cyanAccent = new THREE.MeshBasicMaterial({ color: 0x06b6d4 });
+      const abyssTowers: [number, number, number, number, number][] = [
+        [-34, -30, 12, 16, 12],
+        [0, -37, 18, 12, 11],
+        [34, -30, 13, 18, 12],
+        [-37, 2, 12, 14, 18],
+        [37, -2, 12, 15, 18],
+        [-32, 34, 14, 14, 12],
+        [2, 37, 20, 11, 11],
+        [34, 32, 13, 17, 12],
+      ];
+      abyssTowers.forEach(([tx, tz, tw, th, td], idx) => {
+        const tower = new THREE.Mesh(new THREE.BoxGeometry(tw, th, td), abyssMat);
+        tower.position.set(tx, -th / 2 - 4.5, tz);
+        const rim = new THREE.Mesh(
+          new THREE.BoxGeometry(tw + 0.2, 0.24, td + 0.2),
+          idx % 2 === 0 ? neonAccent : cyanAccent,
+        );
+        rim.position.set(tx, -4.45, tz);
+        this.arenaGroup.add(tower, rim);
+      });
+    } else {
+      // Concrete Perimeter Sidewalk & Curb Walkways
+      const sidewalkMat = new THREE.MeshStandardMaterial({
+        map: sidewalkTex,
+        color:
+          this.arena === 'parking_deck'
+            ? 0xcbd5e1
+            : this.arena === 'subway'
+              ? 0x94a3b8
+              : this.arena === 'biolab'
+                ? 0xbaf7e0
+                : 0xffffff,
+        roughness: 0.88,
+        metalness: 0.04,
+        polygonOffset: true,
+        polygonOffsetFactor: -1,
+        polygonOffsetUnits: -1,
+      });
+      const swWidth = 2.4;
+      const swSpan = halfSize * 2;
+      const swOffset = halfSize - swWidth / 2;
+      const swSegments: [number, number, number, number][] = [
+        [0, -swOffset, swSpan, swWidth],
+        [0, swOffset, swSpan, swWidth],
+        [-swOffset, 0, swWidth, swSpan - swWidth * 2],
+        [swOffset, 0, swWidth, swSpan - swWidth * 2],
+      ];
+      for (const [sx, sz, sw, sd] of swSegments) {
+        const walk = new THREE.Mesh(new THREE.BoxGeometry(sw, 0.08, sd), sidewalkMat);
+        walk.position.set(sx, 0.04, sz);
+        walk.receiveShadow = true;
+        this.arenaGroup.add(walk);
+      }
+
+      // Arena-specific floor markings
+      if (this.arena === 'courtyard') {
+        const plazaEmblem = new THREE.Mesh(
+          new THREE.PlaneGeometry(9.6, 9.6),
+          new THREE.MeshBasicMaterial({
+            map: plazaEmblemTex,
+            transparent: true,
+            opacity: 0.72,
+            depthWrite: false,
+            polygonOffset: true,
+            polygonOffsetFactor: -1,
+            polygonOffsetUnits: -1,
+          }),
+        );
+        plazaEmblem.rotation.x = -Math.PI / 2;
+        plazaEmblem.position.y = 0.024;
+        this.arenaGroup.add(plazaEmblem);
+
+        const stripeMat = new THREE.MeshBasicMaterial({
+          color: 0xf59e0b,
           transparent: true,
-          opacity: 0.72,
+          opacity: 0.24,
+          side: THREE.DoubleSide,
           depthWrite: false,
           polygonOffset: true,
           polygonOffsetFactor: -1,
           polygonOffsetUnits: -1,
-        }),
-      );
-      plazaEmblem.rotation.x = -Math.PI / 2;
-      plazaEmblem.position.y = 0.024;
-      this.arenaGroup.add(plazaEmblem);
+        });
+        const dashGeo = new THREE.PlaneGeometry(0.28, 1.4);
+        for (const d of [-14, -10.5, -7, 7, 10.5, 14]) {
+          const dashNS = new THREE.Mesh(dashGeo, stripeMat);
+          dashNS.rotation.x = -Math.PI / 2;
+          dashNS.position.set(0, 0.022, d);
+          this.arenaGroup.add(dashNS);
 
-      const stripeMat = new THREE.MeshBasicMaterial({
-        color: 0xf59e0b,
-        transparent: true,
-        opacity: 0.24,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-        polygonOffset: true,
-        polygonOffsetFactor: -1,
-        polygonOffsetUnits: -1,
-      });
-      const dashGeo = new THREE.PlaneGeometry(0.28, 1.4);
-      for (const d of [-14, -10.5, -7, 7, 10.5, 14]) {
-        const dashNS = new THREE.Mesh(dashGeo, stripeMat);
-        dashNS.rotation.x = -Math.PI / 2;
-        dashNS.position.set(0, 0.022, d);
-        this.arenaGroup.add(dashNS);
-
-        const dashEW = new THREE.Mesh(dashGeo, stripeMat);
-        dashEW.rotation.x = -Math.PI / 2;
-        dashEW.rotation.z = Math.PI / 2;
-        dashEW.position.set(d, 0.022, 0);
-        this.arenaGroup.add(dashEW);
-      }
-    } else if (this.arena === 'parking_deck') {
-      const bayMat = new THREE.MeshBasicMaterial({
-        color: 0x38bdf8,
-        transparent: true,
-        opacity: 0.24,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-        polygonOffset: true,
-        polygonOffsetFactor: -1,
-        polygonOffsetUnits: -1,
-      });
-      const bayLineGeo = new THREE.PlaneGeometry(0.18, 4.4);
-      for (let x = -14; x <= 14; x += 3.5) {
-        if (Math.abs(x) < 1.5) continue;
-        for (const zSign of [-1, 1]) {
-          const line = new THREE.Mesh(bayLineGeo, bayMat);
-          line.rotation.x = -Math.PI / 2;
-          line.position.set(x, 0.023, zSign * 14.5);
-          this.arenaGroup.add(line);
+          const dashEW = new THREE.Mesh(dashGeo, stripeMat);
+          dashEW.rotation.x = -Math.PI / 2;
+          dashEW.rotation.z = Math.PI / 2;
+          dashEW.position.set(d, 0.022, 0);
+          this.arenaGroup.add(dashEW);
         }
-      }
-      const laneArrowMat = new THREE.MeshBasicMaterial({
-        color: 0xfbbf24,
-        transparent: true,
-        opacity: 0.28,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-      });
-      const centerLine = new THREE.Mesh(new THREE.PlaneGeometry(26, 0.22), laneArrowMat);
-      centerLine.rotation.x = -Math.PI / 2;
-      centerLine.position.y = 0.022;
-      this.arenaGroup.add(centerLine);
-    } else {
-      // Abandoned Helipad: giant ringed landing pad & 'H' markings
-      const padRing = new THREE.Mesh(
-        new THREE.RingGeometry(6.8, 7.35, 48),
-        new THREE.MeshBasicMaterial({
-          color: 0xf59e0b,
+      } else if (this.arena === 'parking_deck') {
+        const bayMat = new THREE.MeshBasicMaterial({
+          color: 0x38bdf8,
           transparent: true,
-          opacity: 0.55,
+          opacity: 0.24,
           side: THREE.DoubleSide,
           depthWrite: false,
-        }),
-      );
-      padRing.rotation.x = -Math.PI / 2;
-      padRing.position.y = 0.025;
-      this.arenaGroup.add(padRing);
-
-      const hMat = new THREE.MeshBasicMaterial({
-        color: 0xf8fafc,
-        transparent: true,
-        opacity: 0.42,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-      });
-      const barGeo = new THREE.PlaneGeometry(0.85, 5.6);
-      const hLeft = new THREE.Mesh(barGeo, hMat);
-      hLeft.rotation.x = -Math.PI / 2;
-      hLeft.position.set(-1.9, 0.026, 0);
-      const hRight = new THREE.Mesh(barGeo, hMat);
-      hRight.rotation.x = -Math.PI / 2;
-      hRight.position.set(1.9, 0.026, 0);
-      const hCross = new THREE.Mesh(new THREE.PlaneGeometry(3.8, 0.85), hMat);
-      hCross.rotation.x = -Math.PI / 2;
-      hCross.position.set(0, 0.026, 0);
-      this.arenaGroup.add(hLeft, hRight, hCross);
-    }
-
-    // Cast-iron manhole covers for street micro-detail
-    const ironGrateMat = new THREE.MeshStandardMaterial({
-      color: 0x334155,
-      roughness: 0.48,
-      metalness: 0.72,
-    });
-    for (const [mx, mz] of [
-      [-3.8, -4.6],
-      [4.2, 5.1],
-      [-11.5, 2.5],
-      [11.2, -3.5],
-    ]) {
-      const manhole = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.52, 0.55, 0.04, 16),
-        ironGrateMat,
-      );
-      manhole.position.set(mx, 0.02, mz);
-      manhole.receiveShadow = true;
-      this.arenaGroup.add(manhole);
-    }
-
-    // Perimeter Walls, Pilasters, Wrought-Iron Fence & Open Gates
-    const wallMat = new THREE.MeshStandardMaterial({
-      ...(this.arena === 'courtyard'
-        ? { map: brickTex.map, bumpMap: brickTex.bumpMap, bumpScale: 0.04 }
-        : {}),
-      color: this.arena === 'parking_deck' ? 0x1e293b : this.arena === 'helipad' ? 0x334155 : 0xffffff,
-      roughness: 0.88,
-      metalness: this.arena === 'courtyard' ? 0.05 : 0.25,
-    });
-    const wallCapMat = new THREE.MeshStandardMaterial({
-      color: 0x334155,
-      roughness: 0.52,
-      metalness: 0.35,
-    });
-    const ironFenceMat = new THREE.MeshStandardMaterial({
-      color: 0x111827,
-      roughness: 0.4,
-      metalness: 0.82,
-    });
-
-    const span = halfSize * 2 + 1.2;
-    const wallThickness = 1.1;
-    const wallHeight = this.arena === 'helipad' ? 1.2 : 2.4;
-    const wallOffset = halfSize + wallThickness * 0.5;
-
-    const wallSpecs: [number, number, number, number][] = [
-      [0, -wallOffset, span, wallThickness],
-      [0, wallOffset, span, wallThickness],
-      [-wallOffset, 0, wallThickness, span],
-      [wallOffset, 0, wallThickness, span],
-    ];
-    for (const [wx, wz, ww, wd] of wallSpecs) {
-      const wall = new THREE.Mesh(
-        new THREE.BoxGeometry(ww, wallHeight, wd),
-        wallMat,
-      );
-      wall.position.set(wx, wallHeight / 2, wz);
-      wall.receiveShadow = true;
-      wall.castShadow = true;
-      this.arenaGroup.add(wall);
-
-      const cap = new THREE.Mesh(
-        new THREE.BoxGeometry(ww + 0.16, 0.18, wd + 0.16),
-        wallCapMat,
-      );
-      cap.position.set(wx, wallHeight + 0.09, wz);
-      this.arenaGroup.add(cap);
-
-      const rail = new THREE.Mesh(
-        new THREE.BoxGeometry(
-          ww > wd ? ww : 0.1,
-          0.1,
-          wd > ww ? wd : 0.1,
-        ),
-        ironFenceMat,
-      );
-      rail.position.set(wx, wallHeight + 0.72, wz);
-      this.arenaGroup.add(rail);
-    }
-
-    const pilasterGeo = new THREE.BoxGeometry(1.45, wallHeight + 0.9, 1.45);
-    const gateArchGeo = new THREE.BoxGeometry(5.2, 0.32, 0.4);
-    for (let p = -halfSize; p <= halfSize; p += 10.75) {
-      for (const [px, pz] of [
-        [p, -wallOffset],
-        [p, wallOffset],
-        [-wallOffset, p],
-        [wallOffset, p],
-      ]) {
-        const pil = new THREE.Mesh(pilasterGeo, wallMat);
-        pil.position.set(px, (wallHeight + 0.9) / 2, pz);
-        pil.castShadow = true;
-        this.arenaGroup.add(pil);
-      }
-    }
-    if (this.arena !== 'helipad') {
-      for (const [gx, gz, rot] of [
-        [0, -wallOffset, 0],
-        [0, wallOffset, 0],
-        [-wallOffset, 0, Math.PI / 2],
-        [wallOffset, 0, Math.PI / 2],
-      ]) {
-        const arch = new THREE.Mesh(gateArchGeo, ironFenceMat);
-        arch.position.set(gx, 3.25, gz);
-        arch.rotation.y = rot;
-        this.arenaGroup.add(arch);
-      }
-    }
-
-    // Perimeter Dumpsters, Corner Fire Braziers & Wall-Edge Jersey Barriers
-    for (const [dx, dz, rot] of [
-      [-16.8, -20.2, 0.05],
-      [16.8, 20.2, -3.09],
-    ]) {
-      const dumpster = buildDumpster(this.shadowTex);
-      dumpster.position.set(dx, 0, dz);
-      dumpster.rotation.y = rot;
-      this.arenaGroup.add(dumpster);
-    }
-
-    const brazierCoords: [number, number][] = [
-      [-20.3, -20.3],
-      [20.3, -20.3],
-      [-20.3, 20.3],
-      [20.3, 20.3],
-    ];
-    brazierCoords.forEach(([bx, bz], idx) => {
-      const brazier = buildCornerBrazier(this.shadowTex, !this.isSoftwareGl);
-      brazier.group.position.set(bx, 0, bz);
-      this.arenaGroup.add(brazier.group);
-      this.cornerEmbers.push({
-        mesh: brazier.emberMesh,
-        light: brazier.pointLight,
-        phase: idx * 1.65,
-      });
-    });
-
-    const barrierPlacements: [number, number, number][] = [
-      [-4.6, -21.05, 0],
-      [4.6, -21.05, 0],
-      [-4.6, 21.05, 0],
-      [4.6, 21.05, 0],
-      [-21.05, -4.6, Math.PI / 2],
-      [-21.05, 4.6, Math.PI / 2],
-      [21.05, -4.6, Math.PI / 2],
-      [21.05, 4.6, Math.PI / 2],
-    ];
-    for (const [jx, jz, rot] of barrierPlacements) {
-      const barrier = buildJerseyBarrier(hazardTex);
-      barrier.position.set(jx, 0, jz);
-      barrier.rotation.y = rot;
-      this.arenaGroup.add(barrier);
-    }
-
-    // Surrounding urban city block silhouettes
-    const bldgMat = new THREE.MeshStandardMaterial({
-      color: 0x0f172a,
-      roughness: 0.85,
-      metalness: 0.15,
-    });
-    const winMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b });
-    const neonRedMat = new THREE.MeshBasicMaterial({ color: 0xef4444 });
-    const neonCyanMat = new THREE.MeshBasicMaterial({ color: 0x06b6d4 });
-    const outerCoords: [number, number, number, number, number][] = [
-      [-32, -30, 12, 16, 10],
-      [-14, -34, 16, 12, 11],
-      [14, -33, 14, 18, 10],
-      [33, -28, 12, 14, 12],
-      [-34, 0, 12, 20, 16],
-      [34, 2, 12, 15, 18],
-      [-32, 31, 13, 13, 12],
-      [0, 35, 22, 10, 10],
-      [32, 32, 14, 17, 12],
-    ];
-    outerCoords.forEach(([bx, bz, bw, bh, bd], idx) => {
-      const bldg = new THREE.Mesh(new THREE.BoxGeometry(bw, bh, bd), bldgMat);
-      bldg.position.set(bx, bh / 2, bz);
-      this.arenaGroup.add(bldg);
-
-      const hvac = new THREE.Mesh(
-        new THREE.BoxGeometry(bw * 0.35, 1.4, bd * 0.35),
-        wallCapMat,
-      );
-      hvac.position.set(bx + 1.2, bh + 0.7, bz);
-      this.arenaGroup.add(hvac);
-
-      for (let w = 0; w < 3; w++) {
-        const win = new THREE.Mesh(new THREE.BoxGeometry(0.95, 1.3, 0.2), winMat);
-        win.position.set(
-          bx + (w - 1) * 3.1,
-          bh * (0.55 + (w % 2) * 0.16),
-          bz + (bz < 0 ? bd / 2 + 0.05 : -bd / 2 - 0.05),
-        );
-        this.arenaGroup.add(win);
-      }
-
-      if (idx === 1 || idx === 2 || idx === 4) {
-        const sign = new THREE.Mesh(
-          new THREE.BoxGeometry(3.8, 0.65, 0.22),
-          idx === 1 ? neonRedMat : neonCyanMat,
-        );
-        sign.position.set(
-          bx,
-          5.2,
-          bz + (bz < 0 ? bd / 2 + 0.15 : -bd / 2 - 0.15),
-        );
-        if (idx === 4) {
-          sign.rotation.y = Math.PI / 2;
-          sign.position.set(bx + bw / 2 + 0.15, 5.4, bz);
+          polygonOffset: true,
+          polygonOffsetFactor: -1,
+          polygonOffsetUnits: -1,
+        });
+        const bayLineGeo = new THREE.PlaneGeometry(0.18, 4.4);
+        for (let x = -14; x <= 14; x += 3.5) {
+          if (Math.abs(x) < 1.5) continue;
+          for (const zSign of [-1, 1]) {
+            const line = new THREE.Mesh(bayLineGeo, bayMat);
+            line.rotation.x = -Math.PI / 2;
+            line.position.set(x, 0.023, zSign * 14.5);
+            this.arenaGroup.add(line);
+          }
         }
-        this.arenaGroup.add(sign);
-      }
-    });
+        const laneArrowMat = new THREE.MeshBasicMaterial({
+          color: 0xfbbf24,
+          transparent: true,
+          opacity: 0.28,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        });
+        const centerLine = new THREE.Mesh(new THREE.PlaneGeometry(26, 0.22), laneArrowMat);
+        centerLine.rotation.x = -Math.PI / 2;
+        centerLine.position.y = 0.022;
+        this.arenaGroup.add(centerLine);
+      } else if (this.arena === 'subway') {
+        // Subway rail track bed, steel rails, hazard warning strip, and armored train mesh
+        const railBed = new THREE.Mesh(
+          new THREE.PlaneGeometry(halfSize * 2, 4.7),
+          new THREE.MeshStandardMaterial({
+            color: 0x090d14,
+            roughness: 0.92,
+            metalness: 0.12,
+          }),
+        );
+        railBed.rotation.x = -Math.PI / 2;
+        railBed.position.y = 0.018;
+        this.arenaGroup.add(railBed);
 
-    // Arena Tactical Obstacles (Cars, Crates, Pillars, Streetlamps)
+        const railMat = new THREE.MeshStandardMaterial({
+          color: 0x94a3b8,
+          roughness: 0.28,
+          metalness: 0.9,
+        });
+        for (const rz of [-1.05, 1.05]) {
+          const rail = new THREE.Mesh(
+            new THREE.BoxGeometry(halfSize * 2, 0.08, 0.14),
+            railMat,
+          );
+          rail.position.set(0, 0.04, rz);
+          this.arenaGroup.add(rail);
+        }
+        const tieMat = new THREE.MeshStandardMaterial({
+          color: 0x292524,
+          roughness: 0.85,
+        });
+        for (let tx = -halfSize + 1; tx <= halfSize - 1; tx += 1.6) {
+          const tie = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.04, 2.7), tieMat);
+          tie.position.set(tx, 0.02, 0);
+          this.arenaGroup.add(tie);
+        }
+        const edgeYellow = new THREE.MeshBasicMaterial({
+          color: 0xf59e0b,
+          transparent: true,
+          opacity: 0.65,
+        });
+        for (const ez of [-2.42, 2.42]) {
+          const strip = new THREE.Mesh(new THREE.PlaneGeometry(halfSize * 2, 0.18), edgeYellow);
+          strip.rotation.x = -Math.PI / 2;
+          strip.position.set(0, 0.024, ez);
+          this.arenaGroup.add(strip);
+        }
+
+        this.subwayTrainWarningMat = new THREE.MeshBasicMaterial({
+          color: 0xef4444,
+          transparent: true,
+          opacity: 0.0,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        });
+        this.subwayTrainWarningMesh = new THREE.Mesh(
+          new THREE.PlaneGeometry(halfSize * 2, 4.7),
+          this.subwayTrainWarningMat,
+        );
+        this.subwayTrainWarningMesh.rotation.x = -Math.PI / 2;
+        this.subwayTrainWarningMesh.position.set(0, 0.032, 0);
+        this.subwayTrainWarningMesh.visible = false;
+        this.arenaGroup.add(this.subwayTrainWarningMesh);
+
+        this.subwayTrainMesh = buildSubwayTrainMesh();
+        this.subwayTrainMesh.position.set(-34, 0, 0);
+        this.subwayTrainMesh.visible = false;
+        this.arenaGroup.add(this.subwayTrainMesh);
+      } else if (this.arena === 'biolab') {
+        const bioLineMat = new THREE.MeshBasicMaterial({
+          color: 0x22c55e,
+          transparent: true,
+          opacity: 0.22,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        });
+        const bioRing = new THREE.Mesh(new THREE.RingGeometry(5.8, 6.15, 42), bioLineMat);
+        bioRing.rotation.x = -Math.PI / 2;
+        bioRing.position.y = 0.023;
+        this.arenaGroup.add(bioRing);
+
+        if (arenaSpec.toxicVents) {
+          for (const ventCoord of arenaSpec.toxicVents) {
+            const ventRig = buildToxicVentMesh();
+            ventRig.root.position.set(ventCoord.x, 0, ventCoord.z);
+            this.arenaGroup.add(ventRig.root);
+            this.toxicVents.push({
+              x: ventCoord.x,
+              z: ventCoord.z,
+              root: ventRig.root,
+              ringMat: ventRig.ringMat,
+              tickTimer: 0,
+            });
+          }
+        }
+      } else {
+        // Abandoned Helipad: giant ringed landing pad & 'H' markings
+        const padRing = new THREE.Mesh(
+          new THREE.RingGeometry(6.8, 7.35, 48),
+          new THREE.MeshBasicMaterial({
+            color: 0xf59e0b,
+            transparent: true,
+            opacity: 0.55,
+            side: THREE.DoubleSide,
+            depthWrite: false,
+          }),
+        );
+        padRing.rotation.x = -Math.PI / 2;
+        padRing.position.y = 0.025;
+        this.arenaGroup.add(padRing);
+
+        const hMat = new THREE.MeshBasicMaterial({
+          color: 0xf8fafc,
+          transparent: true,
+          opacity: 0.42,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        });
+        const barGeo = new THREE.PlaneGeometry(0.85, 5.6);
+        const hLeft = new THREE.Mesh(barGeo, hMat);
+        hLeft.rotation.x = -Math.PI / 2;
+        hLeft.position.set(-1.9, 0.026, 0);
+        const hRight = new THREE.Mesh(barGeo, hMat);
+        hRight.rotation.x = -Math.PI / 2;
+        hRight.position.set(1.9, 0.026, 0);
+        const hCross = new THREE.Mesh(new THREE.PlaneGeometry(3.8, 0.85), hMat);
+        hCross.rotation.x = -Math.PI / 2;
+        hCross.position.set(0, 0.026, 0);
+        this.arenaGroup.add(hLeft, hRight, hCross);
+      }
+
+      // Cast-iron manhole covers for street micro-detail
+      const ironGrateMat = new THREE.MeshStandardMaterial({
+        color: 0x334155,
+        roughness: 0.48,
+        metalness: 0.72,
+      });
+      for (const [mx, mz] of [
+        [-3.8, -4.6],
+        [4.2, 5.1],
+        [-11.5, 2.5],
+        [11.2, -3.5],
+      ]) {
+        const manhole = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.52, 0.55, 0.04, 16),
+          ironGrateMat,
+        );
+        manhole.position.set(mx, 0.02, mz);
+        manhole.receiveShadow = true;
+        this.arenaGroup.add(manhole);
+      }
+
+      // Perimeter Walls, Pilasters, Wrought-Iron Fence & Open Gates
+      const wallMat = new THREE.MeshStandardMaterial({
+        ...(this.arena === 'courtyard'
+          ? { map: brickTex.map, bumpMap: brickTex.bumpMap, bumpScale: 0.04 }
+          : {}),
+        color:
+          this.arena === 'parking_deck'
+            ? 0x1e293b
+            : this.arena === 'helipad' || this.arena === 'subway'
+              ? 0x334155
+              : this.arena === 'biolab'
+                ? 0x16302b
+                : 0xffffff,
+        roughness: 0.88,
+        metalness: this.arena === 'courtyard' ? 0.05 : 0.25,
+      });
+      const wallCapMat = new THREE.MeshStandardMaterial({
+        color: 0x334155,
+        roughness: 0.52,
+        metalness: 0.35,
+      });
+      const ironFenceMat = new THREE.MeshStandardMaterial({
+        color: 0x111827,
+        roughness: 0.4,
+        metalness: 0.82,
+      });
+
+      const span = halfSize * 2 + 1.2;
+      const wallThickness = 1.1;
+      const wallHeight = this.arena === 'helipad' ? 1.2 : 2.4;
+      const wallOffset = halfSize + wallThickness * 0.5;
+
+      const wallSpecs: [number, number, number, number][] = [
+        [0, -wallOffset, span, wallThickness],
+        [0, wallOffset, span, wallThickness],
+        [-wallOffset, 0, wallThickness, span],
+        [wallOffset, 0, wallThickness, span],
+      ];
+      for (const [wx, wz, ww, wd] of wallSpecs) {
+        const wall = new THREE.Mesh(
+          new THREE.BoxGeometry(ww, wallHeight, wd),
+          wallMat,
+        );
+        wall.position.set(wx, wallHeight / 2, wz);
+        wall.receiveShadow = true;
+        wall.castShadow = true;
+        this.arenaGroup.add(wall);
+
+        const cap = new THREE.Mesh(
+          new THREE.BoxGeometry(ww + 0.16, 0.18, wd + 0.16),
+          wallCapMat,
+        );
+        cap.position.set(wx, wallHeight + 0.09, wz);
+        this.arenaGroup.add(cap);
+
+        const rail = new THREE.Mesh(
+          new THREE.BoxGeometry(
+            ww > wd ? ww : 0.1,
+            0.1,
+            wd > ww ? wd : 0.1,
+          ),
+          ironFenceMat,
+        );
+        rail.position.set(wx, wallHeight + 0.72, wz);
+        this.arenaGroup.add(rail);
+      }
+
+      const pilasterGeo = new THREE.BoxGeometry(1.45, wallHeight + 0.9, 1.45);
+      const gateArchGeo = new THREE.BoxGeometry(5.2, 0.32, 0.4);
+      for (let p = -halfSize; p <= halfSize; p += 10.75) {
+        for (const [px, pz] of [
+          [p, -wallOffset],
+          [p, wallOffset],
+          [-wallOffset, p],
+          [wallOffset, p],
+        ]) {
+          const pil = new THREE.Mesh(pilasterGeo, wallMat);
+          pil.position.set(px, (wallHeight + 0.9) / 2, pz);
+          pil.castShadow = true;
+          this.arenaGroup.add(pil);
+        }
+      }
+      if (this.arena !== 'helipad') {
+        for (const [gx, gz, rot] of [
+          [0, -wallOffset, 0],
+          [0, wallOffset, 0],
+          [-wallOffset, 0, Math.PI / 2],
+          [wallOffset, 0, Math.PI / 2],
+        ]) {
+          const arch = new THREE.Mesh(gateArchGeo, ironFenceMat);
+          arch.position.set(gx, 3.25, gz);
+          arch.rotation.y = rot;
+          this.arenaGroup.add(arch);
+        }
+      }
+
+      // Perimeter Dumpsters, Corner Fire Braziers & Wall-Edge Jersey Barriers
+      for (const [dx, dz, rot] of [
+        [-16.8, -20.2, 0.05],
+        [16.8, 20.2, -3.09],
+      ]) {
+        const dumpster = buildDumpster(this.shadowTex);
+        dumpster.position.set(dx, 0, dz);
+        dumpster.rotation.y = rot;
+        this.arenaGroup.add(dumpster);
+      }
+
+      const brazierCoords: [number, number][] = [
+        [-20.3, -20.3],
+        [20.3, -20.3],
+        [-20.3, 20.3],
+        [20.3, 20.3],
+      ];
+      brazierCoords.forEach(([bx, bz], idx) => {
+        const brazier = buildCornerBrazier(this.shadowTex, !this.isSoftwareGl);
+        brazier.group.position.set(bx, 0, bz);
+        this.arenaGroup.add(brazier.group);
+        this.cornerEmbers.push({
+          mesh: brazier.emberMesh,
+          light: brazier.pointLight,
+          phase: idx * 1.65,
+        });
+      });
+
+      const barrierPlacements: [number, number, number][] = [
+        [-4.6, -21.05, 0],
+        [4.6, -21.05, 0],
+        [-4.6, 21.05, 0],
+        [4.6, 21.05, 0],
+        [-21.05, -4.6, Math.PI / 2],
+        [-21.05, 4.6, Math.PI / 2],
+        [21.05, -4.6, Math.PI / 2],
+        [21.05, 4.6, Math.PI / 2],
+      ];
+      for (const [jx, jz, rot] of barrierPlacements) {
+        const barrier = buildJerseyBarrier(hazardTex);
+        barrier.position.set(jx, 0, jz);
+        barrier.rotation.y = rot;
+        this.arenaGroup.add(barrier);
+      }
+
+      // Surrounding urban city block silhouettes
+      const bldgMat = new THREE.MeshStandardMaterial({
+        color: 0x0f172a,
+        roughness: 0.85,
+        metalness: 0.15,
+      });
+      const winMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b });
+      const neonRedMat = new THREE.MeshBasicMaterial({ color: 0xef4444 });
+      const neonCyanMat = new THREE.MeshBasicMaterial({ color: 0x06b6d4 });
+      const outerCoords: [number, number, number, number, number][] = [
+        [-32, -30, 12, 16, 10],
+        [-14, -34, 16, 12, 11],
+        [14, -33, 14, 18, 10],
+        [33, -28, 12, 14, 12],
+        [-34, 0, 12, 20, 16],
+        [34, 2, 12, 15, 18],
+        [-32, 31, 13, 13, 12],
+        [0, 35, 22, 10, 10],
+        [32, 32, 14, 17, 12],
+      ];
+      outerCoords.forEach(([bx, bz, bw, bh, bd], idx) => {
+        const bldg = new THREE.Mesh(new THREE.BoxGeometry(bw, bh, bd), bldgMat);
+        bldg.position.set(bx, bh / 2, bz);
+        this.arenaGroup.add(bldg);
+
+        const hvac = new THREE.Mesh(
+          new THREE.BoxGeometry(bw * 0.35, 1.4, bd * 0.35),
+          wallCapMat,
+        );
+        hvac.position.set(bx + 1.2, bh + 0.7, bz);
+        this.arenaGroup.add(hvac);
+
+        for (let w = 0; w < 3; w++) {
+          const win = new THREE.Mesh(new THREE.BoxGeometry(0.95, 1.3, 0.2), winMat);
+          win.position.set(
+            bx + (w - 1) * 3.1,
+            bh * (0.55 + (w % 2) * 0.16),
+            bz + (bz < 0 ? bd / 2 + 0.05 : -bd / 2 - 0.05),
+          );
+          this.arenaGroup.add(win);
+        }
+
+        if (idx === 1 || idx === 2 || idx === 4) {
+          const sign = new THREE.Mesh(
+            new THREE.BoxGeometry(3.8, 0.65, 0.22),
+            idx === 1 ? neonRedMat : neonCyanMat,
+          );
+          sign.position.set(
+            bx,
+            5.2,
+            bz + (bz < 0 ? bd / 2 + 0.15 : -bd / 2 - 0.15),
+          );
+          if (idx === 4) {
+            sign.rotation.y = Math.PI / 2;
+            sign.position.set(bx + bw / 2 + 0.15, 5.4, bz);
+          }
+          this.arenaGroup.add(sign);
+        }
+      });
+    }
+
+    // Arena Tactical Obstacles (Cars, Crates, Pillars, Pods, Tech Pillars, Streetlamps)
     let lampIdx = 0;
-    for (const obs of arenaSpec.obstacles) {
+    for (const obs of this.runtimeObstacles) {
       let mesh: THREE.Group;
       if (obs.kind === 'car') {
         mesh = buildCarMesh(
@@ -1484,6 +1915,21 @@ export class GameEngine {
           this.shadowTex,
           hazardTex,
         );
+      } else if (obs.kind === 'pod') {
+        mesh = buildBiolabGlassPod(
+          obs.halfW,
+          obs.halfD,
+          obs.height,
+          this.shadowTex,
+        );
+      } else if (obs.kind === 'pillar_tech') {
+        mesh = buildTechPillarMesh(
+          obs.halfW,
+          obs.halfD,
+          obs.height,
+          this.shadowTex,
+          this.arena === 'biolab' ? 0x22c55e : 0xf59e0b,
+        );
       } else {
         const lampRig = buildStreetLamp(lightPoolTex, true);
         mesh = lampRig.group;
@@ -1500,6 +1946,7 @@ export class GameEngine {
       if (obs.kind !== 'lamp') {
         mesh.rotation.y = obs.rotationY;
       }
+      obs.mesh = mesh;
       this.arenaGroup.add(mesh);
     }
 
@@ -1515,6 +1962,40 @@ export class GameEngine {
         z: coord.z,
         active: true,
         respawnTimer: 0,
+      });
+    });
+
+    // Cryo Canisters
+    arenaSpec.cryoCanisterCoords.forEach((coord, idx) => {
+      const root = buildCryoCanister(this.shadowTex);
+      root.position.set(coord.x, 0, coord.z);
+      this.arenaGroup.add(root);
+      this.cryoCanisters.push({
+        id: `cryo-${idx}`,
+        root,
+        x: coord.x,
+        z: coord.z,
+        active: true,
+        respawnTimer: 0,
+      });
+    });
+
+    // Interactive In-Run Scrap Tactical Pads
+    arenaSpec.tacticalPads.forEach((pad) => {
+      const rig = buildTacticalPadStation(pad.kind, this.shadowTex);
+      rig.root.position.set(pad.x, 0, pad.z);
+      this.arenaGroup.add(rig.root);
+      this.tacticalPads.push({
+        kind: pad.kind,
+        label: pad.label,
+        cost: pad.scrapCost,
+        x: pad.x,
+        z: pad.z,
+        root: rig.root,
+        ringMat: rig.ringMat,
+        standProgress: 0,
+        playerInside: false,
+        activeRemaining: 0,
       });
     });
 
@@ -1939,6 +2420,8 @@ export class GameEngine {
         this.choosePerk(this.perkDraftChoices[2]);
       } else if (code === 'Digit4' && this.cursedDraftChoice) {
         this.chooseCursedPerk(this.cursedDraftChoice);
+      } else if (code === 'KeyR' && this.perkRerollsRemaining > 0) {
+        this.rerollPerkDraft();
       }
       return;
     }
@@ -1979,6 +2462,8 @@ export class GameEngine {
       this.triggerGadget();
     } else if (code === 'KeyQ') {
       this.triggerUltimate();
+    } else if (code === 'KeyX' && this.extractionZone?.active) {
+      this.waveOffExtraction();
     } else if (code === 'Tab') {
       e.preventDefault();
       this.switchWeapon();
@@ -2053,6 +2538,72 @@ export class GameEngine {
     return this.ownedCursedPerks.includes(id);
   }
 
+  private isSandbox(): boolean {
+    return this.mode === 'sandbox';
+  }
+
+  private getEffectiveGadgetCooldown(): number {
+    const tech = getTechLabBonuses(this.career.techLab);
+    const mutMult = this.dailyMutator === 'hyper_dash' ? 0.85 : 1;
+    return (
+      GADGET_SPECS[this.equippedGadget].cooldownSec *
+      CLASS_SPECS[this.career.selectedClass].gearCooldownMult *
+      tech.gadgetCooldownMult *
+      mutMult
+    );
+  }
+
+  private getBlastDamageMultiplier(): number {
+    return this.mode === 'weekly' && this.weeklyMutator === 'explosives_only'
+      ? 2.2
+      : 1;
+  }
+
+  private triggerContractEvent(
+    eventType: DailyContractEventType,
+    amount = 1,
+    skipSave = false,
+  ): void {
+    if (this.isSandbox()) return;
+    const res = recordContractEvent(
+      this.career.dailyContracts,
+      eventType,
+      amount,
+    );
+    this.career.dailyContracts = res.state;
+    if (res.newlyCompleted.length > 0) {
+      const done = res.newlyCompleted[0];
+      this.pickupToast = `CONTRACT DONE · ${done.title.toUpperCase()} (+${done.scrapReward} SCRAP)`;
+      this.pickupToastTimer = 2.6;
+      this.sound.playContractClaim();
+    }
+    if (!skipSave) {
+      this.career = saveCareerStats(this.career);
+      this.callbacks.onCareerUpdate?.(this.career);
+    }
+  }
+
+  private resolveReactorCollision(
+    x: number,
+    z: number,
+    entityRadius: number,
+  ): { x: number; z: number } {
+    if (!this.reactorCore) return { x, z };
+    const dx = x - this.reactorCore.x;
+    const dz = z - this.reactorCore.z;
+    const minDist = this.reactorCore.radius + entityRadius;
+    const dSq = dx * dx + dz * dz;
+    if (dSq >= minDist * minDist) return { x, z };
+    const d = Math.sqrt(dSq);
+    if (d < 0.001) {
+      return { x: this.reactorCore.x, z: this.reactorCore.z + minDist };
+    }
+    return {
+      x: this.reactorCore.x + (dx / d) * minDist,
+      z: this.reactorCore.z + (dz / d) * minDist,
+    };
+  }
+
   private getEffectiveDamageMultiplier(): number {
     return (
       getDamageMultiplier(this.upgradeLevels) *
@@ -2061,9 +2612,11 @@ export class GameEngine {
   }
 
   private getEffectiveMaxHp(): number {
+    const tech = getTechLabBonuses(this.career.techLab);
     const raw =
       getMaxHpForLevel(this.upgradeLevels) +
-      getPermanentBaseHpBonus(this.career.permanentUpgrades);
+      getPermanentBaseHpBonus(this.career.permanentUpgrades) +
+      tech.maxHpBonus;
     return this.hasCursedPerk('cursed_glass_cannon')
       ? Math.max(25, Math.round(raw * 0.6))
       : raw;
@@ -2186,12 +2739,15 @@ export class GameEngine {
     ) {
       return;
     }
-    if (this.gadgetCooldownTimer > 0) return;
+    if (this.gadgetCharges <= 0) return;
 
     const gadgetId = this.equippedGadget;
     const spec = GADGET_SPECS[gadgetId];
-    this.gadgetCooldownTimer =
-      spec.cooldownSec * (this.dailyMutator === 'hyper_dash' ? 0.85 : 1);
+    this.gadgetCharges = Math.max(0, this.gadgetCharges - 1);
+    if (this.gadgetCooldownTimer <= 0) {
+      this.gadgetCooldownTimer = this.getEffectiveGadgetCooldown();
+    }
+    this.triggerContractEvent('gadget_deploy', 1);
 
     const fwdX = -Math.sin(this.playerAimAngle);
     const fwdZ = -Math.cos(this.playerAimAngle);
@@ -2379,6 +2935,8 @@ export class GameEngine {
         life: spec.durationSec ?? 14,
         fireTimer: 0.25,
         flashTimer: 0,
+        hp: 100,
+        maxHp: 100,
       });
       hapticTurretDeploy();
       this.sound.playGearDeploy('turret');
@@ -2680,6 +3238,30 @@ export class GameEngine {
     return true;
   }
 
+  public rerollPerkDraft(): void {
+    if (
+      this.phase !== 'playing' ||
+      !this.perkDraftChoices ||
+      this.perkRerollsRemaining <= 0
+    ) {
+      return;
+    }
+    this.perkRerollsRemaining -= 1;
+    const draftRng =
+      this.mode === 'daily' && this.dailyDateKey
+        ? createSeededRng(
+            `nightfall-daily-${this.dailyDateKey}-perk-rr-${this.perkDraftSeedCursor++}`,
+          )
+        : Math.random;
+    this.perkDraftChoices = rollPerkDraftChoices(this.ownedPerks, draftRng);
+    this.cursedDraftChoice = rollCursedPerkChoice(this.ownedCursedPerks, draftRng);
+    this.sound.playReloadStart();
+    this.pickupToast = `PERKS REROLLED (${this.perkRerollsRemaining} LEFT)`;
+    this.pickupToastTimer = 1.6;
+    this.persistCurrentProgress(true);
+    this.emitHudSnapshot(true);
+  }
+
   public choosePerk(perkId: PerkId): void {
     if (this.phase !== 'playing' || !this.perkDraftChoices) return;
     if (!this.perkDraftChoices.includes(perkId)) return;
@@ -2803,6 +3385,64 @@ export class GameEngine {
     return this.callsign;
   }
 
+  public setClanTag(raw: string): string {
+    this.clanTag = saveClanTag(raw);
+    this.emitHudSnapshot(true);
+    return this.clanTag;
+  }
+
+  public getClanTag(): string {
+    return this.clanTag;
+  }
+
+  public setSelfUid(uid: string | null): void {
+    this.selfUid = uid;
+    this.updateNextRivalTracking(false);
+    this.emitHudSnapshot(false);
+  }
+
+  public refreshCachedRivals(entries: CachedRivalEntry[]): void {
+    saveCachedTop20Rivals(entries);
+    this.cachedRivals = loadCachedTop20Rivals();
+    this.updateNextRivalTracking(false);
+    this.emitHudSnapshot(false);
+  }
+
+  public applyCloudSyncState(snapshot: {
+    career: CareerStats;
+    highScore: number;
+    callsign: string;
+    clanTag: string;
+  }): void {
+    this.career = saveCareerStats(snapshot.career);
+    this.highScore = saveHighScore(snapshot.highScore);
+    this.callsign = saveCallsign(snapshot.callsign);
+    this.clanTag = saveClanTag(snapshot.clanTag);
+    applyPlayerSkin(this.playerRig, this.career.equippedSkinId);
+    this.applyClassFlashlightVisuals();
+    this.syncEquippedDroneVisuals();
+    this.callbacks.onCareerUpdate?.(this.career);
+    this.emitHudSnapshot(true);
+  }
+
+  private updateNextRivalTracking(announceOvertake: boolean): void {
+    const prev = this.currentNextRival;
+    const next = computeNextRival(this.score, this.cachedRivals, this.selfUid);
+    if (
+      announceOvertake &&
+      this.phase === 'playing' &&
+      prev &&
+      this.score >= prev.targetScore &&
+      (!next || next.rank < prev.rank)
+    ) {
+      const tagPrefix = prev.clanTag ? `[${prev.clanTag}] ` : '';
+      this.rivalOvertakenBanner = `RANK #${prev.rank} OVERTAKEN — PASSED ${tagPrefix}${prev.callsign}!`;
+      this.rivalOvertakenTimer = 3.2;
+      this.sound.playPickup('rapidfire');
+    }
+    this.currentNextRival = next;
+  }
+
   public startDailyRun(): void {
     const cfg = getDailyChallengeConfig();
     this.mode = 'daily';
@@ -2824,6 +3464,11 @@ export class GameEngine {
     this.settings = saveSettings(next);
     this.applyGraphicsSettings();
     setHapticsEnabled(this.settings.hapticsEnabled);
+    this.sound.setVolumes(
+      this.settings.masterVolume,
+      this.settings.musicVolume,
+      this.settings.sfxVolume,
+    );
     this.callbacks.onSettingsUpdate?.({ ...this.settings });
     this.emitHudSnapshot(true);
     return { ...this.settings };
@@ -2850,6 +3495,51 @@ export class GameEngine {
       this.moonLight.castShadow = shadows;
     }
     this.renderer.shadowMap.needsUpdate = true;
+
+    const enableBloom = shouldEnableBloom(
+      this.settings.graphicsQuality,
+      this.isSoftwareGl,
+    );
+    if (enableBloom) {
+      try {
+        if (!this.composer && this.scene && this.camera) {
+          this.composer = new EffectComposer(this.renderer);
+          this.composer.addPass(new RenderPass(this.scene, this.camera));
+          this.bloomPass = new UnrealBloomPass(
+            new THREE.Vector2(
+              Math.max(1, this.viewportW),
+              Math.max(1, this.viewportH),
+            ),
+            0.24,
+            0.42,
+            0.9,
+          );
+          this.composer.addPass(this.bloomPass);
+          this.composer.addPass(new OutputPass());
+        }
+        if (this.composer) {
+          this.composer.setPixelRatio(dpr);
+          this.composer.setSize(
+            Math.max(1, this.viewportW),
+            Math.max(1, this.viewportH),
+          );
+          this.bloomActive = true;
+        }
+      } catch {
+        this.bloomActive = false;
+      }
+    } else {
+      this.bloomActive = false;
+    }
+  }
+
+  private renderFrame(): void {
+    if (!this.scene || !this.camera || this.disposed) return;
+    if (this.bloomActive && this.composer) {
+      this.composer.render();
+    } else {
+      this.renderer.render(this.scene, this.camera);
+    }
   }
 
   private applyClassFlashlightVisuals(): void {
@@ -2945,6 +3635,205 @@ export class GameEngine {
     return { changed: res.changed, career: this.career };
   }
 
+  public buyTechLabUpgrade(
+    id: TechLabUpgradeId,
+  ): { purchased: boolean; career: CareerStats } {
+    const res = purchaseTechLabUpgrade(this.career, id);
+    if (res.purchased) {
+      this.career = saveCareerStats(res.career);
+      this.sound.playUpgrade();
+      this.callbacks.onCareerUpdate?.(this.career);
+      this.emitHudSnapshot(true);
+    }
+    return { purchased: res.purchased, career: this.career };
+  }
+
+  public setWeaponCamo(
+    weaponId: WeaponId,
+    camoId: WeaponCamoId,
+  ): { equipped: boolean; career: CareerStats } {
+    const res = equipWeaponCamo(this.career, weaponId, camoId);
+    if (res.changed) {
+      this.career = saveCareerStats(res.career);
+      this.syncPlayerWeaponVisibility();
+      this.sound.playUpgrade();
+      this.callbacks.onCareerUpdate?.(this.career);
+      this.emitHudSnapshot(true);
+    }
+    return { equipped: res.changed, career: this.career };
+  }
+
+  public claimDailyContractReward(
+    contractId: string,
+  ): { claimed: boolean; reward: number; career: CareerStats } {
+    const res = claimCareerDailyContract(this.career, contractId);
+    if (res.claimed) {
+      this.career = saveCareerStats(res.career);
+      this.sound.playContractClaim();
+      this.callbacks.onCareerUpdate?.(this.career);
+      this.emitHudSnapshot(true);
+    }
+    return { claimed: res.claimed, reward: res.reward, career: this.career };
+  }
+
+  public refreshCareerDailyContracts(): CareerStats {
+    const refreshed = refreshDailyContractsForDate(this.career.dailyContracts);
+    if (refreshed.dateKey !== this.career.dailyContracts.dateKey) {
+      this.career = saveCareerStats({
+        ...this.career,
+        dailyContracts: refreshed,
+      });
+      this.callbacks.onCareerUpdate?.(this.career);
+    }
+    return this.career;
+  }
+
+  // --- Phase 3 Extraction Wave-Off & Sandbox Command API ---
+
+  public waveOffExtraction(): void {
+    if (!this.extractionZone || !this.extractionZone.active) return;
+    this.scene.remove(this.extractionZone.root);
+    disposeObject3DTree(this.extractionZone.root);
+    this.extractionZone = null;
+    this.pickupToast = `EXTRACTION WAVED OFF · NEXT BONUS ${getExtractionMultiplier(this.wave + 5)}X!`;
+    this.pickupToastTimer = 2.6;
+    this.sound.playDash();
+
+    const shouldDraftPerk = this.wave % 2 === 0 || this.wavePlan.isBossWave;
+    if (shouldDraftPerk) {
+      this.perkDraftChoices = rollPerkDraftChoices(this.ownedPerks, Math.random);
+      this.cursedDraftChoice = rollCursedPerkChoice(this.ownedCursedPerks, Math.random);
+      this.uiSimulationPaused = true;
+      this.clearHeldInputs();
+      this.persistCurrentProgress(true);
+      this.emitHudSnapshot(true);
+      return;
+    }
+    if (this.openWeaponDraftIfEligible()) return;
+    this.advanceToNextWave();
+  }
+
+  public sandboxSpawnEnemy(
+    kind: 'walker' | 'juggernaut' | 'elite_squad' | 'boss',
+  ): void {
+    if (!this.isSandbox() || this.phase !== 'playing') return;
+    const angle = this.playerAimAngle + (Math.random() - 0.5) * 0.6;
+    const dist = 7.5;
+    const sx = THREE.MathUtils.clamp(
+      this.playerX - Math.sin(angle) * dist,
+      -(this.getHalfSize() - 2),
+      this.getHalfSize() - 2,
+    );
+    const sz = THREE.MathUtils.clamp(
+      this.playerZ - Math.cos(angle) * dist,
+      -(this.getHalfSize() - 2),
+      this.getHalfSize() - 2,
+    );
+    if (kind === 'elite_squad') {
+      const kinds: ZombieKind[] = ['runner', 'breacher', 'spitter', 'stalker', 'ravager'];
+      kinds.forEach((zk, idx) => {
+        const a = (idx / kinds.length) * Math.PI * 2;
+        this.spawnZombie(zk, { x: sx + Math.cos(a) * 2.2, z: sz + Math.sin(a) * 2.2 }, true);
+      });
+      this.pickupToast = 'SANDBOX · SPAWNED 5 ELITES';
+    } else {
+      this.spawnZombie(kind, { x: sx, z: sz }, kind === 'juggernaut');
+      this.pickupToast = `SANDBOX · SPAWNED ${kind.toUpperCase()}`;
+    }
+    this.pickupToastTimer = 1.6;
+    this.emitHudSnapshot(true);
+  }
+
+  public sandboxEquipWeapon(weaponId: WeaponId): void {
+    if (!this.isSandbox() || this.phase !== 'playing') return;
+    const target = this.weapons.find((w) => w.id === weaponId);
+    if (!target) return;
+    const spec = WEAPON_SPECS[weaponId];
+    target.unlocked = true;
+    target.mag = this.getWeaponMagSize(weaponId);
+    target.reserve = spec.maxReserve;
+    this.activeWeapon = weaponId;
+    this.isReloading = false;
+    this.reloadTimer = 0;
+    this.syncPlayerWeaponVisibility();
+    this.pickupToast = `SANDBOX · EQUIPPED ${spec.shortCode}`;
+    this.pickupToastTimer = 1.5;
+    this.emitHudSnapshot(true);
+  }
+
+  public sandboxTriggerEvolution(): void {
+    if (!this.isSandbox() || this.phase !== 'playing') return;
+    const evoOrder: EvolutionId[] = [
+      'dragons_breath',
+      'rail_smg',
+      'tesla_coil',
+      'phantom_enforcers',
+      'absolute_zero',
+      'void_cleaver',
+      'hellfire_gatling',
+      'singularity_railgun',
+      'swarm_barrage',
+      'napalm_bioblaster',
+    ];
+    for (const evoId of evoOrder) {
+      if (!this.evolvedWeapons.includes(evoId)) {
+        this.evolvedWeapons.push(evoId);
+      }
+    }
+    this.evolutionBanner = 'SANDBOX · ALL TIER-2 EVOLUTIONS ACTIVE';
+    this.evolutionBannerTimer = 2.6;
+    this.sound.playWeaponEvolution();
+    this.spawnBurstParticles(this.playerX, 1.0, this.playerZ, 22, 0xf59e0b, 7.2);
+    this.emitHudSnapshot(true);
+  }
+
+  public sandboxChargeUltimate(): void {
+    if (!this.isSandbox() || this.phase !== 'playing') return;
+    this.ultimateCharge = ULTIMATE_MAX_CHARGE;
+    this.gadgetCharges = this.gadgetMaxCharges;
+    this.gadgetCooldownTimer = 0;
+    this.gearCooldownTimer = 0;
+    this.dashCooldownTimer = 0;
+    this.sound.playPickup('rapidfire');
+    this.pickupToast = 'SANDBOX · ULTIMATE & GADGETS READY';
+    this.pickupToastTimer = 1.6;
+    this.emitHudSnapshot(true);
+  }
+
+  public sandboxRefill(): void {
+    if (!this.isSandbox() || this.phase !== 'playing') return;
+    this.hp = this.maxHp;
+    this.ghostHp = this.maxHp;
+    for (const w of this.weapons) {
+      if (w.unlocked) {
+        w.mag = this.getWeaponMagSize(w.id);
+        w.reserve = WEAPON_SPECS[w.id].maxReserve;
+      }
+    }
+    this.isReloading = false;
+    this.reloadTimer = 0;
+    this.sound.playPickup('ammo');
+    this.pickupToast = 'SANDBOX · FULL HP & AMMO';
+    this.pickupToastTimer = 1.5;
+    this.emitHudSnapshot(true);
+  }
+
+  public sandboxClearEnemies(): void {
+    if (!this.isSandbox() || this.phase !== 'playing') return;
+    for (const z of this.zombies) {
+      this.scene.remove(z.rig.root);
+    }
+    this.zombies = [];
+    for (const p of this.bossPylons) {
+      this.scene.remove(p.root);
+      disposeObject3DTree(p.root);
+    }
+    this.bossPylons = [];
+    this.pickupToast = 'SANDBOX · ARENA CLEARED';
+    this.pickupToastTimer = 1.4;
+    this.emitHudSnapshot(true);
+  }
+
   private syncEquippedDroneVisuals(): void {
     if (this.droneRig) {
       this.scene.remove(this.droneRig.root);
@@ -2970,27 +3859,41 @@ export class GameEngine {
   }
 
   private getEffectiveDashCooldown(): number {
-    const mutMult =
+    const tech = getTechLabBonuses(this.career.techLab);
+    const dailyMult =
       this.dailyMutator === 'hyper_dash'
         ? DAILY_MUTATOR_SPECS.hyper_dash.dashCooldownMult
+        : 1;
+    const weeklyMult =
+      this.mode === 'weekly' && this.weeklyMutator === 'hyper_speed_2x'
+        ? 0.7
         : 1;
     const curseMult = this.hasCursedPerk('cursed_overclocked_legs') ? 0.65 : 1;
     return (
       DASH_COOLDOWN *
       getDashCooldownMultiplier(this.upgradeLevels) *
       getPermanentDashCooldownMultiplier(this.career.permanentUpgrades) *
+      tech.dashCooldownMult *
       CLASS_SPECS[this.career.selectedClass].dashCooldownMult *
-      mutMult *
+      dailyMult *
+      weeklyMult *
       curseMult
     );
   }
 
   private getEffectiveMoveSpeed(): number {
+    const tech = getTechLabBonuses(this.career.techLab);
+    const weeklyMult =
+      this.mode === 'weekly' && this.weeklyMutator === 'hyper_speed_2x'
+        ? 1.35
+        : 1;
     const curseMult = this.hasCursedPerk('cursed_overclocked_legs') ? 1.4 : 1;
     return (
       PLAYER_SPEED *
       getMoveSpeedMultiplier(this.upgradeLevels) *
+      tech.moveSpeedMult *
       CLASS_SPECS[this.career.selectedClass].moveSpeedMult *
+      weeklyMult *
       curseMult
     );
   }
@@ -3011,6 +3914,18 @@ export class GameEngine {
   }
 
   private buildCurrentWavePlan(wave: number): WavePlan {
+    if (this.mode === 'sandbox') {
+      return {
+        wave,
+        queue: [],
+        maxConcurrent: 0,
+        spawnInterval: 99,
+        hpMultiplier: 1,
+        speedMultiplier: 1,
+        damageMultiplier: 1,
+        isBossWave: false,
+      };
+    }
     const rng =
       this.mode === 'daily' && this.dailyDateKey
         ? createSeededRng(`nightfall-daily-${this.dailyDateKey}-wave-${wave}`)
@@ -3019,10 +3934,12 @@ export class GameEngine {
       mode: this.mode,
       arena: this.arena,
       mutator: this.dailyMutator,
+      weeklyMutator: this.weeklyMutator ?? undefined,
     });
   }
 
   private persistCurrentProgress(perkDraftPending = false): void {
+    if (this.isSandbox()) return;
     saveRunProgress({
       lastWave: this.wave,
       score: this.score,
@@ -3047,6 +3964,7 @@ export class GameEngine {
       weaponDraftPending: Boolean(this.weaponDraftChoices),
       perkDraftSeedCursor: this.perkDraftSeedCursor,
       activeInterrupted: true,
+      inRunScrap: this.inRunScrap,
     });
     this.callbacks.onSavedProgressUpdate?.(loadRunProgress());
   }
@@ -3080,6 +3998,11 @@ export class GameEngine {
     this.weaponDraftSeedCursor = 0;
     this.bossesKilledInRun = 0;
     this.lastScrapEarned = 0;
+    this.extractedVictory = false;
+    this.customGameOverTitle = null;
+    this.weeklyMutator = null;
+    this.weeklyMutatorName = null;
+    this.extractionPressureTimer = 4.0;
     this.minigunRemaining = 0;
     this.vampiricKillCounter = 0;
     this.supplyDropTimer = 18;
@@ -3088,9 +4011,29 @@ export class GameEngine {
     this.vulcanSpinUp = 0;
     this.lowHpHapticCooldown = 0;
     this.executedDashIds.clear();
+    this.overchargeTimer = 0;
+    this.hazardWarningBanner = null;
+    this.hazardWarningTimer = 0;
+    this.activeEventId = null;
+    this.bloodMoonRemaining = 0;
+    this.empActive = false;
+    this.empJammerDisableActive = false;
+    this.waveEventTriggerTimer = 6.5;
+    this.waveEventTriggeredThisWave = false;
+    this.wavesSincePropRespawn = 0;
+    this.subwayTrainCooldown = 14;
+    this.toxicVentCycleTimer = 9;
+    this.toxicVentState = 'idle';
     if (this.nanoShieldDome) {
       this.nanoShieldDome.visible = false;
     }
+
+    // Refresh rotating Daily Contracts at run start
+    this.refreshCareerDailyContracts();
+    const techBonuses = getTechLabBonuses(this.career.techLab);
+    this.gadgetMaxCharges = 1 + techBonuses.bonusGadgetCharges;
+    this.gadgetCharges = this.gadgetMaxCharges;
+    this.perkRerollsRemaining = techBonuses.startingPerkRerolls;
 
     if (saved) {
       this.wave = options?.startWaveOverride ?? saved.lastWave;
@@ -3101,6 +4044,7 @@ export class GameEngine {
         : createInitialWeaponMastery();
       this.score = saved.score;
       this.kills = saved.kills;
+      this.inRunScrap = saved.inRunScrap ?? 0;
       this.killsTowardNextUp = 0;
       this.hasUsedRevive = Boolean(saved.hasUsedRevive);
       if (saved.equippedGear) {
@@ -3140,6 +4084,7 @@ export class GameEngine {
       this.wave = options?.startWaveOverride ?? this.initialWave;
       this.upgradePoints = 1 + startingUpBonus;
       this.killsTowardNextUp = 0;
+      this.inRunScrap = 0;
       this.upgradeLevels = createInitialUpgradeLevels();
       this.weaponMastery = createInitialWeaponMastery();
       this.ownedPerks = [];
@@ -3167,13 +4112,43 @@ export class GameEngine {
       this.callbacks.onSavedProgressUpdate?.(null);
     }
 
+    if (this.mode === 'weekly') {
+      const weeklyCfg = getWeeklyTrialConfig();
+      this.weeklyMutator = weeklyCfg.mutator;
+      this.weeklyMutatorName = `${weeklyCfg.spec.name} · ${weeklyCfg.spec.badge}`;
+    }
+
     this.rebuildArena();
     applyPlayerSkin(this.playerRig, this.career.equippedSkinId);
+    this.rivalOvertakenBanner = null;
+    this.rivalOvertakenTimer = 0;
+    this.updateNextRivalTracking(false);
     this.applyClassFlashlightVisuals();
     this.syncEquippedDroneVisuals();
 
-    this.playerX = 0;
-    this.playerZ = 0;
+    // Siege Mode spawns central Power Core & offsets player cleanly outside collider
+    if (this.mode === 'siege') {
+      const coreRig = buildSiegeReactorCoreMesh(this.shadowTex);
+      coreRig.group.position.set(0, 0, 0);
+      this.scene.add(coreRig.group);
+      const coreMaxHp = 1400;
+      this.reactorCore = {
+        x: 0,
+        z: 0,
+        radius: 1.45,
+        hp: coreMaxHp,
+        maxHp: coreMaxHp,
+        group: coreRig.group,
+        coreMat: coreRig.coreMat,
+        crystal: coreRig.crystal,
+      };
+      this.playerX = 0;
+      this.playerZ = 3.4;
+    } else {
+      this.playerX = 0;
+      this.playerZ = 0;
+    }
+
     this.playerAimAngle = 0;
     this.playerWalkPhase = 0;
     this.maxHp = this.getEffectiveMaxHp();
@@ -3229,8 +4204,8 @@ export class GameEngine {
     if (!saved) {
       if (classSpec.startsWithFreeTurret) {
         const turretPos = resolveArenaCollisions(
-          1.4,
-          -1.2,
+          this.playerX + 1.4,
+          this.playerZ - 1.2,
           0.55,
           obstacles,
           halfSize,
@@ -3245,12 +4220,14 @@ export class GameEngine {
           life: TACTICAL_GEAR_SPECS.turret.durationSec ?? 14,
           fireTimer: 0.4,
           flashTimer: 0,
+          hp: 100,
+          maxHp: 100,
         });
       }
       if (classSpec.startsWithBonusMine) {
         const minePos = resolveArenaCollisions(
-          -1.3,
-          -1.3,
+          this.playerX - 1.3,
+          this.playerZ - 1.3,
           0.4,
           obstacles,
           halfSize,
@@ -3269,7 +4246,7 @@ export class GameEngine {
     }
 
     this.wavePlan = this.buildCurrentWavePlan(this.wave);
-    this.spawnTimer = 0.2;
+    this.spawnTimer = isBossWaveNumber(this.wave, this.mode) ? 0 : 0.2;
     this.wavePauseTimer = 0;
     this.bloodSplatter = 0;
     const startWeather: WeatherKind =
@@ -3281,16 +4258,25 @@ export class GameEngine {
           : getWeatherForWaveStart(this.wave));
     this.applyWeatherImmediate(startWeather);
 
-    this.waveBanner = isBossWaveNumber(this.wave, this.mode)
-      ? `BOSS WAVE ${this.wave} · ${getBossTitle(this.wave)}`
-      : isResumingInterrupted
-        ? `RESUMED WAVE ${this.wave} · 75% HP`
-        : this.mode === 'daily' && this.dailyDateKey
-          ? `DAILY SEED ${this.dailyDateKey} · WAVE ${this.wave}`
-          : this.wave > 1
-            ? `RESUMED WAVE ${this.wave} · SURVIVE THE NIGHT`
-            : `WAVE ${this.wave} · SURVIVE THE NIGHT`;
-    this.waveBannerTimer = 2.4;
+    this.waveBanner =
+      this.mode === 'sandbox'
+        ? 'FIRING RANGE · SANDBOX TEST YARD'
+        : this.mode === 'siege'
+          ? `SIEGE DEFENSE · PROTECT THE POWER CORE`
+          : this.mode === 'extraction'
+            ? `EXTRACTION · SURVIVE TO WAVE 5 EXFIL`
+            : this.mode === 'weekly' && this.weeklyMutatorName
+              ? `WEEKLY TRIAL · ${this.weeklyMutatorName.toUpperCase()}`
+              : isBossWaveNumber(this.wave, this.mode)
+                ? `BOSS WAVE ${this.wave} · ${getBossTitle(this.wave)}`
+                : isResumingInterrupted
+                  ? `RESUMED WAVE ${this.wave} · 75% HP`
+                  : this.mode === 'daily' && this.dailyDateKey
+                    ? `DAILY SEED ${this.dailyDateKey} · WAVE ${this.wave}`
+                    : this.wave > 1
+                      ? `RESUMED WAVE ${this.wave} · SURVIVE THE NIGHT`
+                      : `WAVE ${this.wave} · SURVIVE THE NIGHT`;
+    this.waveBannerTimer = 2.6;
     this.pickupToast = isResumingInterrupted
       ? 'RUN RESTORED · 3S SHIELD'
       : this.dailyMutatorLabel
@@ -3298,14 +4284,24 @@ export class GameEngine {
         : null;
     this.pickupToastTimer = isResumingInterrupted || this.dailyMutatorLabel ? 2.4 : 0;
 
-    this.playerRig.root.position.set(0, 0, 0);
+    if (this.mode === 'sandbox') {
+      this.spawnZombie('walker', { x: -4.2, z: -6.5 }, false);
+      this.spawnZombie('walker', { x: 0, z: -7.5 }, false);
+      this.spawnZombie('walker', { x: 4.2, z: -6.5 }, false);
+    }
+
+    this.playerRig.root.position.set(this.playerX, 0, this.playerZ);
     this.playerRig.root.rotation.y = 0;
     this.playerRig.root.visible = shouldFlashInvulnMesh(this.invulnTimer);
     updateDiegeticFootArcs(this.playerRig, false, 0, 1);
 
     const portrait = this.viewportW < 700;
-    this.camPos.set(0, portrait ? 23.5 : 19.5, portrait ? 12.2 : 11.2);
-    this.camLook.set(0, 0.5, 0);
+    this.camPos.set(
+      this.playerX,
+      portrait ? 23.5 : 19.5,
+      this.playerZ + (portrait ? 12.2 : 11.2),
+    );
+    this.camLook.set(this.playerX, 0.5, this.playerZ);
 
     this.setPhase('playing');
     if (saved?.perkDraftPending) {
@@ -3453,7 +4449,32 @@ export class GameEngine {
     this.emitHudSnapshot(true);
   }
 
-  private finalizeGameOver(): void {
+  private damageReactorCore(amount: number): void {
+    if (!this.reactorCore || this.phase !== 'playing') return;
+    this.reactorCore.hp = Math.max(0, this.reactorCore.hp - Math.round(amount));
+    this.sound.playReactorHit();
+    this.trauma = Math.min(1.0, this.trauma + 0.16);
+    this.spawnBurstParticles(0, 1.35, 0, 7, 0x38bdf8, 5.2);
+    if (this.reactorCore.hp <= 0) {
+      this.finalizeGameOver('POWER CORE DESTROYED', false);
+      this.emitHudSnapshot(true);
+    }
+  }
+
+  private completeExtraction(): void {
+    if (this.phase !== 'playing' || !this.extractionZone) return;
+    this.scene.remove(this.extractionZone.root);
+    disposeObject3DTree(this.extractionZone.root);
+    this.extractionZone = null;
+    this.triggerContractEvent('extraction_complete', 1, true);
+    this.finalizeGameOver('EXTRACTION COMPLETE', true);
+    this.emitHudSnapshot(true);
+  }
+
+  private finalizeGameOver(
+    customTitle?: string,
+    fromExtraction = false,
+  ): void {
     this.uiSimulationPaused = false;
     this.perkDraftChoices = null;
     this.cursedDraftChoice = null;
@@ -3463,33 +4484,60 @@ export class GameEngine {
       this.nanoShieldDome.visible = false;
     }
     this.sound.setBossIntensity(false);
+    this.customGameOverTitle = customTitle ?? null;
+    this.extractedVictory = fromExtraction;
+
+    if (this.isSandbox()) {
+      this.lastScrapEarned = 0;
+      this.sound.playGameOver();
+      this.clearHeldInputs();
+      this.playerRig.root.visible = true;
+      this.setPhase('gameover');
+      return;
+    }
+
     const prevBest = this.highScore;
     this.highScore = saveHighScore(this.score);
     if (this.highScore > prevBest && this.score >= this.highScore) {
       this.isNewHighScore = true;
     }
 
-    const baseScrap = computeRunScrapReward({
-      wave: this.wave,
-      kills: this.kills,
-      bossesKilledInRun: this.bossesKilledInRun,
-      rewardMultiplier: GAME_MODE_SPECS[this.mode].rewardMultiplier,
-    });
-    const scrapReward =
+    const techBonuses = getTechLabBonuses(this.career.techLab);
+    const extractMult = fromExtraction ? getExtractionMultiplier(this.wave) : 1;
+    const baseScrap =
+      computeRunScrapReward({
+        wave: this.wave,
+        kills: this.kills,
+        bossesKilledInRun: this.bossesKilledInRun,
+        rewardMultiplier:
+          GAME_MODE_SPECS[this.mode].rewardMultiplier * extractMult,
+      }) * techBonuses.scrapMult;
+    const scrapReward = Math.round(
       this.career.equippedDrone === 'scrap_magnet'
-        ? Math.round(baseScrap * 1.25)
-        : baseScrap;
+        ? baseScrap * 1.25
+        : baseScrap,
+    );
     this.lastScrapEarned = scrapReward;
     this.career.bestWave = Math.max(this.career.bestWave, this.wave);
-    this.career.bestScore = Math.max(this.career.bestScore, Math.round(this.score));
+    this.career.bestScore = Math.max(
+      this.career.bestScore,
+      Math.round(this.score),
+    );
     this.career.scrap += scrapReward;
+    if (fromExtraction) {
+      this.career.totalExtractions = (this.career.totalExtractions ?? 0) + 1;
+    }
     this.checkCareerSkinUnlocks();
     this.career = saveCareerStats(this.career);
     this.callbacks.onCareerUpdate?.(this.career);
 
     clearRunProgress();
     this.callbacks.onSavedProgressUpdate?.(null);
-    this.sound.playGameOver();
+    if (fromExtraction) {
+      this.sound.playExtractionComplete();
+    } else {
+      this.sound.playGameOver();
+    }
     this.clearHeldInputs();
     this.playerRig.root.visible = true;
     this.setPhase('gameover');
@@ -3660,6 +4708,42 @@ export class GameEngine {
       this.scene.remove(ring.mesh);
     }
     this.flashRings = [];
+    for (const pylon of this.bossPylons) {
+      this.scene.remove(pylon.root);
+      disposeObject3DTree(pylon.root);
+    }
+    this.bossPylons = [];
+    for (const bm of this.bossMortars) {
+      this.scene.remove(bm.group);
+    }
+    this.bossMortars = [];
+    if (this.activeOrbitalPod) {
+      this.scene.remove(this.activeOrbitalPod.root);
+      disposeObject3DTree(this.activeOrbitalPod.root);
+      this.activeOrbitalPod = null;
+    }
+    if (this.activeBreakerSwitch) {
+      this.scene.remove(this.activeBreakerSwitch.root);
+      disposeObject3DTree(this.activeBreakerSwitch.root);
+      this.activeBreakerSwitch = null;
+    }
+    if (this.reactorCore) {
+      this.scene.remove(this.reactorCore.group);
+      disposeObject3DTree(this.reactorCore.group);
+      this.reactorCore = null;
+    }
+    if (this.extractionZone) {
+      this.scene.remove(this.extractionZone.root);
+      disposeObject3DTree(this.extractionZone.root);
+      this.extractionZone = null;
+    }
+    this.activeEventId = null;
+    this.bloodMoonRemaining = 0;
+    this.empActive = false;
+    this.overchargeTimer = 0;
+    this.hazardWarningBanner = null;
+    this.hazardWarningTimer = 0;
+    this.recentCorpses = [];
     for (const d of this.decals) {
       d.active = false;
       d.mesh.visible = false;
@@ -3670,7 +4754,11 @@ export class GameEngine {
 
   private syncPlayerWeaponVisibility(): void {
     for (const id of WEAPON_ORDER) {
-      this.playerRig.weaponModels[id].visible = id === this.activeWeapon;
+      const model = this.playerRig.weaponModels[id];
+      model.visible = id === this.activeWeapon;
+      if (model.visible) {
+        applyWeaponCamoToGroup(model, this.career.equippedCamos?.[id] ?? 'none');
+      }
     }
   }
 
@@ -3688,8 +4776,9 @@ export class GameEngine {
     this.viewportH = h;
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
-    this.applyGraphicsSettings();
     this.renderer.setSize(w, h, false);
+    this.applyGraphicsSettings();
+    this.renderFrame();
   }
 
   // --- Main Loop & Software WebGL Pacing ---
@@ -3728,6 +4817,15 @@ export class GameEngine {
     if (this.disposed) return;
 
     const now = performance.now();
+    if (!this.isSoftwareGl && this.settings.fpsCap < 120 && this.lastFrameRenderMs > 0) {
+      const minIntervalMs = 1000 / this.settings.fpsCap - 1.5;
+      if (now - this.lastFrameRenderMs < minIntervalMs) {
+        this.scheduleNextFrame();
+        return;
+      }
+    }
+    this.lastFrameRenderMs = now;
+
     const rawDt = (now - this.lastTimestamp) / 1000;
     this.lastTimestamp = now;
     const dt = Math.min(Math.max(rawDt, 0.001), 0.05);
@@ -3751,7 +4849,7 @@ export class GameEngine {
 
     this.updateVisualEffects(dt);
 
-    // Dynamic music boss intensity check
+    // Dynamic music boss/blood moon/low-HP intensity check
     let bossAlive = false;
     if (this.phase === 'playing') {
       for (let i = 0; i < this.zombies.length; i++) {
@@ -3762,15 +4860,18 @@ export class GameEngine {
       }
     }
     this.sound.setBossIntensity(bossAlive);
-    this.sound.updateDynamicMusic(
-      dt,
-      this.phase === 'playing' && !this.uiSimulationPaused,
-    );
+    this.sound.updateDynamicMusic(dt, {
+      activeGameplay: this.phase === 'playing' && !this.uiSimulationPaused,
+      isBossWave: bossAlive,
+      bloodMoonActive: this.bloodMoonRemaining > 0,
+      hpRatio: this.hp / Math.max(1, this.maxHp),
+    });
 
     if (this.phase === 'title') {
       this.updateTitleCamera(dt);
     } else if (this.phase === 'playing') {
       if (!this.uiSimulationPaused) {
+        this.pollGamepad();
         if (this.hitstopTimer > 0) {
           this.hitstopTimer = Math.max(0, this.hitstopTimer - dt);
         } else {
@@ -3781,7 +4882,7 @@ export class GameEngine {
       this.updateFloatingDamage(dt);
     }
 
-    this.renderer.render(this.scene, this.camera);
+    this.renderFrame();
 
     this.hudEmitTimer += dt;
     if (this.hudEmitTimer >= 0.095 || this.lastEmittedPhase !== this.phase) {
@@ -3826,8 +4927,21 @@ export class GameEngine {
     if (this.gearCooldownTimer > 0) {
       this.gearCooldownTimer = Math.max(0, this.gearCooldownTimer - dt);
     }
-    if (this.gadgetCooldownTimer > 0) {
-      this.gadgetCooldownTimer = Math.max(0, this.gadgetCooldownTimer - dt);
+    if (this.gadgetCharges < this.gadgetMaxCharges) {
+      if (this.gadgetCooldownTimer > 0) {
+        this.gadgetCooldownTimer = Math.max(0, this.gadgetCooldownTimer - dt);
+      }
+      if (this.gadgetCooldownTimer <= 0) {
+        this.gadgetCharges = Math.min(
+          this.gadgetMaxCharges,
+          this.gadgetCharges + 1,
+        );
+        if (this.gadgetCharges < this.gadgetMaxCharges) {
+          this.gadgetCooldownTimer = this.getEffectiveGadgetCooldown();
+        }
+      }
+    } else {
+      this.gadgetCooldownTimer = 0;
     }
     if (this.invulnTimer > 0) this.invulnTimer = Math.max(0, this.invulnTimer - dt);
     if (this.rapidFireRemaining > 0) {
@@ -3850,6 +4964,20 @@ export class GameEngine {
     if (this.evolutionBannerTimer > 0) {
       this.evolutionBannerTimer -= dt;
       if (this.evolutionBannerTimer <= 0) this.evolutionBanner = null;
+    }
+    if (this.overchargeTimer > 0) {
+      this.overchargeTimer = Math.max(0, this.overchargeTimer - dt);
+    }
+    if (this.bloodMoonRemaining > 0) {
+      this.bloodMoonRemaining = Math.max(0, this.bloodMoonRemaining - dt);
+    }
+    if (this.hazardWarningTimer > 0) {
+      this.hazardWarningTimer -= dt;
+      if (this.hazardWarningTimer <= 0) this.hazardWarningBanner = null;
+    }
+    if (this.rivalOvertakenTimer > 0) {
+      this.rivalOvertakenTimer -= dt;
+      if (this.rivalOvertakenTimer <= 0) this.rivalOvertakenBanner = null;
     }
 
     // Dynamic Weather Progression
@@ -3938,8 +5066,13 @@ export class GameEngine {
       this.getObstacles(),
       this.getHalfSize(),
     );
-    this.playerX = resolved.x;
-    this.playerZ = resolved.z;
+    const coreResolved = this.resolveReactorCollision(
+      resolved.x,
+      resolved.z,
+      PLAYER_RADIUS,
+    );
+    this.playerX = coreResolved.x;
+    this.playerZ = coreResolved.z;
 
     // Execution Dash: Finish non-boss enemies below 25% HP on dash pass-through
     if (this.dashTimer > 0) {
@@ -3991,7 +5124,7 @@ export class GameEngine {
       }
     }
 
-    // Player Aiming (Right Stick > Mouse > Auto-Fire > Movement direction)
+    // Player Aiming (Right Touch Stick > Bluetooth Right Stick > Mouse > Auto-Fire > Movement direction)
     let wantsToFire = false;
     if (this.aimStickActive) {
       const len = Math.hypot(this.aimStickX, this.aimStickY);
@@ -3999,6 +5132,12 @@ export class GameEngine {
         // Local -Z is angle 0, so atan2(-dx, -dy) rotates toward (dx, dy)
         this.playerAimAngle = Math.atan2(-this.aimStickX, -this.aimStickY);
         wantsToFire = len > 0.25;
+      }
+    } else if (this.gamepadAimActive) {
+      const len = Math.hypot(this.gamepadAimX, this.gamepadAimY);
+      if (len > 0.2) {
+        this.playerAimAngle = Math.atan2(-this.gamepadAimX, -this.gamepadAimY);
+        wantsToFire = len > 0.3;
       }
     } else if (this.hasMouseAim) {
       this.updateMouseAim();
@@ -4019,7 +5158,7 @@ export class GameEngine {
       this.playerAimAngle = Math.atan2(-move.x, -move.z);
     }
 
-    if (this.mouseDown && !this.aimStickActive) {
+    if ((this.mouseDown && !this.aimStickActive) || this.gamepadFireHeld) {
       wantsToFire = true;
     }
 
@@ -4077,8 +5216,9 @@ export class GameEngine {
       this.tryFireWeapon();
     }
 
-    // Wave spawning & progression
+    // Wave spawning, extraction zone & progression
     this.updateWaveSpawning(dt);
+    this.updateExtractionZone(dt);
 
     // Update Zombies
     this.updateZombies(dt);
@@ -4090,12 +5230,123 @@ export class GameEngine {
     this.updateCombatDrone(dt);
     this.updatePhase1CombatEffects(dt);
 
+    // Update Phase 2 Interactive Arena Hazards, Scrap Pads, Mid-Wave Events & Boss Pylons/Mortars
+    this.updateArenaHazards(dt);
+    this.updateTacticalPads(dt);
+    this.updateMidWaveEvent(dt);
+    this.updateBossMortarsAndPylons(dt);
+
     // Update Boss Plasma Projectiles & Acid Spitter Hazards
     this.updateBossProjectiles(dt);
     this.updateAcidHazards(dt);
 
     // Update Pickups
     this.updatePickups(dt);
+  }
+
+  private updateExtractionZone(dt: number): void {
+    if (!this.extractionZone || !this.extractionZone.active) return;
+    const ez = this.extractionZone;
+    const dist = Math.hypot(this.playerX - ez.x, this.playerZ - ez.z);
+    if (dist <= 3.35) {
+      ez.holdProgress = Math.min(EXTRACTION_HOLD_SEC, ez.holdProgress + dt);
+      ez.ringMat.color.setHex(0x34d399);
+      ez.ringMat.opacity = 0.72 + 0.28 * Math.sin(this.lastTimestamp * 0.014);
+      this.extractionPressureTimer -= dt;
+      if (this.extractionPressureTimer <= 0) {
+        this.extractionPressureTimer = 4.2;
+        let aliveCount = 0;
+        for (let i = 0; i < this.zombies.length; i++) {
+          if (!this.zombies[i].dying) aliveCount++;
+        }
+        if (aliveCount < 8) {
+          this.spawnZombie(this.rand() < 0.55 ? 'runner' : 'walker');
+        }
+      }
+      if (ez.holdProgress >= EXTRACTION_HOLD_SEC) {
+        this.completeExtraction();
+      }
+    } else {
+      ez.holdProgress = Math.max(0, ez.holdProgress - dt * 0.25);
+      ez.ringMat.color.setHex(0xf59e0b);
+      ez.ringMat.opacity = 0.65;
+    }
+  }
+
+  private pollGamepad(): void {
+    if (typeof navigator === 'undefined' || typeof navigator.getGamepads !== 'function') {
+      return;
+    }
+    const pads = navigator.getGamepads();
+    let pad: Gamepad | null = null;
+    for (let i = 0; i < pads.length; i++) {
+      if (pads[i] && pads[i]!.connected) {
+        pad = pads[i];
+        break;
+      }
+    }
+    if (!pad) {
+      this.gamepadMoveX = 0;
+      this.gamepadMoveY = 0;
+      this.gamepadAimX = 0;
+      this.gamepadAimY = 0;
+      this.gamepadAimActive = false;
+      this.gamepadFireHeld = false;
+      this.prevGamepadButtons = [];
+      return;
+    }
+
+    const deadzone = 0.18;
+    const lx = pad.axes[0] ?? 0;
+    const ly = pad.axes[1] ?? 0;
+    const lMag = Math.hypot(lx, ly);
+    if (lMag > deadzone) {
+      this.gamepadMoveX = THREE.MathUtils.clamp(lx, -1, 1);
+      this.gamepadMoveY = THREE.MathUtils.clamp(ly, -1, 1);
+      this.sound.unlock();
+    } else {
+      this.gamepadMoveX = 0;
+      this.gamepadMoveY = 0;
+    }
+
+    const rx = pad.axes[2] ?? 0;
+    const ry = pad.axes[3] ?? 0;
+    const rMag = Math.hypot(rx, ry);
+    if (rMag > 0.24) {
+      this.gamepadAimX = THREE.MathUtils.clamp(rx, -1, 1);
+      this.gamepadAimY = THREE.MathUtils.clamp(ry, -1, 1);
+      this.gamepadAimActive = true;
+      this.sound.unlock();
+    } else {
+      this.gamepadAimX = 0;
+      this.gamepadAimY = 0;
+      this.gamepadAimActive = false;
+    }
+
+    const r2Btn = pad.buttons[7];
+    this.gamepadFireHeld = Boolean(r2Btn && (r2Btn.pressed || r2Btn.value > 0.35));
+    if (this.gamepadFireHeld) {
+      this.sound.unlock();
+    }
+
+    const isPressed = (idx: number): boolean => {
+      const b = pad!.buttons[idx];
+      return Boolean(b && (b.pressed || b.value > 0.55));
+    };
+    const justPressed = (idx: number): boolean =>
+      isPressed(idx) && !this.prevGamepadButtons[idx];
+
+    if (justPressed(6)) this.triggerDash(); // L2
+    if (justPressed(4)) this.triggerGadget(); // L1
+    if (justPressed(5)) this.triggerGear(); // R1
+    if (justPressed(3)) this.triggerUltimate(); // Y / Triangle
+    if (justPressed(2)) this.triggerReload(); // X / Square
+    if (justPressed(1)) this.switchWeapon(); // B / Circle
+    if (justPressed(9)) this.pauseGame(); // Start
+
+    this.prevGamepadButtons = pad.buttons.map((b) =>
+      Boolean(b && (b.pressed || b.value > 0.55)),
+    );
   }
 
   private getDesiredMoveVector(): { x: number; z: number; len: number } {
@@ -4109,6 +5360,16 @@ export class GameEngine {
     const kLen = Math.hypot(kx, kz);
     if (kLen > 0) {
       return { x: kx / kLen, z: kz / kLen, len: 1 };
+    }
+
+    const gLen = Math.hypot(this.gamepadMoveX, this.gamepadMoveY);
+    if (gLen > 0.18) {
+      const clamped = Math.min(1, gLen);
+      return {
+        x: this.gamepadMoveX / gLen,
+        z: this.gamepadMoveY / gLen,
+        len: clamped,
+      };
     }
 
     const sLen = Math.hypot(this.moveStickX, this.moveStickY);
@@ -4235,7 +5496,9 @@ export class GameEngine {
     this.spawnFlashRing(b.x, b.z, blastR, 0xf97316, 0.34);
     this.spawnBurstParticles(b.x, 0.65, b.z, 28, 0xfbbf24, 9.5);
 
-    const dmg = Math.round(360 * this.getEffectiveDamageMultiplier());
+    const dmg = Math.round(
+      360 * this.getEffectiveDamageMultiplier() * this.getBlastDamageMultiplier(),
+    );
     for (let j = this.zombies.length - 1; j >= 0; j--) {
       const z = this.zombies[j];
       if (z.dying) continue;
@@ -4246,7 +5509,10 @@ export class GameEngine {
         const falloff = Math.max(0.5, 1 - (dist / (blastR + 1)) * 0.5);
         z.burnTimer = Math.max(z.burnTimer, 2.5);
         z.burnDps = Math.max(z.burnDps, 24);
-        if (this.hasPerk('shockwave_coil')) {
+        if (
+          this.hasPerk('shockwave_coil') &&
+          canApplyHardCc(z.ccImmunityTimer, z.affixes)
+        ) {
           z.stunTimer = Math.max(z.stunTimer, z.kind === 'boss' ? 0.5 : 1.0);
         }
         this.damageZombie(
@@ -4260,6 +5526,139 @@ export class GameEngine {
         );
       }
     }
+  }
+
+  private detonateCryoCanister(c: ActiveCryoCanister): void {
+    if (!c.active) return;
+    c.active = false;
+    c.respawnTimer = 28;
+    c.root.visible = false;
+
+    const blastR = 6.5;
+    this.sound.playCryoCanisterNova();
+    this.hitstopTimer = Math.max(this.hitstopTimer, 0.02);
+    this.trauma = Math.min(1.0, this.trauma + 0.48);
+    this.spawnFlashRing(c.x, c.z, blastR, 0x38bdf8, 0.36);
+    this.spawnBurstParticles(c.x, 0.7, c.z, 28, 0xbae6fd, 8.8);
+
+    const dmg = Math.round(180 * this.getEffectiveDamageMultiplier());
+    for (let j = this.zombies.length - 1; j >= 0; j--) {
+      const z = this.zombies[j];
+      if (z.dying) continue;
+      const dx = z.x - c.x;
+      const dz = z.z - c.z;
+      const dist = Math.hypot(dx, dz) || 0.001;
+      if (dist <= blastR + z.radius) {
+        z.cryoTimer = Math.max(z.cryoTimer, 5.0);
+        if (canApplyHardCc(z.ccImmunityTimer, z.affixes)) {
+          z.cryoFreezeTimer = Math.max(
+            z.cryoFreezeTimer,
+            z.kind === 'boss' ? 1.2 : 3.4,
+          );
+        }
+        const falloff = Math.max(0.55, 1 - (dist / (blastR + 1)) * 0.45);
+        this.damageZombie(
+          z,
+          Math.round(dmg * falloff),
+          true,
+          dx / dist,
+          dz / dist,
+          5.5,
+          true,
+          'cryo',
+        );
+      }
+    }
+  }
+
+  private damageDestructiblePod(
+    obs: ActiveRuntimeObstacle,
+    dmg: number,
+  ): void {
+    if (!obs.destructible || obs.hp <= 0) return;
+    obs.hp -= dmg;
+    this.spawnBurstParticles(obs.x, 1.35, obs.z, 6, 0x67e8f9, 4.8);
+    if (obs.hp > 0) return;
+
+    obs.hp = 0;
+    if (obs.mesh) {
+      this.arenaGroup.remove(obs.mesh);
+      disposeObject3DTree(obs.mesh);
+      obs.mesh = undefined;
+    }
+    const idx = this.runtimeObstacles.indexOf(obs);
+    if (idx >= 0) this.runtimeObstacles.splice(idx, 1);
+
+    this.sound.playPodShatter();
+    this.hitstopTimer = Math.max(this.hitstopTimer, 0.02);
+    this.trauma = Math.min(1.0, this.trauma + 0.38);
+    this.spawnFlashRing(obs.x, obs.z, 4.2, 0x22d3ee, 0.34);
+    this.spawnBurstParticles(obs.x, 1.2, obs.z, 26, 0x67e8f9, 8.2);
+    this.spawnAcidPuddle(obs.x, obs.z, 12);
+    this.pickupToast = 'CONTAINMENT POD SHATTERED';
+    this.pickupToastTimer = 1.8;
+
+    for (let j = this.zombies.length - 1; j >= 0; j--) {
+      const z = this.zombies[j];
+      if (z.dying) continue;
+      const dx = z.x - obs.x;
+      const dz = z.z - obs.z;
+      const dist = Math.hypot(dx, dz) || 0.001;
+      if (dist <= 4.4 + z.radius) {
+        z.cryoTimer = Math.max(z.cryoTimer, 3.0);
+        this.damageZombie(
+          z,
+          Math.round(95 * this.getEffectiveDamageMultiplier()),
+          false,
+          dx / dist,
+          dz / dist,
+          5.0,
+          true,
+          'cryo',
+        );
+      }
+    }
+  }
+
+  private damageBossPylon(pylon: ActiveBossPylon, dmg: number): void {
+    pylon.hp -= dmg;
+    this.sound.playHit(false);
+    this.spawnBurstParticles(pylon.x, 1.4, pylon.z, 6, 0x38bdf8, 5.2);
+    this.floatingDamages.push({
+      id: this.nextEntityId++,
+      wx: pylon.x,
+      wy: 2.1,
+      wz: pylon.z,
+      amount: Math.round(dmg),
+      isCrit: false,
+      kind: 'cryo',
+      label: 'PYLON',
+      age: 0,
+      duration: 0.55,
+    });
+
+    if (pylon.hp > 0) return;
+    this.scene.remove(pylon.root);
+    disposeObject3DTree(pylon.root);
+    const idx = this.bossPylons.indexOf(pylon);
+    if (idx >= 0) this.bossPylons.splice(idx, 1);
+
+    this.sound.playPylonBreak();
+    this.trauma = Math.min(1.0, this.trauma + 0.35);
+    this.spawnFlashRing(pylon.x, pylon.z, 4.0, 0x38bdf8, 0.34);
+    this.spawnBurstParticles(pylon.x, 1.4, pylon.z, 22, 0xbae6fd, 8.2);
+
+    if (this.bossPylons.length === 0) {
+      this.sound.playBossShieldBreak();
+      for (const z of this.zombies) {
+        if (z.kind === 'boss' && z.rig.bossShieldSphere) {
+          z.rig.bossShieldSphere.visible = false;
+        }
+      }
+      this.pickupToast = 'BOSS SHIELD BROKEN!';
+      this.pickupToastTimer = 2.4;
+    }
+    this.emitHudSnapshot(true);
   }
 
   private triggerChainLightning(
@@ -4302,7 +5701,9 @@ export class GameEngine {
     const isMinigun = this.minigunRemaining > 0;
     const reconOverclock =
       this.career.selectedClass === 'recon' && this.ultimateActiveTimer > 0;
-    const freeFire = isMinigun || reconOverclock;
+    const zeroReloadMutator =
+      this.mode === 'weekly' && this.weeklyMutator === 'zero_reload';
+    const freeFire = isMinigun || reconOverclock || zeroReloadMutator;
     const state = this.getActiveWeaponState();
     const spec = WEAPON_SPECS[state.id];
     const magSize = this.getWeaponMagSize(state.id);
@@ -4347,11 +5748,13 @@ export class GameEngine {
       this.vulcanSpinUp = Math.min(1, this.vulcanSpinUp + 0.14);
     }
 
-    this.fireCooldown = isMinigun
-      ? 0.075
-      : getEffectiveFireInterval(state.id, this.rapidFireRemaining, this.vulcanSpinUp) *
-        getFireRateMultiplier(this.upgradeLevels) *
-        (reconOverclock ? 0.72 : 1);
+    const overchargeMult = this.overchargeTimer > 0 ? 0.8 : 1;
+    this.fireCooldown =
+      (isMinigun
+        ? 0.075
+        : getEffectiveFireInterval(state.id, this.rapidFireRemaining, this.vulcanSpinUp) *
+          getFireRateMultiplier(this.upgradeLevels) *
+          (reconOverclock ? 0.72 : 1)) * overchargeMult;
     this.recoilOffset = Math.min(0.18, this.recoilOffset + 0.085);
     const shake = isMinigun ? 0.08 : spec.screenShake;
     this.trauma = Math.min(0.85, this.trauma + shake);
@@ -4383,7 +5786,29 @@ export class GameEngine {
     const masteryMult = isMinigun
       ? 1
       : getWeaponMasteryDamageMult(this.weaponMastery[state.id] ?? 0);
-    const damageMult = this.getEffectiveDamageMultiplier() * masteryMult;
+    const camoMult = isMinigun
+      ? 1
+      : getWeaponCamoDamageMultiplier(this.career.killsByWeapon?.[state.id] ?? 0);
+    let weeklyDmgMult = 1;
+    if (this.mode === 'weekly') {
+      if (this.weeklyMutator === 'one_hit_chaos') {
+        weeklyDmgMult = 3.0;
+      } else if (this.weeklyMutator === 'explosives_only') {
+        const isExplosiveWeapon =
+          !isMinigun &&
+          (state.id === 'micro_launcher' ||
+            state.id === 'flamethrower' ||
+            state.id === 'chem_thrower' ||
+            isHellfireGatling ||
+            isNapalmBioblaster);
+        weeklyDmgMult = isExplosiveWeapon ? 2.2 : 0.35;
+      }
+    }
+    const damageMult =
+      this.getEffectiveDamageMultiplier() *
+      masteryMult *
+      camoMult *
+      weeklyDmgMult;
     const isEvolved =
       isDragonsBreath ||
       isRailSmg ||
@@ -4423,8 +5848,14 @@ export class GameEngine {
 
     const muzzleX = this.cachedMuzzleX;
     const muzzleZ = this.cachedMuzzleZ;
-    const critChance = 0.16 + (this.hasPerk('critical_optics') ? 0.14 : 0);
-    const critMult = this.hasPerk('critical_optics') ? 2.1 : 1.5;
+    const techBonuses = getTechLabBonuses(this.career.techLab);
+    const critChance =
+      0.16 +
+      (this.hasPerk('critical_optics') ? 0.14 : 0) +
+      techBonuses.critChanceBonus;
+    const critMult =
+      (this.hasPerk('critical_optics') ? 2.1 : 1.5) +
+      techBonuses.critDamageBonus;
 
     // 1. Melee Pulse Katana / Void Cleaver cone cleave
     if (!isMinigun && state.id === 'pulse_katana') {
@@ -4458,6 +5889,16 @@ export class GameEngine {
             z.burnTimer = Math.max(z.burnTimer, 2.5);
             z.burnDps = Math.max(z.burnDps, Math.round(dmg * 0.2));
           }
+          if (
+            isJuggernautShatterWeapon(state.id) &&
+            z.kind === 'juggernaut' &&
+            z.juggernautArmorIntact
+          ) {
+            z.juggernautArmorIntact = false;
+            this.spawnBurstParticles(z.x, 1.2, z.z, 12, 0xf59e0b, 6.4);
+            this.triggerContractEvent('juggernaut_shatter', 1);
+          }
+          z.lastHitWeaponId = state.id;
           const killed = this.damageZombie(
             z,
             dmg,
@@ -4479,6 +5920,35 @@ export class GameEngine {
         const dist = Math.hypot(dx, dz) || 0.001;
         if (dist <= cleaveRange + 0.6 && (dx / dist) * aimX + (dz / dist) * aimZ >= minDot) {
           this.detonateBarrel(barrel);
+        }
+      }
+      for (let c = 0; c < this.cryoCanisters.length; c++) {
+        const can = this.cryoCanisters[c];
+        if (!can.active) continue;
+        const dx = can.x - this.playerX;
+        const dz = can.z - this.playerZ;
+        const dist = Math.hypot(dx, dz) || 0.001;
+        if (dist <= cleaveRange + 0.6 && (dx / dist) * aimX + (dz / dist) * aimZ >= minDot) {
+          this.detonateCryoCanister(can);
+        }
+      }
+      for (let p = this.bossPylons.length - 1; p >= 0; p--) {
+        const pylon = this.bossPylons[p];
+        const dx = pylon.x - this.playerX;
+        const dz = pylon.z - this.playerZ;
+        const dist = Math.hypot(dx, dz) || 0.001;
+        if (dist <= cleaveRange + 0.85 && (dx / dist) * aimX + (dz / dist) * aimZ >= minDot) {
+          this.damageBossPylon(pylon, Math.round(baseDamage * damageMult));
+        }
+      }
+      for (let o = this.runtimeObstacles.length - 1; o >= 0; o--) {
+        const obs = this.runtimeObstacles[o];
+        if (!obs.destructible || obs.hp <= 0) continue;
+        const dx = obs.x - this.playerX;
+        const dz = obs.z - this.playerZ;
+        const dist = Math.hypot(dx, dz) || 0.001;
+        if (dist <= cleaveRange + obs.halfW + 0.45 && (dx / dist) * aimX + (dz / dist) * aimZ >= minDot) {
+          this.damageDestructiblePod(obs, Math.round(baseDamage * damageMult));
         }
       }
       if (isVoidCleaver) {
@@ -4580,7 +6050,7 @@ export class GameEngine {
         halfSize,
       );
 
-      // Check explosive barrels along shot ray
+      // Check explosive barrels, cryo canisters & boss power pylons along shot ray
       let hitBarrel: ActiveBarrel | null = null;
       let hitBarrelDist = wallDist;
       for (let b = 0; b < this.barrels.length; b++) {
@@ -4602,6 +6072,48 @@ export class GameEngine {
         }
       }
 
+      let hitCryo: ActiveCryoCanister | null = null;
+      let hitCryoDist = hitBarrelDist;
+      for (let c = 0; c < this.cryoCanisters.length; c++) {
+        const can = this.cryoCanisters[c];
+        if (!can.active) continue;
+        const cd = raycastCircleDistance(
+          muzzleX,
+          muzzleZ,
+          dirX,
+          dirZ,
+          hitCryoDist,
+          can.x,
+          can.z,
+          0.56,
+        );
+        if (cd !== null && cd < hitCryoDist) {
+          hitCryoDist = cd;
+          hitCryo = can;
+        }
+      }
+
+      let hitPylon: ActiveBossPylon | null = null;
+      let hitPylonDist = hitCryoDist;
+      for (let p = 0; p < this.bossPylons.length; p++) {
+        const pylon = this.bossPylons[p];
+        const pd = raycastCircleDistance(
+          muzzleX,
+          muzzleZ,
+          dirX,
+          dirZ,
+          hitPylonDist,
+          pylon.x,
+          pylon.z,
+          0.78,
+        );
+        if (pd !== null && pd < hitPylonDist) {
+          hitPylonDist = pd;
+          hitPylon = pylon;
+        }
+      }
+
+      const maxPropDist = Math.min(hitBarrelDist, hitCryoDist, hitPylonDist);
       const hits: Array<{ z: ActiveZombie; dist: number }> = [];
       for (let i = 0; i < this.zombies.length; i++) {
         const z = this.zombies[i];
@@ -4611,14 +6123,26 @@ export class GameEngine {
           muzzleZ,
           dirX,
           dirZ,
-          hitBarrelDist,
+          maxPropDist,
           z.x,
           z.z,
           z.radius * 1.08,
         );
-        if (d !== null && d < hitBarrelDist) {
+        if (d !== null && d < maxPropDist) {
           hits.push({ z, dist: d });
         }
+      }
+
+      if (hitPylon && (hits.length === 0 || hitPylonDist < hits[0].dist)) {
+        this.spawnTracer(muzzleX, 0.94, muzzleZ, angle, hitPylonDist, tracerColor);
+        this.damageBossPylon(hitPylon, Math.round(baseDamage * damageMult));
+        continue;
+      }
+
+      if (hitCryo && (hits.length === 0 || hitCryoDist < hits[0].dist)) {
+        this.spawnTracer(muzzleX, 0.94, muzzleZ, angle, hitCryoDist, tracerColor);
+        this.detonateCryoCanister(hitCryo);
+        continue;
       }
 
       if (hitBarrel && (hits.length === 0 || hitBarrelDist < hits[0].dist)) {
@@ -4657,7 +6181,10 @@ export class GameEngine {
           if (this.hasPerk('cryo_rounds') || state.id === 'cryo_carbine') {
             hit.z.cryoTimer = Math.max(hit.z.cryoTimer, state.id === 'cryo_carbine' ? 3.2 : 2.8);
           }
-          if (isAbsoluteZero) {
+          if (
+            isAbsoluteZero &&
+            canApplyHardCc(hit.z.ccImmunityTimer, hit.z.affixes)
+          ) {
             hit.z.cryoFreezeTimer = Math.max(hit.z.cryoFreezeTimer, 1.8);
           }
           if (isDragonsBreath || isHellfireGatling || state.id === 'chem_thrower' || this.hasPerk('incendiary')) {
@@ -4673,7 +6200,20 @@ export class GameEngine {
           if (state.id === 'chem_thrower') {
             hit.z.cryoTimer = Math.max(hit.z.cryoTimer, 1.6);
           }
+          let juggShatterLabel: string | undefined;
+          if (
+            !isMinigun &&
+            isJuggernautShatterWeapon(state.id) &&
+            hit.z.kind === 'juggernaut' &&
+            hit.z.juggernautArmorIntact
+          ) {
+            hit.z.juggernautArmorIntact = false;
+            juggShatterLabel = 'SHATTER';
+            this.spawnBurstParticles(hitX, 1.15, hitZ, 12, 0xf59e0b, 6.2);
+            this.triggerContractEvent('juggernaut_shatter', 1);
+          }
 
+          hit.z.lastHitWeaponId = isMinigun ? undefined : state.id;
           const killed = this.damageZombie(
             hit.z,
             dmg,
@@ -4682,6 +6222,8 @@ export class GameEngine {
             dirZ,
             isMinigun ? 2.8 : spec.knockback,
             armorBypass,
+            undefined,
+            juggShatterLabel,
           );
           if (killed) killedAny = true;
 
@@ -4692,7 +6234,7 @@ export class GameEngine {
           if (isHellfireGatling) {
             const splashR = 2.6;
             this.spawnFlashRing(hitX, hitZ, splashR, 0xf97316, 0.22);
-            const splashDmg = Math.round(dmg * 0.52);
+            const splashDmg = Math.round(dmg * 0.52 * this.getBlastDamageMultiplier());
             for (let j = this.zombies.length - 1; j >= 0; j--) {
               const other = this.zombies[j];
               if (other.dying || other.id === hit.z.id) continue;
@@ -4702,6 +6244,7 @@ export class GameEngine {
               if (od <= splashR + other.radius) {
                 other.burnTimer = Math.max(other.burnTimer, 2.0);
                 other.burnDps = Math.max(other.burnDps, 18);
+                other.lastHitWeaponId = state.id;
                 this.damageZombie(other, splashDmg, false, odx / od, odz / od, 3.5, true);
               }
             }
@@ -4785,6 +6328,17 @@ export class GameEngine {
         }
       } else if (wallDist < range - 0.1) {
         this.spawnBurstParticles(endX, 0.85, endZ, 4, 0xfbbf24, 4.0);
+        for (let o = this.runtimeObstacles.length - 1; o >= 0; o--) {
+          const obs = this.runtimeObstacles[o];
+          if (!obs.destructible || obs.hp <= 0) continue;
+          if (
+            Math.abs(endX - obs.x) <= obs.halfW + 0.18 &&
+            Math.abs(endZ - obs.z) <= obs.halfD + 0.18
+          ) {
+            this.damageDestructiblePod(obs, Math.round(baseDamage * damageMult));
+            break;
+          }
+        }
       }
     }
 
@@ -4820,12 +6374,47 @@ export class GameEngine {
     labelOverride?: string,
   ): boolean {
     if (z.dying) return false;
+
+    // Boss Phase 2 invulnerable shield while Power Pylons stand
+    if (
+      z.kind === 'boss' &&
+      z.bossPhase === 2 &&
+      this.bossPylons.length > 0
+    ) {
+      this.sound.playArmorClang();
+      this.spawnBurstParticles(z.x, 1.5, z.z, 5, 0x38bdf8, 5.0);
+      this.floatingDamages.push({
+        id: this.nextEntityId++,
+        wx: z.x + (Math.random() - 0.5) * 0.4,
+        wy: 2.9,
+        wz: z.z,
+        amount: 0,
+        isCrit: false,
+        blockedByArmor: true,
+        kind: 'shield',
+        label: 'SHIELD',
+        age: 0,
+        duration: 0.55,
+      });
+      return false;
+    }
+
+    if (armorBypass && z.kind === 'juggernaut' && z.juggernautArmorIntact) {
+      z.juggernautArmorIntact = false;
+      labelOverride = labelOverride ?? 'SHATTER';
+      this.spawnBurstParticles(z.x, 1.2, z.z, 10, 0xf59e0b, 5.8);
+      this.triggerContractEvent('juggernaut_shatter', 1);
+    }
+
     const facingX = -Math.sin(z.facingYaw);
     const facingZ = -Math.cos(z.facingYaw);
     const masteryMult = getBestiaryMasteryMultiplier(
       z.kind,
       this.career.killsByEnemyType,
     );
+    const lateArmor =
+      getLateGameArmorRatio(this.wave) +
+      (this.bloodMoonRemaining > 0 ? 0.25 : 0);
     let { finalDamage, blockedByArmor } = computeZombieHitDamage(
       Math.round(amount * masteryMult),
       z.kind,
@@ -4834,6 +6423,8 @@ export class GameEngine {
       facingX,
       facingZ,
       armorBypass,
+      z.juggernautArmorIntact,
+      lateArmor,
     );
 
     if (blockedByArmor && this.hasPerk('piercing_core')) {
@@ -4861,12 +6452,44 @@ export class GameEngine {
       finalDamage = Math.round(finalDamage * 1.35);
     }
 
+    if (z.overshieldHp > 0) {
+      const absorbed = Math.min(z.overshieldHp, finalDamage);
+      z.overshieldHp -= absorbed;
+      finalDamage = Math.max(0, finalDamage - absorbed);
+    }
+
     z.hp -= finalDamage;
     z.hitFlashTimer = 0.065;
     z.revealTimer = Math.max(z.revealTimer, 0.85);
     const kbForce = knockback * (1 - z.knockbackResist) * (blockedByArmor ? 0.45 : 1);
     z.knockVx += dirX * kbForce;
     z.knockVz += dirZ * kbForce;
+
+    // Phase-Blinker elite affix teleports closer when struck from long range
+    if (
+      z.hp > 0 &&
+      z.affixes.includes('phase_blinker') &&
+      z.specialCooldown <= 0
+    ) {
+      const pDist = Math.hypot(this.playerX - z.x, this.playerZ - z.z);
+      if (pDist > 10.5) {
+        const bdx = (this.playerX - z.x) / (pDist || 1);
+        const bdz = (this.playerZ - z.z) / (pDist || 1);
+        const blinkPos = resolveArenaCollisions(
+          z.x + bdx * 4.8,
+          z.z + bdz * 4.8,
+          z.radius,
+          this.getObstacles(),
+          this.getHalfSize(),
+        );
+        this.spawnBurstParticles(z.x, 1.0, z.z, 10, 0xc084fc, 5.2);
+        z.x = blinkPos.x;
+        z.z = blinkPos.z;
+        z.rig.root.position.set(z.x, 0, z.z);
+        z.specialCooldown = 5.5;
+        this.spawnBurstParticles(z.x, 1.0, z.z, 10, 0xc084fc, 5.2);
+      }
+    }
 
     this.ultimateCharge = gainUltimateCharge(
       this.ultimateCharge,
@@ -4904,7 +6527,7 @@ export class GameEngine {
       wy:
         z.kind === 'boss'
           ? 2.8
-          : z.kind === 'brute' || z.kind === 'breacher'
+          : z.kind === 'brute' || z.kind === 'breacher' || z.kind === 'juggernaut'
             ? 2.1
             : 1.55,
       wz: z.z,
@@ -4928,6 +6551,27 @@ export class GameEngine {
       if (z.rig.telegraphLine) {
         z.rig.telegraphLine.visible = false;
       }
+      if (
+        z.kind !== 'boss' &&
+        z.kind !== 'crawler' &&
+        z.kind !== 'necromancer'
+      ) {
+        this.recentCorpses.push({ kind: z.kind, x: z.x, z: z.z, age: 0 });
+        if (this.recentCorpses.length > 18) this.recentCorpses.shift();
+      }
+
+      const baseScrapDrop =
+        z.kind === 'boss'
+          ? 12
+          : z.affixes.length > 0
+            ? 4
+            : z.kind === 'crawler'
+              ? 1
+              : 2;
+      const scrapMult =
+        this.bloodMoonRemaining > 0 || this.mode === 'blackout' ? 2 : 1;
+      this.inRunScrap += baseScrapDrop * scrapMult;
+
       this.kills += 1;
       this.killsTowardNextUp += 1;
       if (this.killsTowardNextUp >= KILLS_PER_UPGRADE_POINT) {
@@ -4940,6 +6584,11 @@ export class GameEngine {
       if (comboRes.newCallout) {
         this.sound.playComboMilestone();
       }
+      this.triggerContractEvent(
+        'reach_combo',
+        Math.round(getComboMultiplier(this.comboState.count) * 10),
+        true,
+      );
 
       if (this.hasCursedPerk('cursed_bloodthirst')) {
         this.hp = Math.min(this.maxHp, this.hp + 3);
@@ -4955,14 +6604,51 @@ export class GameEngine {
         }
       }
 
-      // Career & Bestiary kill tracking
-      this.career.totalKills += 1;
-      this.career.killsByEnemyType[z.kind] =
-        (this.career.killsByEnemyType[z.kind] ?? 0) + 1;
+      // Career, Weapon Mastery Camo & Bestiary kill tracking (excluded in Sandbox)
+      if (!this.isSandbox()) {
+        this.career.totalKills += 1;
+        this.career.killsByEnemyType[z.kind] =
+          (this.career.killsByEnemyType[z.kind] ?? 0) + 1;
+
+        if (z.lastHitWeaponId) {
+          const wid = z.lastHitWeaponId;
+          const prevKills = this.career.killsByWeapon?.[wid] ?? 0;
+          const prevCamo = getHighestUnlockedCamo(prevKills);
+          const nextKills = prevKills + 1;
+          this.career.killsByWeapon[wid] = nextKills;
+          const nextCamo = getHighestUnlockedCamo(nextKills);
+          if (nextCamo !== prevCamo) {
+            this.career.equippedCamos = {
+              ...this.career.equippedCamos,
+              [wid]: nextCamo,
+            };
+            if (wid === this.activeWeapon) {
+              this.syncPlayerWeaponVisibility();
+            }
+            this.pickupToast = `CAMO UNLOCKED · ${WEAPON_SPECS[wid].shortCode} ${WEAPON_CAMO_SPECS[nextCamo].name.toUpperCase()}`;
+            this.pickupToastTimer = 2.8;
+            this.sound.playContractClaim();
+          }
+          if (
+            wid === 'smg' ||
+            wid === 'rifle' ||
+            wid === 'twin9' ||
+            wid === 'cryo_carbine'
+          ) {
+            this.triggerContractEvent('rifle_smg_kill', 1, true);
+          }
+        }
+        if (z.affixes.includes('emp_jammer')) {
+          this.triggerContractEvent('emp_elite_kill', 1, true);
+        }
+      }
 
       if (z.kind === 'boss') {
         this.bossesKilledInRun += 1;
-        this.career.bossesKilled += 1;
+        if (!this.isSandbox()) {
+          this.career.bossesKilled += 1;
+          this.triggerContractEvent('boss_kill', 1, true);
+        }
         this.upgradePoints += BOSS_KILL_UP_BONUS;
         this.trauma = Math.min(1.0, this.trauma + 0.7);
         this.hitstopTimer = Math.max(this.hitstopTimer, 0.042);
@@ -5053,17 +6739,24 @@ export class GameEngine {
       }
 
       const modeMult =
-        this.mode === 'blackout' ? 2 : this.dailyMutator === 'acid_rain' ? 1.25 : 1;
+        (this.mode === 'blackout' ? 2 : this.dailyMutator === 'acid_rain' ? 1.25 : 1) *
+        (this.bloodMoonRemaining > 0 ? 2 : 1);
       const comboMult = getComboMultiplier(this.comboState.count);
       this.score += Math.round(z.scoreValue * modeMult * comboMult);
-      this.career.bestScore = Math.max(this.career.bestScore, Math.round(this.score));
-      if (this.score > this.highScore) {
-        this.highScore = saveHighScore(this.score);
-        this.isNewHighScore = true;
+      this.updateNextRivalTracking(true);
+      if (!this.isSandbox()) {
+        this.career.bestScore = Math.max(
+          this.career.bestScore,
+          Math.round(this.score),
+        );
+        if (this.score > this.highScore) {
+          this.highScore = saveHighScore(this.score);
+          this.isNewHighScore = true;
+        }
+        this.checkCareerSkinUnlocks();
+        this.career = saveCareerStats(this.career);
+        this.callbacks.onCareerUpdate?.(this.career);
       }
-      this.checkCareerSkinUnlocks();
-      this.career = saveCareerStats(this.career);
-      this.callbacks.onCareerUpdate?.(this.career);
 
       this.sound.playKill();
       this.spawnBloodDecal(
@@ -5118,10 +6811,12 @@ export class GameEngine {
 
   private advanceToNextWave(): void {
     this.wave += 1;
-    this.career.bestWave = Math.max(this.career.bestWave, this.wave);
-    this.checkCareerSkinUnlocks();
-    this.career = saveCareerStats(this.career);
-    this.callbacks.onCareerUpdate?.(this.career);
+    if (!this.isSandbox()) {
+      this.career.bestWave = Math.max(this.career.bestWave, this.wave);
+      this.checkCareerSkinUnlocks();
+      this.career = saveCareerStats(this.career);
+      this.callbacks.onCareerUpdate?.(this.career);
+    }
 
     const unlocked = unlockWeaponsForWave(this.weapons, this.wave, (id) =>
       this.getWeaponMagSize(id),
@@ -5137,9 +6832,36 @@ export class GameEngine {
 
     this.wavePlan = this.buildCurrentWavePlan(this.wave);
     this.spawnTimer = 0.5;
+    this.waveEventTriggeredThisWave = false;
+    this.waveEventTriggerTimer = 5.5 + this.rand() * 3.5;
+
+    // Respawn barrels & cryo canisters every 3 waves
+    this.wavesSincePropRespawn += 1;
+    if (this.wavesSincePropRespawn >= 3) {
+      this.wavesSincePropRespawn = 0;
+      for (const b of this.barrels) {
+        if (!b.active && Math.hypot(this.playerX - b.x, this.playerZ - b.z) > 1.8) {
+          b.active = true;
+          b.respawnTimer = 0;
+          b.rig.root.visible = true;
+          this.spawnBurstParticles(b.x, 0.4, b.z, 8, 0xef4444, 3.6);
+        }
+      }
+      for (const c of this.cryoCanisters) {
+        if (!c.active && Math.hypot(this.playerX - c.x, this.playerZ - c.z) > 1.8) {
+          c.active = true;
+          c.respawnTimer = 0;
+          c.root.visible = true;
+          this.spawnBurstParticles(c.x, 0.4, c.z, 8, 0x38bdf8, 3.6);
+        }
+      }
+    }
+
+    const odTier = getOverdriveTier(this.wave);
+    const odLabel = odTier > 0 ? ` · OVERDRIVE TIER ${odTier}` : '';
     this.waveBanner = isBossWaveNumber(this.wave, this.mode)
       ? `BOSS WAVE ${this.wave} · ${getBossTitle(this.wave)}`
-      : `WAVE ${this.wave} INCOMING`;
+      : `WAVE ${this.wave} INCOMING${odLabel}`;
     this.waveBannerTimer = 2.4;
     if (!this.weatherOverride && isBossWaveNumber(this.wave, this.mode)) {
       this.setWeatherKind('storm');
@@ -5149,6 +6871,9 @@ export class GameEngine {
   }
 
   private updateWaveSpawning(dt: number): void {
+    if (this.isSandbox()) return;
+    if (this.extractionZone && this.extractionZone.active) return;
+
     let aliveCount = 0;
     for (let i = 0; i < this.zombies.length; i++) {
       if (!this.zombies[i].dying) aliveCount++;
@@ -5174,6 +6899,19 @@ export class GameEngine {
           : WAVE_CLEAR_UP_REGULAR;
         this.upgradePoints += waveUp;
 
+        if (this.mode === 'siege' && this.reactorCore) {
+          const coreHeal = Math.round(this.reactorCore.maxHp * 0.15);
+          this.reactorCore.hp = Math.min(
+            this.reactorCore.maxHp,
+            this.reactorCore.hp + coreHeal,
+          );
+          this.pickupToast = 'POWER CORE REPAIRED +15%';
+          this.pickupToastTimer = 2.2;
+        }
+        if (this.mode === 'blackout' || this.mode === 'siege') {
+          this.triggerContractEvent('blackout_siege_wave', 1);
+        }
+
         const nextWave = this.wave + 1;
         const unlocked = unlockWeaponsForWave(this.weapons, nextWave, (id) =>
           this.getWeaponMagSize(id),
@@ -5196,6 +6934,41 @@ export class GameEngine {
       } else {
         this.wavePauseTimer -= dt;
         if (this.wavePauseTimer <= 0) {
+          if (
+            this.mode === 'extraction' &&
+            isExtractionWave(this.wave) &&
+            !this.extractionZone
+          ) {
+            const extPos = resolveArenaCollisions(
+              0,
+              0,
+              1.0,
+              this.getObstacles(),
+              this.getHalfSize(),
+            );
+            const rig = buildExtractionZoneRig();
+            rig.root.position.set(extPos.x, 0, extPos.z);
+            this.scene.add(rig.root);
+            this.extractionZone = {
+              x: extPos.x,
+              z: extPos.z,
+              active: true,
+              wavedOff: false,
+              wave: this.wave,
+              holdProgress: 0,
+              root: rig.root,
+              ringMat: rig.ringMat,
+              chopper: rig.chopper,
+              rotor: rig.rotor,
+            };
+            this.extractionPressureTimer = 3.5;
+            this.sound.playExtractionChopper();
+            this.waveBanner = `EXTRACTION CHOPPER ON STATION · HOLD PAD 20s (${getExtractionMultiplier(this.wave)}X SCRAP)`;
+            this.waveBannerTimer = 3.2;
+            this.emitHudSnapshot(true);
+            return;
+          }
+
           const shouldDraftPerk =
             this.wave % 2 === 0 ||
             this.wavePlan.isBossWave ||
@@ -5230,7 +7003,11 @@ export class GameEngine {
     }
   }
 
-  private spawnZombie(kind: ZombieKind, overridePos?: { x: number; z: number }): void {
+  private spawnZombie(
+    kind: ZombieKind,
+    overridePos?: { x: number; z: number },
+    forceElite = false,
+  ): void {
     const spec = ZOMBIE_SPECS[kind];
     const rig = buildZombieRig(kind, this.shadowTex);
     const halfSize = this.getHalfSize();
@@ -5238,7 +7015,7 @@ export class GameEngine {
     let sx = overridePos?.x ?? 0;
     let sz = overridePos?.z ?? 0;
     if (!overridePos) {
-      for (let attempt = 0; attempt < 8; attempt++) {
+      for (let attempt = 0; attempt < 10; attempt++) {
         const edge = Math.floor(this.rand() * 4);
         const along = (this.rand() * 2 - 1) * (halfSize - 2.5);
         const bound = halfSize - 1.4;
@@ -5255,6 +7032,7 @@ export class GameEngine {
           sx = bound;
           sz = along;
         }
+        if (this.arena === 'subway' && Math.abs(sz) < 3.2) continue;
         if (Math.hypot(sx - this.playerX, sz - this.playerZ) > 9.5) break;
       }
     }
@@ -5271,9 +7049,25 @@ export class GameEngine {
     rig.root.rotation.y = initialYaw;
     this.scene.add(rig.root);
 
+    const forceEliteAll =
+      forceElite ||
+      (this.mode === 'weekly' && this.weeklyMutator === 'all_elite_nightmare');
+    const affixes =
+      kind !== 'boss' && kind !== 'crawler'
+        ? rollEliteAffixes(this.wave, () => this.rand(), forceEliteAll)
+        : [];
+    const isElite = affixes.length > 0;
+    if (isElite && rig.eliteRing && rig.eliteRingMat) {
+      rig.eliteRing.visible = true;
+      rig.eliteRingMat.color.setHex(ELITE_AFFIX_SPECS[affixes[0]].colorHex);
+    }
+
     const bossCycleScale =
       kind === 'boss' ? getBossCycleHpMultiplier(this.wave) : 1;
-    const hp = Math.round(spec.maxHp * this.wavePlan.hpMultiplier * bossCycleScale);
+    const eliteHpMult = isElite ? 1.55 : 1;
+    const hp = Math.round(
+      spec.maxHp * this.wavePlan.hpMultiplier * bossCycleScale * eliteHpMult,
+    );
     this.zombies.push({
       id: this.nextEntityId++,
       kind,
@@ -5287,14 +7081,14 @@ export class GameEngine {
       facingYaw: initialYaw,
       hp,
       maxHp: hp,
-      speed: spec.speed * this.wavePlan.speedMultiplier,
+      speed: spec.speed * this.wavePlan.speedMultiplier * (isElite ? 1.12 : 1),
       radius: spec.radius,
-      damage: spec.damage * this.wavePlan.damageMultiplier,
+      damage: spec.damage * this.wavePlan.damageMultiplier * (isElite ? 1.18 : 1),
       attackRange: spec.attackRange,
       attackWindup: spec.attackWindup,
       attackCooldown: spec.attackCooldown,
       knockbackResist: spec.knockbackResist,
-      scoreValue: spec.scoreValue,
+      scoreValue: Math.round(spec.scoreValue * (isElite ? 1.8 : 1)),
       weaveSeed: Math.random() * Math.PI * 2,
       flankSide: Math.random() < 0.5 ? -1 : 1,
       hitFlashTimer: 0,
@@ -5306,7 +7100,10 @@ export class GameEngine {
       revealTimer: 0,
       wasRevealed: false,
       lungeTimer: 0,
-      chargeCooldown: kind === 'breacher' ? 2.2 + Math.random() * 1.4 : 0,
+      chargeCooldown:
+        kind === 'breacher' || kind === 'juggernaut'
+          ? 2.2 + Math.random() * 1.4
+          : 0,
       chargeTimer: 0,
       chargePending: false,
       chargeDirX: 0,
@@ -5325,6 +7122,24 @@ export class GameEngine {
       burnDps: 0,
       phase2Triggered: false,
       bossSlamCooldown: kind === 'boss' ? 4.8 : 0,
+      affixes,
+      juggernautArmorIntact: true,
+      ccImmunityTimer: 0,
+      overshieldHp: 0,
+      specialCooldown:
+        kind === 'necromancer'
+          ? 4.0
+          : kind === 'matriarch'
+            ? 4.8
+            : kind === 'ravager'
+              ? 3.0
+              : 0,
+      fallingTimer: 0,
+      bossPhase: 1,
+      p2Spawned: false,
+      p3Spawned: false,
+      sweepTimer: 0,
+      sweepAngle: 0,
     });
 
     if (kind === 'boss') {
@@ -5345,33 +7160,108 @@ export class GameEngine {
     const enemyOverclockMult = this.hasCursedPerk('cursed_overclocked_legs')
       ? 1.25
       : 1;
+    const bloodMoonSpeedMult = this.bloodMoonRemaining > 0 ? 1.3 : 1;
+    const openDropEdges = Boolean(ARENA_SPECS[this.arena].hasOpenDropEdges);
     const coneRange =
       14.5 *
       CLASS_SPECS[this.career.selectedClass].flashlightConeMult *
       (uvOverdrive ? 1.32 : 1);
     const coneHalf = (Math.PI / 4.8) * (uvOverdrive ? 1.25 : 1);
 
+    // Age corpses for Necromancer raises
+    for (let c = this.recentCorpses.length - 1; c >= 0; c--) {
+      this.recentCorpses[c].age += dt;
+      if (this.recentCorpses[c].age > 24) {
+        this.recentCorpses.splice(c, 1);
+      }
+    }
+
     // Attack token pool: cap concurrent active windup attackers at 5
     let activeAttackers = 0;
     for (let i = 0; i < this.zombies.length; i++) {
       if (this.zombies[i].isWindingUp) activeAttackers++;
     }
+    let empJammerActive = false;
 
     for (let i = this.zombies.length - 1; i >= 0; i--) {
       const z = this.zombies[i];
 
+      // Neon Rooftop open-edge abyss fall animation & instant kill reward
+      if (z.fallingTimer > 0) {
+        z.fallingTimer -= dt;
+        z.rig.root.position.y -= dt * 16;
+        z.rig.root.rotation.x += dt * 5.2;
+        const s = Math.max(0.05, z.fallingTimer / 0.55);
+        z.rig.root.scale.setScalar(s);
+        if (z.fallingTimer <= 0) {
+          this.kills += 1;
+          this.killsTowardNextUp += 1;
+          if (this.killsTowardNextUp >= KILLS_PER_UPGRADE_POINT) {
+            this.killsTowardNextUp -= KILLS_PER_UPGRADE_POINT;
+            this.upgradePoints += 1;
+          }
+          const comboRes = registerComboKill(this.comboState);
+          this.comboState = comboRes.next;
+          const modeMult =
+            (this.mode === 'blackout'
+              ? 2
+              : this.dailyMutator === 'acid_rain'
+                ? 1.25
+                : 1) * (this.bloodMoonRemaining > 0 ? 2 : 1);
+          const comboMult = getComboMultiplier(this.comboState.count);
+          this.score += Math.round(z.scoreValue * 1.25 * modeMult * comboMult);
+          this.updateNextRivalTracking(true);
+          this.inRunScrap +=
+            (z.affixes.length > 0 ? 5 : 3) *
+            (this.bloodMoonRemaining > 0 || this.mode === 'blackout' ? 2 : 1);
+          if (!this.isSandbox()) {
+            this.career.totalKills += 1;
+            this.career.killsByEnemyType[z.kind] =
+              (this.career.killsByEnemyType[z.kind] ?? 0) + 1;
+            this.career.bestScore = Math.max(
+              this.career.bestScore,
+              Math.round(this.score),
+            );
+            if (this.score > this.highScore) {
+              this.highScore = saveHighScore(this.score);
+              this.isNewHighScore = true;
+            }
+            this.career = saveCareerStats(this.career);
+            this.callbacks.onCareerUpdate?.(this.career);
+          }
+          this.sound.playKill();
+          this.scene.remove(z.rig.root);
+          this.zombies.splice(i, 1);
+        }
+        continue;
+      }
+
+      const wasHardCc = z.stunTimer > 0 || z.cryoFreezeTimer > 0;
       if (z.stunTimer > 0) z.stunTimer = Math.max(0, z.stunTimer - dt);
       if (z.revealTimer > 0) z.revealTimer = Math.max(0, z.revealTimer - dt);
       if (z.lungeTimer > 0) z.lungeTimer = Math.max(0, z.lungeTimer - dt);
       if (z.howlerBuffTimer > 0) z.howlerBuffTimer = Math.max(0, z.howlerBuffTimer - dt);
       if (z.cryoTimer > 0) z.cryoTimer = Math.max(0, z.cryoTimer - dt);
       if (z.cryoFreezeTimer > 0) z.cryoFreezeTimer = Math.max(0, z.cryoFreezeTimer - dt);
+      if (wasHardCc && z.stunTimer <= 0 && z.cryoFreezeTimer <= 0) {
+        z.ccImmunityTimer = CC_IMMUNITY_DURATION_SEC;
+      }
+      if (z.ccImmunityTimer > 0) z.ccImmunityTimer = Math.max(0, z.ccImmunityTimer - dt);
+      if (z.specialCooldown > 0) z.specialCooldown = Math.max(0, z.specialCooldown - dt);
       if (z.bossSlamCooldown > 0) z.bossSlamCooldown = Math.max(0, z.bossSlamCooldown - dt);
       if (z.chargeCooldown > 0) {
         z.chargeCooldown = Math.max(0, z.chargeCooldown - dt);
       }
       if (z.chargeTimer > 0) {
         z.chargeTimer = Math.max(0, z.chargeTimer - dt);
+      }
+
+      if (
+        !z.dying &&
+        z.affixes.includes('emp_jammer') &&
+        Math.hypot(this.playerX - z.x, this.playerZ - z.z) <= 10.0
+      ) {
+        empJammerActive = true;
       }
 
       // Hit flash, stun, freeze, cryo, or incendiary burn visuals
@@ -5437,26 +7327,90 @@ export class GameEngine {
         }
       }
 
-      if (z.cooldownTimer > 0) z.cooldownTimer = Math.max(0, z.cooldownTimer - dt);
-
-      // Boss Phase 2 Rage Transition at <= 50% HP
-      if (z.kind === 'boss' && !z.phase2Triggered && z.hp <= z.maxHp * 0.5) {
-        z.phase2Triggered = true;
-        applyBossPhase2Glow(z.rig);
-        this.sound.playBossPhase2Roar();
-        this.trauma = Math.min(1.0, this.trauma + 0.55);
-        this.waveBanner = `${getBossTitle(this.wave)} · ENRAGED PHASE 2`;
-        this.waveBannerTimer = 2.6;
-        z.speed *= 1.24;
-        z.rangedCooldown = Math.min(z.rangedCooldown, 0.7);
-        this.spawnFlashRing(z.x, z.z, 6.2, 0xf97316, 0.42);
-        this.spawnBurstParticles(z.x, 1.4, z.z, 26, 0xf97316, 8.8);
-        this.spawnZombie('runner', { x: z.x + 2.1, z: z.z + 1.2 });
-        this.spawnZombie('bomber', { x: z.x - 2.1, z: z.z - 1.2 });
-        this.emitHudSnapshot(true);
+      if (z.cooldownTimer > 0) {
+        const berserkerRate =
+          z.affixes.includes('berserker') && z.hp <= z.maxHp * 0.35 ? 1.5 : 1;
+        z.cooldownTimer = Math.max(0, z.cooldownTimer - dt * berserkerRate);
       }
 
-      // Target selection: Decoy Flare lures non-boss zombies away from player
+      // 3-Phase Apex Boss Transitions (Phase 2 Shield + Pylons @65%, Phase 3 Enrage @30%)
+      if (z.kind === 'boss') {
+        const bossPhase = getBossPhaseForHp(z.hp, z.maxHp);
+        if (bossPhase >= 2 && !z.p2Spawned) {
+          z.p2Spawned = true;
+          z.bossPhase = 2;
+          z.phase2Triggered = true;
+          applyBossPhase2Glow(z.rig);
+          if (z.rig.bossShieldSphere) z.rig.bossShieldSphere.visible = true;
+          this.sound.playBossPhase2Roar();
+          this.trauma = Math.min(1.0, this.trauma + 0.55);
+          this.waveBanner = `${getBossTitle(this.wave)} · PHASE 2 SHIELD PYLONS`;
+          this.waveBannerTimer = 2.8;
+          z.speed *= 1.18;
+          z.rangedCooldown = Math.min(z.rangedCooldown, 0.7);
+          this.spawnFlashRing(z.x, z.z, 6.2, 0x38bdf8, 0.42);
+          this.spawnBurstParticles(z.x, 1.4, z.z, 26, 0x38bdf8, 8.8);
+
+          // Spawn 2 destructible Boss Power Pylons
+          for (const pxOffset of [-6.5, 6.5]) {
+            const pPos = resolveArenaCollisions(
+              z.x + pxOffset,
+              Math.abs(z.z) > halfSize - 4 ? 0 : z.z,
+              0.7,
+              obstacles,
+              halfSize,
+            );
+            const pylonRoot = buildBossPowerPylon(this.shadowTex);
+            pylonRoot.position.set(pPos.x, 0, pPos.z);
+            this.scene.add(pylonRoot);
+            this.bossPylons.push({
+              id: this.nextEntityId++,
+              x: pPos.x,
+              z: pPos.z,
+              hp: Math.round(180 * this.wavePlan.hpMultiplier),
+              maxHp: Math.round(180 * this.wavePlan.hpMultiplier),
+              root: pylonRoot,
+            });
+          }
+          // Spawn 2 forced-elite escorts
+          this.spawnZombie('runner', { x: z.x + 2.2, z: z.z + 1.4 }, true);
+          this.spawnZombie('ravager', { x: z.x - 2.2, z: z.z - 1.4 }, true);
+          this.emitHudSnapshot(true);
+        }
+        if (bossPhase === 3 && !z.p3Spawned) {
+          z.p3Spawned = true;
+          z.bossPhase = 3;
+          // Clear any surviving Phase 2 pylons & shield
+          for (const pylon of this.bossPylons) {
+            this.scene.remove(pylon.root);
+            disposeObject3DTree(pylon.root);
+          }
+          this.bossPylons = [];
+          if (z.rig.bossShieldSphere) z.rig.bossShieldSphere.visible = false;
+          if (z.rig.bossCoreMat) {
+            z.rig.bossCoreMat.color.setHex(0xef4444);
+            z.rig.bossCoreMat.emissive.setHex(0xf43f5e);
+            z.rig.bossCoreMat.emissiveIntensity = 3.2;
+          }
+          if (z.rig.bossAuraMat) {
+            z.rig.bossAuraMat.color.setHex(0xef4444);
+            z.rig.bossAuraMat.opacity = 0.85;
+          }
+          z.rig.bodyGroup.scale.set(1.16, 1.14, 1.16);
+          z.speed *= 1.4;
+          z.sweepTimer = 2.4;
+          z.bossSlamCooldown = 1.6;
+          this.sound.playBossPhase2Roar();
+          this.trauma = Math.min(1.0, this.trauma + 0.72);
+          this.waveBanner = `${getBossTitle(this.wave)} · PHASE 3 CRIMSON ENRAGE`;
+          this.waveBannerTimer = 3.0;
+          this.spawnFlashRing(z.x, z.z, 7.8, 0xef4444, 0.45);
+          this.spawnBurstParticles(z.x, 1.5, z.z, 34, 0xef4444, 9.8);
+          this.emitHudSnapshot(true);
+        }
+      }
+
+      // Target selection: Decoy Flare, Siege Breaker trap priority, or Floodlight Generator
       let targetX = this.playerX;
       let targetZ = this.playerZ;
       let chasingDecoy = false;
@@ -5469,9 +7423,67 @@ export class GameEngine {
         }
       }
 
-      // Zombies near a powered Floodlight Generator may target & disable it
+      let targetTurret: ActiveTurret | null = null;
+      if (z.kind === 'siege_breaker' && !chasingDecoy) {
+        let bestTDist = 14.5;
+        for (const t of this.activeTurrets) {
+          const td = Math.hypot(t.x - z.x, t.z - z.z);
+          if (td < bestTDist) {
+            bestTDist = td;
+            targetTurret = t;
+            targetX = t.x;
+            targetZ = t.z;
+          }
+        }
+        if (!targetTurret) {
+          for (const tm of this.activeTripmines) {
+            const td = Math.hypot(tm.x - z.x, tm.z - z.z);
+            if (td < 12) {
+              targetX = tm.x;
+              targetZ = tm.z;
+              break;
+            }
+          }
+        }
+      }
+
+      let targetCore = false;
+      if (
+        this.mode === 'siege' &&
+        this.reactorCore &&
+        !chasingDecoy &&
+        !targetTurret &&
+        z.kind !== 'spitter' &&
+        z.kind !== 'howler' &&
+        z.kind !== 'necromancer'
+      ) {
+        const cDist = Math.hypot(
+          this.reactorCore.x - z.x,
+          this.reactorCore.z - z.z,
+        );
+        const pDist = Math.hypot(this.playerX - z.x, this.playerZ - z.z);
+        if (
+          z.kind === 'siege_breaker' ||
+          z.kind === 'juggernaut' ||
+          z.kind === 'walker' ||
+          z.kind === 'brute' ||
+          cDist <= pDist * 1.25
+        ) {
+          targetCore = true;
+          targetX = this.reactorCore.x;
+          targetZ = this.reactorCore.z;
+        }
+      }
+
       let targetGenerator: ActiveGenerator | null = null;
-      if (!chasingDecoy && z.kind !== 'spitter' && z.kind !== 'howler') {
+      if (
+        !chasingDecoy &&
+        !targetTurret &&
+        !targetCore &&
+        z.kind !== 'spitter' &&
+        z.kind !== 'howler' &&
+        z.kind !== 'necromancer'
+      ) {
         const pDist = Math.hypot(this.playerX - z.x, this.playerZ - z.z);
         for (let g = 0; g < this.generators.length; g++) {
           const gen = this.generators[g];
@@ -5495,11 +7507,13 @@ export class GameEngine {
       // Shadow Stalker stealth reveal inside flashlight cone OR powered generator light + UV Overdrive burn
       if (z.kind === 'stalker' && z.rig.stalkerMaterials) {
         let inGenLight = false;
-        for (let g = 0; g < this.generators.length; g++) {
-          const gen = this.generators[g];
-          if (gen.powered && Math.hypot(z.x - gen.x, z.z - gen.z) <= 12.5) {
-            inGenLight = true;
-            break;
+        if (!this.empActive) {
+          for (let g = 0; g < this.generators.length; g++) {
+            const gen = this.generators[g];
+            if (gen.powered && Math.hypot(z.x - gen.x, z.z - gen.z) <= 12.5) {
+              inGenLight = true;
+              break;
+            }
           }
         }
         const inFlashlightCone = isPointInFlashlightCone(
@@ -5563,58 +7577,146 @@ export class GameEngine {
         }
       }
 
-      // Movement policy per zombie archetype
+      // Necromancer corpse resurrection & dark bolt volley
+      if (z.kind === 'necromancer' && !z.isWindingUp) {
+        if (z.specialCooldown <= 0 && this.zombies.length < 30 && this.recentCorpses.length > 0) {
+          let raised = 0;
+          for (let c = this.recentCorpses.length - 1; c >= 0 && raised < 2; c--) {
+            const corpse = this.recentCorpses[c];
+            if (Math.hypot(corpse.x - z.x, corpse.z - z.z) <= 9.5) {
+              this.recentCorpses.splice(c, 1);
+              this.spawnZombie(corpse.kind, { x: corpse.x, z: corpse.z });
+              const raisedZ = this.zombies[this.zombies.length - 1];
+              if (raisedZ) {
+                raisedZ.hp = Math.max(25, Math.round(raisedZ.maxHp * 0.45));
+                raisedZ.maxHp = Math.max(raisedZ.hp, raisedZ.maxHp);
+                raisedZ.overshieldHp = 35;
+                raisedZ.rig.hpBarGroup.visible = true;
+                raisedZ.rig.hpBarFill.scale.x = Math.max(0.05, raisedZ.hp / raisedZ.maxHp);
+              }
+              this.spawnFlashRing(corpse.x, corpse.z, 2.4, 0xc084fc, 0.34);
+              raised++;
+            }
+          }
+          if (raised > 0) {
+            this.sound.playNecroRevive();
+            z.specialCooldown = 7.2;
+          }
+        }
+        z.rangedCooldown -= dt;
+        if (z.rangedCooldown <= 0 && dist > 4.2 && dist < 15.5) {
+          z.rangedCooldown = 3.2;
+          const a = Math.atan2(this.playerZ - z.z, this.playerX - z.x);
+          const pSpeed = 10.5 * getLateGameProjectileSpeedMult(this.wave);
+          const mesh = new THREE.Mesh(this.bossProjGeo, this.bossProjMat);
+          mesh.position.set(z.x, 1.25, z.z);
+          this.scene.add(mesh);
+          this.bossProjectiles.push({
+            mesh,
+            x: z.x,
+            z: z.z,
+            vx: Math.cos(a) * pSpeed,
+            vz: Math.sin(a) * pSpeed,
+            damage: z.damage * 0.85,
+            life: 2.0,
+          });
+        }
+      }
+
+      // Matriarch Brood Mother Crawler spawns
+      if (z.kind === 'matriarch' && z.specialCooldown <= 0 && this.zombies.length < 28) {
+        z.specialCooldown = 8.4;
+        this.spawnFlashRing(z.x, z.z, 2.8, 0x10b981, 0.34);
+        this.spawnBurstParticles(z.x, 0.7, z.z, 12, 0x34d399, 5.5);
+        this.spawnZombie('crawler', { x: z.x + 1.1, z: z.z + 0.8 });
+        this.spawnZombie('crawler', { x: z.x - 1.1, z: z.z - 0.8 });
+      }
+
+      // Movement policy per zombie archetype (with smart flanking)
       let desiredX = toPlayerX;
       let desiredZ = toPlayerZ;
       let moveSpeedMult = 1.0;
 
-      if (z.kind === 'walker') {
+      if (z.kind === 'walker' || z.kind === 'crawler') {
         const perpX = -toPlayerZ;
         const perpZ = toPlayerX;
-        const weave = Math.sin(z.walkPhase * 0.45 + z.weaveSeed) * 0.32;
+        const weave = Math.sin(z.walkPhase * 0.45 + z.weaveSeed) * 0.34;
         desiredX += perpX * weave;
         desiredZ += perpZ * weave;
-      } else if (z.kind === 'runner' && dist > 4.2) {
-        const angle = Math.atan2(toPlayerZ, toPlayerX) + z.flankSide * 0.48;
-        desiredX = Math.cos(angle);
-        desiredZ = Math.sin(angle);
-      } else if (z.kind === 'spitter' || z.kind === 'howler') {
-        if (dist < 5.6) {
+      } else if (z.kind === 'runner' || z.kind === 'stalker' || z.kind === 'ravager') {
+        const flank = computeFlankingVector(
+          targetX,
+          targetZ,
+          z.x,
+          z.z,
+          z.flankSide,
+          z.kind === 'ravager' ? 0.72 : 0.56,
+        );
+        desiredX = flank.dirX;
+        desiredZ = flank.dirZ;
+        if (z.kind === 'stalker') {
+          if (dist <= 5.0 && z.lungeTimer <= 0 && z.cooldownTimer <= 0 && dist > 1.8) {
+            z.lungeTimer = 0.45;
+            this.sound.playStalkerLunge();
+          }
+          if (z.lungeTimer > 0) moveSpeedMult = 1.62;
+        } else if (z.kind === 'ravager' && dist > 3.2 && dist < 12.0) {
+          // Ravager dodges sideways when player aims directly at it
+          const aimX = -Math.sin(this.playerAimAngle);
+          const aimZ = -Math.cos(this.playerAimAngle);
+          const alignDot = (-toPlayerX) * aimX + (-toPlayerZ) * aimZ;
+          if (alignDot > 0.88 && z.specialCooldown <= 0) {
+            z.specialCooldown = 2.6;
+            z.flankSide = -z.flankSide;
+            z.lungeTimer = 0.36;
+          }
+          if (z.lungeTimer > 0) moveSpeedMult = 1.52;
+        }
+      } else if (z.kind === 'spitter' || z.kind === 'howler' || z.kind === 'necromancer') {
+        if (dist < 6.0) {
           desiredX = -toPlayerX;
           desiredZ = -toPlayerZ;
-          moveSpeedMult = 0.72;
-        } else if (dist < 9.5) {
+          moveSpeedMult = 0.75;
+        } else if (dist < 10.5) {
           desiredX = -toPlayerZ * z.flankSide;
           desiredZ = toPlayerX * z.flankSide;
-          moveSpeedMult = 0.65;
+          moveSpeedMult = 0.68;
         }
-      } else if (z.kind === 'stalker') {
-        if (dist > 5.0) {
-          const angle = Math.atan2(toPlayerZ, toPlayerX) + z.flankSide * 0.58;
-          desiredX = Math.cos(angle);
-          desiredZ = Math.sin(angle);
-        } else if (z.lungeTimer <= 0 && z.cooldownTimer <= 0 && dist > 1.8) {
-          z.lungeTimer = 0.45;
-          this.sound.playStalkerLunge();
-        }
-        if (z.lungeTimer > 0) {
-          moveSpeedMult = 1.62;
-        }
-      } else if (z.kind === 'breacher' && z.chargeTimer > 0) {
+      } else if ((z.kind === 'breacher' || z.kind === 'juggernaut') && z.chargeTimer > 0) {
         desiredX = z.chargeDirX;
         desiredZ = z.chargeDirZ;
-        moveSpeedMult = 2.3;
+        moveSpeedMult = z.kind === 'juggernaut' ? 2.1 : 2.3;
+        // Juggernaut charge smashes mines/tripwires in its path
+        if (z.kind === 'juggernaut') {
+          for (let m = this.activeMines.length - 1; m >= 0; m--) {
+            if (Math.hypot(this.activeMines[m].x - z.x, this.activeMines[m].z - z.z) < 1.5) {
+              this.scene.remove(this.activeMines[m].rig.root);
+              this.activeMines.splice(m, 1);
+            }
+          }
+          for (let w = this.activeWires.length - 1; w >= 0; w--) {
+            if (Math.hypot(this.activeWires[w].x - z.x, this.activeWires[w].z - z.z) < 1.8) {
+              this.scene.remove(this.activeWires[w].root);
+              this.activeWires.splice(w, 1);
+            }
+          }
+        }
       }
 
       if (z.cryoTimer > 0) moveSpeedMult *= 0.7;
       if (z.howlerBuffTimer > 0) moveSpeedMult *= 1.35;
       if (reconSlow) moveSpeedMult *= 0.35;
-      moveSpeedMult *= enemyOverclockMult;
-      for (let w = 0; w < this.activeWires.length; w++) {
-        const wire = this.activeWires[w];
-        if (Math.hypot(z.x - wire.x, z.z - wire.z) <= GADGET_SPECS.wire.radius) {
-          moveSpeedMult *= 0.5;
-          break;
+      if (z.affixes.includes('berserker') && z.hp <= z.maxHp * 0.35) {
+        moveSpeedMult *= 1.5;
+      }
+      moveSpeedMult *= enemyOverclockMult * bloodMoonSpeedMult;
+      if (z.kind !== 'ravager') {
+        for (let w = 0; w < this.activeWires.length; w++) {
+          const wire = this.activeWires[w];
+          if (Math.hypot(z.x - wire.x, z.z - wire.z) <= GADGET_SPECS.wire.radius) {
+            moveSpeedMult *= 0.5;
+            break;
+          }
         }
       }
 
@@ -5622,21 +7724,64 @@ export class GameEngine {
       desiredX /= dLen;
       desiredZ /= dLen;
 
-      // Boss ranged plasma barrage & Phase 2 shock slam
+      // Boss ranged plasma barrage, Phase 2 shock slam & Phase 3 sweeping barrage / mortars
       if (z.kind === 'boss' && !z.isWindingUp) {
         z.rangedCooldown -= dt;
         const pDist = Math.hypot(this.playerX - z.x, this.playerZ - z.z);
-        if (z.rangedCooldown <= 0 && pDist > 3.6 && pDist < 17.5) {
+        if (z.rangedCooldown <= 0 && pDist > 3.6 && pDist < 18.5) {
           this.fireBossBarrage(
             z.x,
             z.z,
             Math.atan2(this.playerZ - z.z, this.playerX - z.x),
           );
           z.rangedCooldown =
-            getBossRangedCooldown(this.wave) * (z.phase2Triggered ? 0.75 : 1);
+            getBossRangedCooldown(this.wave) *
+            (z.bossPhase === 3 ? 0.62 : z.bossPhase === 2 ? 0.78 : 1);
+        }
+        if (z.bossPhase === 3) {
+          z.sweepTimer -= dt;
+          if (z.sweepTimer <= 0) {
+            z.sweepTimer = 4.5;
+            const aimA = Math.atan2(this.playerZ - z.z, this.playerX - z.x);
+            const pSpeed = 13.5 * getLateGameProjectileSpeedMult(this.wave);
+            this.sound.playBossBarrage();
+            for (const off of [-0.5, -0.25, 0, 0.25, 0.5]) {
+              const mesh = new THREE.Mesh(this.bossProjGeo, this.bossProjMat);
+              mesh.position.set(z.x, 1.35, z.z);
+              this.scene.add(mesh);
+              this.bossProjectiles.push({
+                mesh,
+                x: z.x,
+                z: z.z,
+                vx: Math.cos(aimA + off) * pSpeed,
+                vz: Math.sin(aimA + off) * pSpeed,
+                damage: 22 * this.wavePlan.damageMultiplier,
+                life: 2.3,
+              });
+            }
+            const ringRig = buildMortarTargetRing(2.8);
+            const mPos = resolveArenaCollisions(
+              this.playerX + (this.rand() - 0.5) * 3.0,
+              this.playerZ + (this.rand() - 0.5) * 3.0,
+              0.5,
+              obstacles,
+              halfSize - 1,
+            );
+            ringRig.group.position.set(mPos.x, 0.04, mPos.z);
+            this.scene.add(ringRig.group);
+            this.bossMortars.push({
+              group: ringRig.group,
+              fillMat: ringRig.fillMat,
+              x: mPos.x,
+              z: mPos.z,
+              age: 0,
+              duration: 1.55,
+              damage: 28 * this.wavePlan.damageMultiplier,
+            });
+          }
         }
         if (z.phase2Triggered && z.bossSlamCooldown <= 0 && pDist < 7.2) {
-          z.bossSlamCooldown = 5.4;
+          z.bossSlamCooldown = z.bossPhase === 3 ? 4.2 : 5.4;
           this.spawnFlashRing(z.x, z.z, 5.2, 0xf43f5e, 0.36);
           this.spawnBurstParticles(z.x, 0.4, z.z, 18, 0xf97316, 7.6);
           this.trauma = Math.min(1.0, this.trauma + 0.4);
@@ -5646,13 +7791,13 @@ export class GameEngine {
             const pz = (this.playerZ - z.z) / (pDist || 1);
             this.damagePlayer(z.damage * 0.8, px, pz);
           }
-          if (this.zombies.length < 14) {
+          if (this.zombies.length < 16) {
             this.spawnZombie('runner', { x: z.x + 1.8, z: z.z - 1.4 });
           }
         }
       }
 
-      // Attack windup & telegraph check (melee, Breacher charge, or Acid Spitter ranged glob)
+      // Attack windup & telegraph check (melee, Breacher/Juggernaut charge, or Acid Spitter ranged glob)
       if (z.isWindingUp) {
         z.windupTimer -= dt;
         const denom = z.chargePending ? 0.45 : z.attackWindup;
@@ -5700,13 +7845,19 @@ export class GameEngine {
             if (z.rig.telegraphRing) z.rig.telegraphRing.visible = false;
             if (z.chargePending) {
               z.chargePending = false;
-              z.chargeTimer = 0.42;
+              z.chargeTimer = 0.44;
               z.chargeCooldown = 4.6;
               z.chargeDirX = toPlayerX;
               z.chargeDirZ = toPlayerZ;
             } else {
               z.cooldownTimer = z.attackCooldown;
-              if (targetGenerator && targetGenerator.powered) {
+              if (targetTurret && targetTurret.hp > 0) {
+                targetTurret.hp = Math.max(0, targetTurret.hp - z.damage * 1.6);
+                this.spawnBurstParticles(targetTurret.x, 0.8, targetTurret.z, 8, 0xf97316, 4.8);
+                if (targetTurret.hp <= 0) {
+                  this.sound.playGeneratorDisable();
+                }
+              } else if (targetGenerator && targetGenerator.powered) {
                 targetGenerator.hp = Math.max(0, targetGenerator.hp - z.damage * 1.4);
                 this.spawnBurstParticles(targetGenerator.x, 1.0, targetGenerator.z, 6, 0x38bdf8, 4.2);
                 if (targetGenerator.hp <= 0) {
@@ -5716,6 +7867,14 @@ export class GameEngine {
                   this.sound.playGeneratorDisable();
                   this.pickupToast = `${targetGenerator.id} DISABLED — BLACKOUT`;
                   this.pickupToastTimer = 2.4;
+                }
+              } else if (targetCore && this.reactorCore) {
+                const cDist = Math.hypot(
+                  this.reactorCore.x - z.x,
+                  this.reactorCore.z - z.z,
+                );
+                if (cDist <= z.attackRange + this.reactorCore.radius + 0.65) {
+                  this.damageReactorCore(z.damage);
                 }
               } else if (!chasingDecoy) {
                 const pDist = Math.hypot(this.playerX - z.x, this.playerZ - z.z);
@@ -5730,6 +7889,16 @@ export class GameEngine {
                     (this.playerX - z.x) / pLen,
                     (this.playerZ - z.z) / pLen,
                   );
+                  if (z.affixes.includes('vampiric')) {
+                    for (const ally of this.zombies) {
+                      if (ally.dying) continue;
+                      if (Math.hypot(ally.x - z.x, ally.z - z.z) <= 6.2) {
+                        ally.hp = Math.min(ally.maxHp, ally.hp + Math.round(ally.maxHp * 0.12));
+                        ally.rig.hpBarFill.scale.x = Math.max(0.05, ally.hp / ally.maxHp);
+                      }
+                    }
+                    this.spawnFlashRing(z.x, z.z, 4.2, 0xf43f5e, 0.28);
+                  }
                 }
               }
               if (z.kind === 'boss') {
@@ -5753,11 +7922,13 @@ export class GameEngine {
           activeAttackers++;
         }
       } else if (
-        z.kind === 'breacher' &&
+        (z.kind === 'breacher' || z.kind === 'juggernaut') &&
         !chasingDecoy &&
         !targetGenerator &&
+        !targetTurret &&
+        !targetCore &&
         dist >= 3.0 &&
-        dist <= 7.2 &&
+        dist <= 7.6 &&
         z.chargeCooldown <= 0 &&
         z.chargeTimer <= 0 &&
         activeAttackers < 5
@@ -5769,7 +7940,13 @@ export class GameEngine {
         this.sound.playBruteTelegraph();
       } else if (
         !chasingDecoy &&
-        dist <= z.attackRange + (targetGenerator ? 0.95 : PLAYER_RADIUS * 0.6) &&
+        dist <=
+          z.attackRange +
+            (targetCore && this.reactorCore
+              ? this.reactorCore.radius + 0.45
+              : targetGenerator || targetTurret
+                ? 0.95
+                : PLAYER_RADIUS * 0.6) &&
         z.cooldownTimer <= 0 &&
         activeAttackers < 5
       ) {
@@ -5777,7 +7954,13 @@ export class GameEngine {
         z.chargePending = false;
         z.windupTimer = z.attackWindup;
         activeAttackers++;
-        if (z.kind === 'brute' || z.kind === 'boss' || z.kind === 'breacher') {
+        if (
+          z.kind === 'brute' ||
+          z.kind === 'boss' ||
+          z.kind === 'breacher' ||
+          z.kind === 'juggernaut' ||
+          z.kind === 'siege_breaker'
+        ) {
           this.sound.playBruteTelegraph();
         }
       }
@@ -5809,6 +7992,30 @@ export class GameEngine {
       z.knockVx *= Math.exp(-9.5 * dt);
       z.knockVz *= Math.exp(-9.5 * dt);
 
+      // Neon Rooftop open edge drop check for heavy knockback kills
+      if (
+        openDropEdges &&
+        z.kind !== 'boss' &&
+        Math.hypot(z.knockVx, z.knockVz) > 2.2 &&
+        isRooftopEdgeDrop(z.x, z.z, halfSize, 0.35)
+      ) {
+        z.fallingTimer = 0.55;
+        this.sound.playRoofFall();
+        this.floatingDamages.push({
+          id: this.nextEntityId++,
+          wx: z.x,
+          wy: 1.6,
+          wz: z.z,
+          amount: 0,
+          isCrit: true,
+          kind: 'weakpoint',
+          label: 'ROOF FALL!',
+          age: 0,
+          duration: 0.75,
+        });
+        continue;
+      }
+
       const resolved = resolveArenaCollisions(
         z.x,
         z.z,
@@ -5816,15 +8023,20 @@ export class GameEngine {
         obstacles,
         halfSize,
       );
-      z.x = resolved.x;
-      z.z = resolved.z;
+      const coreResolved = this.resolveReactorCollision(
+        resolved.x,
+        resolved.z,
+        z.radius,
+      );
+      z.x = coreResolved.x;
+      z.z = coreResolved.z;
 
-      // Facing yaw (Riot Breachers pivot slower so flanking & dashing behind is rewarded)
+      // Facing yaw (Riot Breachers & Juggernauts pivot slower so flanking & dashing behind is rewarded)
       const desiredYaw =
         z.kind === 'spitter' && z.isWindingUp
           ? Math.atan2(-(z.acidTargetX - z.x), -(z.acidTargetZ - z.z))
           : Math.atan2(-toPlayerX, -toPlayerZ);
-      if (z.kind === 'breacher') {
+      if (z.kind === 'breacher' || z.kind === 'juggernaut') {
         let diff = desiredYaw - z.facingYaw;
         while (diff > Math.PI) diff -= Math.PI * 2;
         while (diff < -Math.PI) diff += Math.PI * 2;
@@ -5853,6 +8065,7 @@ export class GameEngine {
       z.rig.leftArm.rotation.x = Math.sin(z.walkPhase) * 0.25;
       z.rig.rightArm.rotation.x = -Math.sin(z.walkPhase) * 0.25;
     }
+    this.empJammerDisableActive = empJammerActive;
   }
 
   private spawnAcidProjectile(
@@ -6073,7 +8286,9 @@ export class GameEngine {
           );
           this.spawnBurstParticles(m.x, 0.45, m.z, 26, 0xfbbf24, 9.0);
           const dmg = Math.round(
-            mineSpec.damage * this.getEffectiveDamageMultiplier(),
+            mineSpec.damage *
+              this.getEffectiveDamageMultiplier() *
+              this.getBlastDamageMultiplier(),
           );
           for (let j = this.zombies.length - 1; j >= 0; j--) {
             const z = this.zombies[j];
@@ -6101,14 +8316,15 @@ export class GameEngine {
       }
     }
 
-    // Deployable Sentry Turrets (Supports Twin-Barrel Turrets, Tesla Coil, and Engineer Ultimate Overdrive)
+    // Deployable Sentry Turrets (Supports Twin-Barrel Turrets, Tesla Coil, EMP suppression & Overcharge)
     const turretRange = turretSpec.range ?? 13.5;
     const turretDmgMult = this.getEffectiveDamageMultiplier();
     const engineerOverdrive =
       this.career.selectedClass === 'engineer' && this.ultimateActiveTimer > 0;
     const turretRateMult =
       CLASS_SPECS[this.career.selectedClass].turretFireRateMult *
-      (engineerOverdrive ? 2.0 : 1);
+      (engineerOverdrive ? 2.0 : 1) *
+      (this.overchargeTimer > 0 ? 1.2 : 1);
     for (let i = this.activeTurrets.length - 1; i >= 0; i--) {
       const t = this.activeTurrets[i];
       t.life -= dt;
@@ -6116,15 +8332,32 @@ export class GameEngine {
         t.flashTimer -= dt;
         if (t.flashTimer <= 0) t.rig.muzzleFlash.visible = false;
       }
-      if (t.life <= 0) {
+      if (t.life <= 0 || t.hp <= 0) {
         this.scene.remove(t.rig.root);
         this.activeTurrets.splice(i, 1);
-        this.spawnBurstParticles(t.x, 0.5, t.z, 8, 0x38bdf8, 3.8);
+        this.spawnBurstParticles(t.x, 0.5, t.z, 8, t.hp <= 0 ? 0xf97316 : 0x38bdf8, 3.8);
         continue;
       }
 
       if (t.life < 2.2) {
         t.rig.ringMat.opacity = 0.15 + 0.2 * Math.abs(Math.sin(t.life * 8));
+      }
+
+      let suppressedByEmp = this.empActive;
+      if (!suppressedByEmp) {
+        for (let j = 0; j < this.zombies.length; j++) {
+          const z = this.zombies[j];
+          if (!z.dying && z.affixes.includes('emp_jammer') && Math.hypot(z.x - t.x, z.z - t.z) <= 10.0) {
+            suppressedByEmp = true;
+            break;
+          }
+        }
+      }
+      if (suppressedByEmp) {
+        t.rig.ringMat.color.setHex(0xef4444);
+        continue;
+      } else {
+        t.rig.ringMat.color.setHex(0x38bdf8);
       }
 
       t.fireTimer -= dt;
@@ -6240,7 +8473,9 @@ export class GameEngine {
           this.spawnFlashRing(tm.x, tm.z, r, 0xef4444, 0.32);
           this.spawnBurstParticles(tm.x, 0.45, tm.z, 24, 0xef4444, 8.8);
           const dmg = Math.round(
-            GADGET_SPECS.tripmine.damage * this.getEffectiveDamageMultiplier(),
+            GADGET_SPECS.tripmine.damage *
+              this.getEffectiveDamageMultiplier() *
+              this.getBlastDamageMultiplier(),
           );
           for (let j = this.zombies.length - 1; j >= 0; j--) {
             const z = this.zombies[j];
@@ -6284,7 +8519,11 @@ export class GameEngine {
           this.trauma = Math.min(1.0, this.trauma + 0.55);
           this.spawnFlashRing(dec.x, dec.z, r, 0xf97316, 0.36);
           this.spawnBurstParticles(dec.x, 0.6, dec.z, 26, 0xf97316, 9.4);
-          const dmg = Math.round(220 * this.getEffectiveDamageMultiplier());
+          const dmg = Math.round(
+            220 *
+              this.getEffectiveDamageMultiplier() *
+              this.getBlastDamageMultiplier(),
+          );
           for (let j = this.zombies.length - 1; j >= 0; j--) {
             const z = this.zombies[j];
             if (z.dying) continue;
@@ -6364,7 +8603,9 @@ export class GameEngine {
           10.5,
         );
         const dmg = Math.round(
-          GADGET_SPECS.mortar.damage * this.getEffectiveDamageMultiplier(),
+          GADGET_SPECS.mortar.damage *
+            this.getEffectiveDamageMultiplier() *
+            this.getBlastDamageMultiplier(),
         );
         for (let j = this.zombies.length - 1; j >= 0; j--) {
           const z = this.zombies[j];
@@ -6395,7 +8636,7 @@ export class GameEngine {
       }
     }
 
-    // Respawning Explosive Barrels
+    // Respawning Explosive Barrels & Cyan Cryo Canisters
     for (let i = 0; i < this.barrels.length; i++) {
       const b = this.barrels[i];
       if (b.active) continue;
@@ -6408,8 +8649,20 @@ export class GameEngine {
         }
       }
     }
+    for (let i = 0; i < this.cryoCanisters.length; i++) {
+      const c = this.cryoCanisters[i];
+      if (c.active) continue;
+      c.respawnTimer -= dt;
+      if (c.respawnTimer <= 0) {
+        if (Math.hypot(this.playerX - c.x, this.playerZ - c.z) > 1.8) {
+          c.active = true;
+          c.root.visible = true;
+          this.spawnBurstParticles(c.x, 0.4, c.z, 8, 0x38bdf8, 3.6);
+        }
+      }
+    }
 
-    // Floodlight Generators (4s capture ring -> 45s illumination)
+    // Floodlight Generators (4s capture ring -> 45s illumination, suppressed during EMP)
     for (let i = 0; i < this.generators.length; i++) {
       const gen = this.generators[i];
       const dist = Math.hypot(this.playerX - gen.x, this.playerZ - gen.z);
@@ -6422,7 +8675,7 @@ export class GameEngine {
           gen.chargeProgress = 0;
           this.sound.playGeneratorDisable();
         }
-      } else if (gen.playerInside) {
+      } else if (gen.playerInside && !this.empActive) {
         gen.chargeProgress = Math.min(1, gen.chargeProgress + dt / 4.0);
         if (gen.chargeProgress >= 1) {
           gen.powered = true;
@@ -6438,20 +8691,21 @@ export class GameEngine {
         gen.chargeProgress = Math.max(0, gen.chargeProgress - dt * 0.25);
       }
 
-      gen.rig.beaconMat.emissive.setHex(gen.powered ? 0xbae6fd : 0x38bdf8);
-      gen.rig.beaconMat.emissiveIntensity = gen.powered
+      const lit = gen.powered && !this.empActive;
+      gen.rig.beaconMat.emissive.setHex(lit ? 0xbae6fd : this.empActive ? 0xef4444 : 0x38bdf8);
+      gen.rig.beaconMat.emissiveIntensity = lit
         ? 3.4
-        : gen.playerInside
+        : gen.playerInside && !this.empActive
           ? 1.9
           : 0.4;
-      gen.rig.poolMat.opacity = gen.powered ? 0.55 : 0;
+      gen.rig.poolMat.opacity = lit ? 0.55 : 0;
       if (gen.rig.spotLight) {
-        gen.rig.spotLight.intensity = gen.powered ? 28 : 0;
+        gen.rig.spotLight.intensity = lit ? 28 : 0;
       }
       gen.rig.ringMat.color.setHex(
-        gen.powered ? 0x22c55e : gen.playerInside ? 0xfbbf24 : 0x38bdf8,
+        this.empActive ? 0xef4444 : lit ? 0x22c55e : gen.playerInside ? 0xfbbf24 : 0x38bdf8,
       );
-      gen.rig.ringMat.opacity = gen.powered ? 0.52 : gen.playerInside ? 0.78 : 0.38;
+      gen.rig.ringMat.opacity = lit ? 0.52 : gen.playerInside ? 0.78 : 0.38;
     }
 
     // Risk-Reward Corner Supply Crate Spawns & Pickups
@@ -6531,7 +8785,7 @@ export class GameEngine {
 
   private fireBossBarrage(bx: number, bz: number, baseAngle: number): void {
     this.sound.playBossBarrage();
-    const projSpeed = 12.2;
+    const projSpeed = 12.2 * getLateGameProjectileSpeedMult(this.wave);
     const offsets = [-0.26, 0, 0.26];
     for (const off of offsets) {
       const a = baseAngle + off;
@@ -6592,6 +8846,335 @@ export class GameEngine {
     }
   }
 
+  private updateArenaHazards(dt: number): void {
+    const spec = ARENA_SPECS[this.arena];
+
+    // 1. Subway Quarantine: Telegraphed High-Speed Armored Train along z=0
+    if (spec.hasTrainHazard && this.subwayTrainMesh && this.subwayTrainWarningMesh && this.subwayTrainWarningMat) {
+      if (this.subwayTrainActive) {
+        this.subwayTrainX += dt * 44;
+        this.subwayTrainMesh.position.set(this.subwayTrainX, 0, spec.trainLaneZ ?? 0);
+        const laneHalfZ = spec.trainHalfWidth ?? 2.35;
+        const trainMinX = this.subwayTrainX - 8.25;
+        const trainMaxX = this.subwayTrainX + 8.25;
+
+        if (
+          this.playerX >= trainMinX &&
+          this.playerX <= trainMaxX &&
+          Math.abs(this.playerZ - (spec.trainLaneZ ?? 0)) <= laneHalfZ
+        ) {
+          const pushZ = this.playerZ >= 0 ? 1 : -1;
+          this.damagePlayer(55, 0, pushZ);
+          this.playerZ += pushZ * 2.1;
+          this.trauma = Math.min(1.0, this.trauma + 0.6);
+        }
+
+        for (let i = this.zombies.length - 1; i >= 0; i--) {
+          const z = this.zombies[i];
+          if (z.dying || this.subwayTrainHitIds.has(z.id)) continue;
+          if (
+            z.x >= trainMinX - z.radius &&
+            z.x <= trainMaxX + z.radius &&
+            Math.abs(z.z - (spec.trainLaneZ ?? 0)) <= laneHalfZ + z.radius
+          ) {
+            this.subwayTrainHitIds.add(z.id);
+            const hitDmg = z.kind === 'boss' ? Math.round(z.maxHp * 0.14) : z.hp + 9999;
+            this.damageZombie(z, hitDmg, true, 1, 0, 14, true, 'weakpoint', 'TRAIN HIT!');
+            this.spawnBurstParticles(z.x, 1.0, z.z, 12, 0xef4444, 8.2);
+          }
+        }
+
+        if (this.subwayTrainX > 36) {
+          this.subwayTrainActive = false;
+          this.subwayTrainMesh.visible = false;
+          this.subwayTrainWarningMesh.visible = false;
+          this.subwayTrainCooldown = 14 + this.rand() * 5;
+        }
+      } else if (this.subwayTrainWarningTimer > 0) {
+        this.subwayTrainWarningTimer -= dt;
+        this.subwayTrainWarningMesh.visible = true;
+        this.subwayTrainWarningMat.opacity =
+          0.35 + 0.4 * Math.abs(Math.sin(this.lastTimestamp * 0.022));
+        this.hazardWarningBanner = 'EXPRESS TRAIN INBOUND · CLEAR CENTER TRACK!';
+        this.hazardWarningTimer = Math.max(this.hazardWarningTimer, 0.25);
+        if (this.subwayTrainWarningTimer <= 0) {
+          this.subwayTrainActive = true;
+          this.subwayTrainX = -35;
+          this.subwayTrainHitIds.clear();
+          this.subwayTrainMesh.position.set(this.subwayTrainX, 0, spec.trainLaneZ ?? 0);
+          this.subwayTrainMesh.visible = true;
+          this.sound.playTrainWhoosh();
+          this.trauma = Math.min(1.0, this.trauma + 0.45);
+        }
+      } else {
+        this.subwayTrainCooldown -= dt;
+        if (this.subwayTrainCooldown <= 0) {
+          this.subwayTrainWarningTimer = 3.0;
+          this.sound.playTrainHorn();
+          this.hazardWarningBanner = 'EXPRESS TRAIN INBOUND · CLEAR CENTER TRACK!';
+          this.hazardWarningTimer = 3.1;
+          this.emitHudSnapshot(true);
+        }
+      }
+    }
+
+    // 2. Biolab Reactor: Timed Green Toxic Gas Vents
+    if (this.toxicVents.length > 0) {
+      this.toxicVentCycleTimer -= dt;
+      if (this.toxicVentState === 'idle' && this.toxicVentCycleTimer <= 0) {
+        this.toxicVentState = 'warning';
+        this.toxicVentCycleTimer = 2.6;
+        this.hazardWarningBanner = 'BIO-GAS VENTING SOON · AVOID FLOOR GRATES';
+        this.hazardWarningTimer = 2.6;
+        this.sound.playGasVentHiss();
+      } else if (this.toxicVentState === 'warning' && this.toxicVentCycleTimer <= 0) {
+        this.toxicVentState = 'active';
+        this.toxicVentCycleTimer = 5.5;
+        this.sound.playGasVentHiss();
+        for (const v of this.toxicVents) {
+          this.spawnFlashRing(v.x, v.z, 3.2, 0x22c55e, 0.35);
+          this.spawnBurstParticles(v.x, 0.3, v.z, 12, 0x4ade80, 4.6);
+        }
+      } else if (this.toxicVentState === 'active' && this.toxicVentCycleTimer <= 0) {
+        this.toxicVentState = 'idle';
+        this.toxicVentCycleTimer = 11.0;
+      }
+
+      for (const v of this.toxicVents) {
+        if (this.toxicVentState === 'idle') {
+          v.ringMat.color.setHex(0x22c55e);
+          v.ringMat.opacity = 0.2;
+        } else if (this.toxicVentState === 'warning') {
+          v.ringMat.color.setHex(0xf59e0b);
+          v.ringMat.opacity = 0.4 + 0.35 * Math.abs(Math.sin(this.lastTimestamp * 0.02));
+        } else {
+          v.ringMat.color.setHex(0x4ade80);
+          v.ringMat.opacity = 0.72;
+          v.tickTimer -= dt;
+          if (v.tickTimer <= 0) {
+            v.tickTimer = 0.65;
+            this.spawnBurstParticles(v.x, 0.35, v.z, 5, 0x4ade80, 3.4);
+            if (Math.hypot(this.playerX - v.x, this.playerZ - v.z) <= 3.0) {
+              this.damagePlayer(9, 0, 1);
+            }
+            for (let j = this.zombies.length - 1; j >= 0; j--) {
+              const z = this.zombies[j];
+              if (!z.dying && Math.hypot(z.x - v.x, z.z - v.z) <= 3.1 + z.radius) {
+                this.damageZombie(z, 18, false, 0, 1, 0, true);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private updateTacticalPads(dt: number): void {
+    for (const pad of this.tacticalPads) {
+      if (pad.activeRemaining > 0) {
+        pad.activeRemaining = Math.max(0, pad.activeRemaining - dt);
+      }
+      const dist = Math.hypot(this.playerX - pad.x, this.playerZ - pad.z);
+      pad.playerInside = dist <= 2.3;
+      const canPurchase =
+        pad.activeRemaining <= 0 &&
+        this.inRunScrap >= pad.cost &&
+        !(pad.kind === 'auto_turret' && this.empActive);
+
+      if (pad.playerInside && canPurchase) {
+        pad.standProgress = Math.min(1, pad.standProgress + dt / 2.0);
+        if (pad.standProgress >= 1) {
+          pad.standProgress = 0;
+          this.inRunScrap -= pad.cost;
+          this.sound.playPadActivate();
+          if (pad.kind === 'auto_turret') {
+            pad.activeRemaining = 35;
+            const rig = buildDeployableTurretRig(this.shadowTex);
+            rig.root.position.set(pad.x, 0, pad.z);
+            this.scene.add(rig.root);
+            this.activeTurrets.push({
+              rig,
+              x: pad.x,
+              z: pad.z,
+              life: 35,
+              fireTimer: 0.2,
+              flashTimer: 0,
+              hp: 160,
+              maxHp: 160,
+              isPadTurret: true,
+            });
+            this.pickupToast = 'AUTO-TURRET DEPLOYED (35s)';
+          } else {
+            pad.activeRemaining = 25;
+            this.overchargeTimer = 25;
+            this.empActive = false;
+            if (this.activeEventId === 'emp_outage') {
+              this.activeEventId = null;
+              if (this.activeBreakerSwitch) {
+                this.scene.remove(this.activeBreakerSwitch.root);
+                disposeObject3DTree(this.activeBreakerSwitch.root);
+                this.activeBreakerSwitch = null;
+              }
+            }
+            this.pickupToast = 'OVERCHARGE GENERATOR ACTIVE (+20% FIRE RATE)';
+          }
+          this.pickupToastTimer = 2.6;
+          this.spawnFlashRing(pad.x, pad.z, 3.8, 0xfbbf24, 0.35);
+          this.emitHudSnapshot(true);
+        }
+      } else if (pad.standProgress > 0) {
+        pad.standProgress = Math.max(0, pad.standProgress - dt * 0.5);
+      }
+
+      pad.ringMat.opacity =
+        pad.activeRemaining > 0
+          ? 0.25
+          : pad.playerInside
+            ? canPurchase
+              ? 0.92
+              : 0.45
+            : 0.58;
+    }
+  }
+
+  private updateMidWaveEvent(dt: number): void {
+    // Trigger dynamic Mid-Wave Events on Wave 3+
+    if (
+      !this.activeEventId &&
+      !this.waveEventTriggeredThisWave &&
+      this.wave >= 3 &&
+      this.wavePlan.queue.length > 0
+    ) {
+      this.waveEventTriggerTimer -= dt;
+      if (this.waveEventTriggerTimer <= 0) {
+        this.waveEventTriggeredThisWave = true;
+        const rolled = rollMidWaveEvent(this.wave, () => this.rand());
+        if (rolled) {
+          this.activeEventId = rolled;
+          const spec = MID_WAVE_EVENT_SPECS[rolled];
+          this.hazardWarningBanner = spec.sirenBanner;
+          this.hazardWarningTimer = 3.2;
+          this.sound.playSirenEvent();
+
+          if (rolled === 'orbital_supply') {
+            const pPos = resolveArenaCollisions(
+              (this.rand() - 0.5) * 10,
+              (this.rand() - 0.5) * 10,
+              0.9,
+              this.getObstacles(),
+              this.getHalfSize() - 2.5,
+            );
+            const pod = buildOrbitalPodMesh(this.shadowTex);
+            pod.root.position.set(pPos.x, 0, pPos.z);
+            this.scene.add(pod.root);
+            this.activeOrbitalPod = {
+              x: pPos.x,
+              z: pPos.z,
+              root: pod.root,
+              ringMat: pod.ringMat,
+              progress: 0,
+            };
+            this.spawnFlashRing(pPos.x, pPos.z, 4.5, 0x38bdf8, 0.4);
+          } else if (rolled === 'blood_moon') {
+            this.bloodMoonRemaining = 20.0;
+          } else if (rolled === 'emp_outage') {
+            this.empActive = true;
+            this.sound.playEmpOutage();
+            const bPos = resolveArenaCollisions(
+              this.playerX > 0 ? -9.5 : 9.5,
+              this.playerZ > 0 ? -9.5 : 9.5,
+              0.7,
+              this.getObstacles(),
+              this.getHalfSize() - 2,
+            );
+            const sw = buildBreakerSwitchMesh(this.shadowTex);
+            sw.position.set(bPos.x, 0, bPos.z);
+            this.scene.add(sw);
+            this.activeBreakerSwitch = { x: bPos.x, z: bPos.z, root: sw };
+          }
+          this.emitHudSnapshot(true);
+        }
+      }
+    }
+
+    if (this.activeEventId === 'orbital_supply' && this.activeOrbitalPod) {
+      const pod = this.activeOrbitalPod;
+      const inside = Math.hypot(this.playerX - pod.x, this.playerZ - pod.z) <= 2.9;
+      if (inside) {
+        pod.progress = Math.min(1, pod.progress + dt / 6.0);
+        pod.ringMat.color.setHex(0xfbbf24);
+        pod.ringMat.opacity = 0.88;
+        if (pod.progress >= 1) {
+          this.scene.remove(pod.root);
+          disposeObject3DTree(pod.root);
+          this.activeOrbitalPod = null;
+          this.activeEventId = null;
+          this.sound.playPickup('rapidfire');
+          this.upgradePoints += 2;
+          this.inRunScrap += 25;
+          grantAmmoCrate(this.weapons, (id) => this.getWeaponMagSize(id));
+          this.hp = Math.min(this.maxHp, this.hp + 35);
+          this.pickupToast = 'ORBITAL SUPPLY CLAIMED · +2 UP +25 SCRAP!';
+          this.pickupToastTimer = 2.8;
+          this.spawnFlashRing(pod.x, pod.z, 5.2, 0x38bdf8, 0.38);
+          this.openWeaponDraftIfEligible();
+          this.emitHudSnapshot(true);
+        }
+      } else {
+        pod.ringMat.color.setHex(0x38bdf8);
+        pod.ringMat.opacity = 0.55;
+      }
+    } else if (this.activeEventId === 'blood_moon') {
+      if (this.bloodMoonRemaining <= 0) {
+        this.activeEventId = null;
+        this.pickupToast = 'BLOOD MOON SUBSIDED';
+        this.pickupToastTimer = 2.0;
+        this.emitHudSnapshot(true);
+      }
+    } else if (this.activeEventId === 'emp_outage' && this.activeBreakerSwitch) {
+      const sw = this.activeBreakerSwitch;
+      sw.root.rotation.y += dt * 1.4;
+      if (Math.hypot(this.playerX - sw.x, this.playerZ - sw.z) <= 2.15) {
+        this.scene.remove(sw.root);
+        disposeObject3DTree(sw.root);
+        this.activeBreakerSwitch = null;
+        this.empActive = false;
+        this.activeEventId = null;
+        this.inRunScrap += 15;
+        this.sound.playBreakerFlip();
+        this.pickupToast = 'GRID POWER RESTORED · +15 SCRAP!';
+        this.pickupToastTimer = 2.4;
+        this.spawnFlashRing(sw.x, sw.z, 4.5, 0x22c55e, 0.36);
+        this.emitHudSnapshot(true);
+      }
+    }
+  }
+
+  private updateBossMortarsAndPylons(dt: number): void {
+    for (const pylon of this.bossPylons) {
+      pylon.root.rotation.y += dt * 1.6;
+    }
+    for (let i = this.bossMortars.length - 1; i >= 0; i--) {
+      const bm = this.bossMortars[i];
+      bm.age += dt;
+      const p = Math.min(1, bm.age / bm.duration);
+      bm.fillMat.opacity = 0.25 + p * 0.55;
+      bm.group.scale.setScalar(0.85 + p * 0.15);
+      if (bm.age >= bm.duration) {
+        this.scene.remove(bm.group);
+        this.bossMortars.splice(i, 1);
+        this.sound.playMortarImpact();
+        this.spawnFlashRing(bm.x, bm.z, 3.0, 0xef4444, 0.32);
+        this.spawnBurstParticles(bm.x, 0.5, bm.z, 20, 0xef4444, 8.2);
+        const dist = Math.hypot(this.playerX - bm.x, this.playerZ - bm.z);
+        if (dist <= 2.9 + PLAYER_RADIUS) {
+          const d = dist || 1;
+          this.damagePlayer(bm.damage, (this.playerX - bm.x) / d, (this.playerZ - bm.z) / d);
+        }
+      }
+    }
+  }
+
   private updateCombatDrone(dt: number): void {
     const droneId = this.career.equippedDrone;
     if (!droneId || droneId === 'none' || !this.droneRig) return;
@@ -6603,7 +9186,7 @@ export class GameEngine {
     this.droneRig.root.position.set(dx, bob, dz);
     this.droneRig.root.rotation.y = -this.droneOrbitAngle;
 
-    if (droneId === 'scrap_magnet') return;
+    if (droneId === 'scrap_magnet' || this.empActive || this.empJammerDisableActive) return;
 
     this.droneActionTimer -= dt;
     if (this.droneActionTimer > 0) return;
@@ -6749,9 +9332,12 @@ export class GameEngine {
           const d = Math.hypot(dx, dz) || 0.001;
           if (d <= hm.blastRadius + z.radius) {
             const falloff = Math.max(0.55, 1 - (d / (hm.blastRadius + 1)) * 0.45);
+            z.lastHitWeaponId = 'micro_launcher';
             this.damageZombie(
               z,
-              Math.round(hm.damage * falloff),
+              Math.round(
+                hm.damage * falloff * this.getBlastDamageMultiplier(),
+              ),
               true,
               dx / d,
               dz / d,
@@ -6793,7 +9379,7 @@ export class GameEngine {
       sv.tickTimer -= dt;
       for (let j = this.zombies.length - 1; j >= 0; j--) {
         const z = this.zombies[j];
-        if (z.dying || z.kind === 'boss') continue;
+        if (z.dying || z.kind === 'boss' || z.affixes.includes('cryo_proof')) continue;
         const dx = sv.x - z.x;
         const dz = sv.z - z.z;
         const dist = Math.hypot(dx, dz) || 0.001;
@@ -6912,11 +9498,21 @@ export class GameEngine {
       return;
     }
 
-    const mitigated = Math.max(
+    const tech = getTechLabBonuses(this.career.techLab);
+    let mitigated = Math.max(
       1,
-      Math.round(amount * getDamageTakenMultiplier(this.upgradeLevels)),
+      Math.round(
+        amount *
+          getDamageTakenMultiplier(this.upgradeLevels) *
+          (1 - tech.armorDrBonus),
+      ),
     );
-    this.hp = Math.max(0, this.hp - mitigated);
+    if (this.mode === 'weekly' && this.weeklyMutator === 'one_hit_chaos') {
+      mitigated = Math.max(mitigated, Math.ceil(this.maxHp * 0.85));
+    }
+    this.hp = this.isSandbox()
+      ? Math.max(1, this.hp - mitigated)
+      : Math.max(0, this.hp - mitigated);
     this.damageTaken += mitigated;
     this.invulnTimer = 0.45;
     this.bloodSplatter = 1.0;
@@ -7287,28 +9883,33 @@ export class GameEngine {
     const flashBoost = this.lightningFlash * this.lightningFlash;
 
     const isBlackoutLighting =
-      this.mode === 'blackout' || this.dailyMutator === 'blackout_surge';
-    const baseMoon = isBlackoutLighting ? 0.22 : 1.42;
-    const baseHemi = isBlackoutLighting ? 0.26 : 1.02;
+      this.empActive ||
+      this.mode === 'blackout' ||
+      this.dailyMutator === 'blackout_surge';
+    const overchargeBoost = this.overchargeTimer > 0 ? 0.65 : 0;
+    const bloodMoon = this.bloodMoonRemaining > 0;
+    const baseMoon = (isBlackoutLighting ? 0.14 : 1.42) + overchargeBoost;
+    const baseHemi = (isBlackoutLighting ? 0.16 : 1.02) + overchargeBoost * 0.6;
 
     if (this.moonLight) {
       this.moonLight.intensity = baseMoon + flashBoost * 2.8;
+      this.moonLight.color.setHex(bloodMoon ? 0xef4444 : 0xa5c8ff);
     }
     if (this.hemiLight) {
       this.hemiLight.intensity = baseHemi + flashBoost * 1.15;
     }
     if (this.scene.fog instanceof THREE.FogExp2) {
       this.scene.fog.density = isBlackoutLighting
-        ? Math.max(this.weatherFogDensity, 0.022)
+        ? Math.max(this.weatherFogDensity, 0.024)
         : this.weatherFogDensity;
       this.scene.fog.color
         .copy(this.fogColorCurrent)
-        .lerp(this.lightningColor, flashBoost * 0.45);
+        .lerp(bloodMoon ? _color.setHex(0x450a0a) : this.lightningColor, bloodMoon ? 0.45 : flashBoost * 0.45);
     }
     if (this.scene.background instanceof THREE.Color) {
       this.scene.background
         .copy(this.fogColorCurrent)
-        .lerp(this.lightningColor, flashBoost * 0.45);
+        .lerp(bloodMoon ? _color.setHex(0x450a0a) : this.lightningColor, bloodMoon ? 0.45 : flashBoost * 0.45);
     }
 
     // Rain InstancedMesh animation (modulated by Graphics Quality setting)
@@ -7352,6 +9953,22 @@ export class GameEngine {
 
   private updateVisualEffects(dt: number): void {
     this.updateWeatherVisuals(dt);
+
+    if (this.reactorCore) {
+      this.reactorCore.crystal.rotation.y += dt * 1.4;
+      this.reactorCore.crystal.position.y =
+        1.55 + Math.sin(this.lastTimestamp * 0.004) * 0.1;
+      const ratio = this.reactorCore.hp / Math.max(1, this.reactorCore.maxHp);
+      const col = ratio > 0.5 ? 0x38bdf8 : ratio > 0.25 ? 0xf59e0b : 0xef4444;
+      this.reactorCore.coreMat.color.setHex(col);
+      this.reactorCore.coreMat.emissive.setHex(col);
+    }
+
+    if (this.extractionZone && this.extractionZone.active) {
+      this.extractionZone.rotor.rotation.y += dt * 22;
+      this.extractionZone.chopper.position.y =
+        7.1 + Math.sin(this.lastTimestamp * 0.004) * 0.24;
+    }
 
     // Ambient drifting night dust motes
     if (this.ambientDust) {
@@ -7460,30 +10077,37 @@ export class GameEngine {
         const z = this.zombieLightCandidates[i].z;
         const pulse = 0.88 + 0.12 * Math.sin(timeSec * 5.2 + z.weaveSeed);
         const yHeight =
-          z.kind === 'boss' ? 1.85 : z.kind === 'brute' || z.kind === 'breacher' ? 1.35 : 1.05;
+          z.kind === 'boss'
+            ? 1.85
+            : z.kind === 'brute' ||
+                z.kind === 'breacher' ||
+                z.kind === 'juggernaut' ||
+                z.kind === 'siege_breaker'
+              ? 1.35
+              : 1.05;
         zLight.position.set(z.x, yHeight, z.z);
         if (z.kind === 'boss') {
           zLight.color.setHex(0xf43f5e);
           zLight.distance = 8.5;
           zLight.intensity = 6.8 * pulse;
-        } else if (z.kind === 'runner') {
-          zLight.color.setHex(0xff2e2e);
+        } else if (z.kind === 'runner' || z.kind === 'ravager') {
+          zLight.color.setHex(z.kind === 'ravager' ? 0xf43f5e : 0xff2e2e);
           zLight.distance = 6.2;
           zLight.intensity = 4.2 * pulse;
-        } else if (z.kind === 'brute') {
-          zLight.color.setHex(0xff7b00);
+        } else if (z.kind === 'brute' || z.kind === 'juggernaut') {
+          zLight.color.setHex(z.kind === 'juggernaut' ? 0xf59e0b : 0xff7b00);
           zLight.distance = 6.8;
           zLight.intensity = 4.8 * pulse;
-        } else if (z.kind === 'spitter') {
-          zLight.color.setHex(0x84cc16);
+        } else if (z.kind === 'spitter' || z.kind === 'matriarch' || z.kind === 'crawler') {
+          zLight.color.setHex(z.kind === 'matriarch' ? 0x10b981 : z.kind === 'crawler' ? 0x34d399 : 0x84cc16);
           zLight.distance = 6.0;
           zLight.intensity = 4.4 * pulse;
-        } else if (z.kind === 'stalker') {
-          zLight.color.setHex(0xa855f7);
-          zLight.distance = 4.8;
-          zLight.intensity = (z.revealTimer > 0 ? 3.8 : 1.5) * pulse;
-        } else if (z.kind === 'breacher') {
-          zLight.color.setHex(0x38bdf8);
+        } else if (z.kind === 'stalker' || z.kind === 'necromancer') {
+          zLight.color.setHex(z.kind === 'necromancer' ? 0xc084fc : 0xa855f7);
+          zLight.distance = 5.4;
+          zLight.intensity = (z.kind === 'necromancer' || z.revealTimer > 0 ? 4.0 : 1.5) * pulse;
+        } else if (z.kind === 'breacher' || z.kind === 'siege_breaker') {
+          zLight.color.setHex(z.kind === 'siege_breaker' ? 0xef4444 : 0x38bdf8);
           zLight.distance = 6.4;
           zLight.intensity = 4.2 * pulse;
         } else {
@@ -7706,20 +10330,24 @@ export class GameEngine {
         : 1;
     const gearCooldownRemaining = Math.max(0, this.gearCooldownTimer);
 
-    const gadgetCd =
-      GADGET_SPECS[this.equippedGadget].cooldownSec *
-      CLASS_SPECS[this.career.selectedClass].gearCooldownMult;
+    const gadgetCd = this.getEffectiveGadgetCooldown();
     const gadgetCooldownProgress =
-      this.gadgetCooldownTimer > 0
-        ? 1 - Math.min(1, this.gadgetCooldownTimer / gadgetCd)
-        : 1;
-    const gadgetCooldownRemaining = Math.max(0, this.gadgetCooldownTimer);
+      this.gadgetCharges >= this.gadgetMaxCharges
+        ? 1
+        : this.gadgetCooldownTimer > 0
+          ? 1 - Math.min(1, this.gadgetCooldownTimer / gadgetCd)
+          : 1;
+    const gadgetCooldownRemaining =
+      this.gadgetCharges >= this.gadgetMaxCharges
+        ? 0
+        : Math.max(0, this.gadgetCooldownTimer);
 
     const aliveEnemies: Array<{
       x: number;
       z: number;
       kind: ZombieKind;
       revealed?: boolean;
+      isElite?: boolean;
     }> = [];
     let boss: ActiveZombie | undefined;
     for (let i = 0; i < this.zombies.length; i++) {
@@ -7731,6 +10359,7 @@ export class GameEngine {
         z: z.z,
         kind: z.kind,
         revealed: z.kind === 'stalker' ? z.revealTimer > 0 : true,
+        isElite: z.affixes.length > 0,
       });
     }
     const zombiesRemaining = this.wavePlan.queue.length + aliveEnemies.length;
@@ -7769,6 +10398,64 @@ export class GameEngine {
         hazards.push({ x: b.x, z: b.z, kind: 'barrel' });
       }
     }
+    for (const c of this.cryoCanisters) {
+      if (c.active) hazards.push({ x: c.x, z: c.z, kind: 'cryo_canister' });
+    }
+    for (const pylon of this.bossPylons) {
+      hazards.push({ x: pylon.x, z: pylon.z, kind: 'pylon' });
+    }
+    if (ARENA_SPECS[this.arena].hasTrainHazard) {
+      hazards.push({ x: 0, z: ARENA_SPECS[this.arena].trainLaneZ ?? 0, kind: 'train_lane' });
+    }
+    for (const tv of this.toxicVents) {
+      hazards.push({ x: tv.x, z: tv.z, kind: 'toxic_vent' });
+    }
+    if (this.activeBreakerSwitch) {
+      hazards.push({
+        x: this.activeBreakerSwitch.x,
+        z: this.activeBreakerSwitch.z,
+        kind: 'breaker_switch',
+      });
+    }
+    if (this.activeOrbitalPod) {
+      hazards.push({
+        x: this.activeOrbitalPod.x,
+        z: this.activeOrbitalPod.z,
+        kind: 'orbital_pod',
+      });
+    }
+    let activePadPrompt: PadPromptHudState | null = null;
+    for (const pad of this.tacticalPads) {
+      hazards.push({
+        x: pad.x,
+        z: pad.z,
+        kind: pad.kind === 'auto_turret' ? 'pad_turret' : 'pad_overcharge',
+      });
+      if (pad.playerInside) {
+        activePadPrompt = {
+          kind: pad.kind,
+          label: pad.label,
+          cost: pad.cost,
+          progress: pad.standProgress,
+          affordable: this.inRunScrap >= pad.cost,
+          activeRemaining: pad.activeRemaining,
+        };
+      }
+    }
+    if (this.reactorCore) {
+      hazards.push({
+        x: this.reactorCore.x,
+        z: this.reactorCore.z,
+        kind: 'reactor_core',
+      });
+    }
+    if (this.extractionZone && this.extractionZone.active) {
+      hazards.push({
+        x: this.extractionZone.x,
+        z: this.extractionZone.z,
+        kind: 'extraction_zone',
+      });
+    }
     const generatorStatuses: GeneratorHudStatus[] = this.generators.map((g) => {
       hazards.push({
         x: g.x,
@@ -7796,6 +10483,30 @@ export class GameEngine {
         z: this.supplyCrate.z,
         kind: 'supply',
       });
+    }
+
+    let activeEventHud: ActiveEventHudState | null = null;
+    if (this.activeEventId) {
+      const evSpec = MID_WAVE_EVENT_SPECS[this.activeEventId];
+      activeEventHud = {
+        id: this.activeEventId,
+        title: evSpec.title,
+        subtitle:
+          this.activeEventId === 'orbital_supply' && this.activeOrbitalPod
+            ? `Hold Pod Zone (${Math.round(this.activeOrbitalPod.progress * 100)}%)`
+            : this.activeEventId === 'blood_moon'
+              ? `2x Score & Scrap · ${Math.ceil(this.bloodMoonRemaining)}s`
+              : 'Flip green Breaker Switch on minimap!',
+        progress:
+          this.activeEventId === 'orbital_supply'
+            ? this.activeOrbitalPod?.progress
+            : undefined,
+        remainingSec:
+          this.activeEventId === 'blood_moon'
+            ? this.bloodMoonRemaining
+            : undefined,
+        accentHex: evSpec.accentHex,
+      };
     }
 
     this.callbacks.onHudUpdate({
@@ -7842,16 +10553,27 @@ export class GameEngine {
       dailyMutatorLabel: this.dailyMutatorLabel,
       generators: generatorStatuses,
       barrelsReady,
-      bossPhase2Active: Boolean(boss?.phase2Triggered),
+      inRunScrap: this.inRunScrap,
+      activeEvent: activeEventHud,
+      activePadPrompt,
+      overchargeRemaining: this.overchargeTimer,
+      hazardWarningBanner: this.hazardWarningBanner,
+      bossPhase2Active: Boolean(boss && boss.bossPhase >= 2),
       bossesKilledInRun: this.bossesKilledInRun,
       callsign: this.callsign,
+      clanTag: this.clanTag,
+      nextRival: this.currentNextRival,
+      rivalOvertakenBanner: this.rivalOvertakenBanner,
       activeBoss: boss
         ? {
             name: getBossTitle(this.wave),
             hp: Math.max(0, Math.ceil(boss.hp)),
             maxHp: boss.maxHp,
             wave: this.wave,
-            phase2: boss.phase2Triggered,
+            phase2: boss.bossPhase >= 2,
+            phase: boss.bossPhase,
+            shielded: this.bossPylons.length > 0,
+            pylonsRemaining: this.bossPylons.length,
           }
         : null,
       weather: this.weatherKind,
@@ -7884,6 +10606,30 @@ export class GameEngine {
         this.equippedGadget,
       ),
       lastScrapEarned: this.lastScrapEarned,
+      weeklyMutatorId: this.weeklyMutator,
+      weeklyMutatorName: this.weeklyMutatorName,
+      reactorCore: this.reactorCore
+        ? {
+            hp: Math.round(this.reactorCore.hp),
+            maxHp: this.reactorCore.maxHp,
+          }
+        : null,
+      extractionState: this.extractionZone
+        ? {
+            wave: this.extractionZone.wave,
+            holdProgress: this.extractionZone.holdProgress,
+            holdSecRequired: EXTRACTION_HOLD_SEC,
+            multiplier: getExtractionMultiplier(this.extractionZone.wave),
+            active: this.extractionZone.active,
+            wavedOff: this.extractionZone.wavedOff,
+          }
+        : null,
+      extractedVictory: this.extractedVictory,
+      customGameOverTitle: this.customGameOverTitle,
+      gadgetCharges: this.gadgetCharges,
+      gadgetMaxCharges: this.gadgetMaxCharges,
+      perkRerollsRemaining: this.perkRerollsRemaining,
+      sandboxMode: this.isSandbox(),
       minimap: {
         playerX: this.playerX,
         playerZ: this.playerZ,
@@ -7922,6 +10668,9 @@ export class GameEngine {
       }
     });
     disposeSharedModelGeometries();
+    this.composer?.dispose();
+    this.composer = null;
+    this.bloomPass = null;
     this.renderer.dispose();
     if (this.renderer.domElement.parentNode === this.container) {
       this.container.removeChild(this.renderer.domElement);

@@ -4,6 +4,7 @@ import {
   CrateKind,
   DailyMutatorId,
   GameModeId,
+  WeeklyMutatorId,
   ZombieKind,
 } from './types';
 
@@ -135,6 +136,90 @@ export const ZOMBIE_SPECS: Record<ZombieKind, ZombieArchetypeSpec> = {
     scoreValue: 270,
     dropChance: 0.34,
   },
+  juggernaut: {
+    kind: 'juggernaut',
+    label: 'Juggernaut Charger',
+    maxHp: 370,
+    speed: 1.95,
+    radius: 0.82,
+    damage: 34,
+    attackRange: 1.8,
+    attackWindup: 0.5,
+    attackCooldown: 1.3,
+    knockbackResist: 0.82,
+    scoreValue: 520,
+    dropChance: 0.65,
+  },
+  siege_breaker: {
+    kind: 'siege_breaker',
+    label: 'Siege Breaker',
+    maxHp: 235,
+    speed: 2.5,
+    radius: 0.68,
+    damage: 28,
+    attackRange: 1.6,
+    attackWindup: 0.42,
+    attackCooldown: 1.05,
+    knockbackResist: 0.55,
+    scoreValue: 410,
+    dropChance: 0.45,
+  },
+  necromancer: {
+    kind: 'necromancer',
+    label: 'Necromancer',
+    maxHp: 135,
+    speed: 2.2,
+    radius: 0.52,
+    damage: 18,
+    attackRange: 13.5,
+    attackWindup: 0.65,
+    attackCooldown: 2.75,
+    knockbackResist: 0.25,
+    scoreValue: 450,
+    dropChance: 0.48,
+  },
+  matriarch: {
+    kind: 'matriarch',
+    label: 'Hive Matriarch',
+    maxHp: 390,
+    speed: 1.75,
+    radius: 0.8,
+    damage: 24,
+    attackRange: 1.65,
+    attackWindup: 0.55,
+    attackCooldown: 1.35,
+    knockbackResist: 0.72,
+    scoreValue: 540,
+    dropChance: 0.65,
+  },
+  crawler: {
+    kind: 'crawler',
+    label: 'Hive Crawler',
+    maxHp: 28,
+    speed: 4.85,
+    radius: 0.34,
+    damage: 9,
+    attackRange: 1.0,
+    attackWindup: 0.2,
+    attackCooldown: 0.65,
+    knockbackResist: 0.0,
+    scoreValue: 75,
+    dropChance: 0.08,
+  },
+  ravager: {
+    kind: 'ravager',
+    label: 'Apex Ravager',
+    maxHp: 560,
+    speed: 4.45,
+    radius: 0.66,
+    damage: 32,
+    attackRange: 1.75,
+    attackWindup: 0.32,
+    attackCooldown: 0.85,
+    knockbackResist: 0.45,
+    scoreValue: 780,
+    dropChance: 0.85,
+  },
   boss: {
     kind: 'boss',
     label: 'Iron Warden',
@@ -166,6 +251,7 @@ export interface BuildWavePlanOptions {
   mode?: GameModeId;
   arena?: ArenaId;
   mutator?: DailyMutatorId;
+  weeklyMutator?: WeeklyMutatorId;
 }
 
 export function isBossWaveNumber(
@@ -201,6 +287,27 @@ export function getBossTitle(wave: number): string {
   return `${titles[idx]} · W${wave}`;
 }
 
+export function getOverdriveTier(wave: number): 0 | 1 | 2 | 3 {
+  if (wave >= 20) return 3;
+  if (wave >= 15) return 2;
+  if (wave >= 10) return 1;
+  return 0;
+}
+
+export function getLateGameArmorRatio(wave: number): number {
+  if (wave < 10) return 0;
+  if (wave < 15) return 0.08;
+  if (wave < 20) return 0.14;
+  return Math.min(0.24, 0.18 + (wave - 20) * 0.005);
+}
+
+export function getLateGameProjectileSpeedMult(wave: number): number {
+  if (wave < 10) return 1.0;
+  if (wave < 15) return 1.12;
+  if (wave < 20) return 1.24;
+  return Math.min(1.45, 1.32 + (wave - 20) * 0.01);
+}
+
 export function buildWavePlan(
   wave: number,
   rng: () => number = Math.random,
@@ -209,17 +316,20 @@ export function buildWavePlan(
   const mode = options.mode ?? 'normal';
   const arena = options.arena ?? 'courtyard';
   const mutator = options.mutator;
+  const weeklyMutator = options.weeklyMutator;
 
   const isBossWave = isBossWaveNumber(wave, mode);
   const waves1To14 = Math.min(14, wave);
   const wavesPost14 = Math.max(0, wave - 14);
+  const overdriveSquadBonus =
+    wave >= 20 ? 10 : wave >= 15 ? 6 : wave >= 10 ? 3 : 0;
   const baseTotal = Math.min(
-    62,
-    Math.round(6 + waves1To14 * 2.4 + wavesPost14 * 0.65),
+    72,
+    Math.round(6 + waves1To14 * 2.4 + wavesPost14 * 0.65 + overdriveSquadBonus),
   );
   const totalCount =
     mode === 'boss_rush'
-      ? Math.min(22, 6 + Math.round(wave * 1.2))
+      ? Math.min(26, 6 + Math.round(wave * 1.25))
       : baseTotal;
 
   const queue: ZombieKind[] = [];
@@ -241,21 +351,35 @@ export function buildWavePlan(
       else if (roll < bruteProb + bomberProb + runnerProb) queue.push('runner');
       else queue.push('walker');
     } else {
-      // Wave 3+: Volatile Bomber; Wave 4+: Acid Spitter; Wave 6+: Howler; Wave 7+: Shadow Stalker; Wave 10+: Riot Breacher
-      const spitterProb = wave >= 4 ? Math.min(0.15, 0.1 + (wave - 4) * 0.008) : 0;
+      const juggernautProb = wave >= 4 ? Math.min(0.11, 0.06 + (wave - 4) * 0.005) : 0;
+      const spitterProb = wave >= 4 ? Math.min(0.13, 0.09 + (wave - 4) * 0.006) : 0;
+      const siegeBreakerProb = wave >= 5 ? Math.min(0.1, 0.06 + (wave - 5) * 0.004) : 0;
       const bomberProb =
         wave >= 3
-          ? Math.min(0.16, (mutator === 'volatile_horde' ? 0.18 : 0.09) + (wave - 3) * 0.006)
+          ? Math.min(0.14, (mutator === 'volatile_horde' ? 0.16 : 0.08) + (wave - 3) * 0.005)
           : 0;
-      const howlerProb = wave >= 6 ? Math.min(0.11, 0.07 + (wave - 6) * 0.006) : 0;
-      const stalkerProb = wave >= 7 ? Math.min(0.14, 0.09 + (wave - 7) * 0.007) : 0;
-      const breacherProb = wave >= 10 ? Math.min(0.12, 0.07 + (wave - 10) * 0.006) : 0;
-      const bruteProb = Math.min(0.14, 0.09 + Math.max(0, wave - 3) * 0.008);
-      const runnerProb = Math.min(0.24, 0.2 + Math.max(0, wave - 3) * 0.005);
+      const howlerProb = wave >= 6 ? Math.min(0.09, 0.06 + (wave - 6) * 0.004) : 0;
+      const necroProb = wave >= 6 ? Math.min(0.09, 0.055 + (wave - 6) * 0.004) : 0;
+      const stalkerProb = wave >= 7 ? Math.min(0.12, 0.08 + (wave - 7) * 0.005) : 0;
+      const matriarchProb = wave >= 8 ? Math.min(0.08, 0.05 + (wave - 8) * 0.004) : 0;
+      const breacherProb = wave >= 10 ? Math.min(0.1, 0.06 + (wave - 10) * 0.004) : 0;
+      const ravagerProb = wave >= 12 ? Math.min(0.08, 0.04 + (wave - 12) * 0.004) : 0;
+      const bruteProb = Math.min(0.1, 0.06 + Math.max(0, wave - 3) * 0.004);
+      const runnerProb = Math.min(0.2, 0.15 + Math.max(0, wave - 3) * 0.004);
 
       let cursor = spitterProb;
       if (roll < cursor) {
         queue.push('spitter');
+        continue;
+      }
+      cursor += juggernautProb;
+      if (roll < cursor) {
+        queue.push('juggernaut');
+        continue;
+      }
+      cursor += siegeBreakerProb;
+      if (roll < cursor) {
+        queue.push('siege_breaker');
         continue;
       }
       cursor += bomberProb;
@@ -268,14 +392,29 @@ export function buildWavePlan(
         queue.push('howler');
         continue;
       }
+      cursor += necroProb;
+      if (roll < cursor) {
+        queue.push('necromancer');
+        continue;
+      }
       cursor += stalkerProb;
       if (roll < cursor) {
         queue.push('stalker');
         continue;
       }
+      cursor += matriarchProb;
+      if (roll < cursor) {
+        queue.push('matriarch');
+        continue;
+      }
       cursor += breacherProb;
       if (roll < cursor) {
         queue.push('breacher');
+        continue;
+      }
+      cursor += ravagerProb;
+      if (roll < cursor) {
+        queue.push('ravager');
         continue;
       }
       cursor += bruteProb;
@@ -292,21 +431,36 @@ export function buildWavePlan(
     }
   }
 
-  // Ensure new signature archetypes visibly debut at their milestone waves without clobbering one another
+  // Ensure signature archetypes visibly debut at their milestone waves without clobbering one another
   if (wave >= 3 && !queue.includes('bomber')) {
     queue[Math.min(queue.length - 1, 1)] = 'bomber';
   }
   if (wave >= 4 && !queue.includes('spitter')) {
     queue[Math.min(queue.length - 1, 2)] = 'spitter';
   }
+  if (wave >= 4 && !queue.includes('juggernaut')) {
+    queue[Math.min(queue.length - 1, 3)] = 'juggernaut';
+  }
+  if (wave >= 5 && !queue.includes('siege_breaker')) {
+    queue[Math.min(queue.length - 1, 4)] = 'siege_breaker';
+  }
   if (wave >= 6 && !queue.includes('howler')) {
     queue[Math.min(queue.length - 1, 5)] = 'howler';
   }
+  if (wave >= 6 && !queue.includes('necromancer')) {
+    queue[Math.min(queue.length - 1, 6)] = 'necromancer';
+  }
   if (wave >= 7 && !queue.includes('stalker')) {
-    queue[Math.min(queue.length - 1, 3)] = 'stalker';
+    queue[Math.min(queue.length - 1, 7)] = 'stalker';
+  }
+  if (wave >= 8 && !queue.includes('matriarch')) {
+    queue[Math.min(queue.length - 1, 8)] = 'matriarch';
   }
   if (wave >= 10 && !queue.includes('breacher')) {
-    queue[Math.min(queue.length - 1, 4)] = 'breacher';
+    queue[Math.min(queue.length - 1, 9)] = 'breacher';
+  }
+  if (wave >= 12 && !queue.includes('ravager')) {
+    queue[Math.min(queue.length - 1, 10)] = 'ravager';
   }
 
   if (isBossWave) {
@@ -316,11 +470,16 @@ export function buildWavePlan(
   const baseWaves = Math.min(4, Math.max(0, wave - 1));
   const midWaves = Math.min(9, Math.max(0, wave - 5));
   const lateWaves = Math.max(0, wave - 14);
+  const overdriveHpStep =
+    wave >= 20 ? 1.18 : wave >= 15 ? 1.09 : wave >= 10 ? 1.04 : 1.0;
 
+  const weeklyHpMult = weeklyMutator === 'all_elite_nightmare' ? 1.35 : 1.0;
   const hpMultiplier =
     Math.pow(1.025, baseWaves) *
     Math.pow(1.055, midWaves) *
-    (1 + lateWaves * 0.045);
+    (1 + lateWaves * 0.04) *
+    overdriveHpStep *
+    weeklyHpMult;
   const damageMultiplier =
     Math.pow(1.005, baseWaves) *
     Math.pow(1.018, midWaves) *
@@ -329,12 +488,14 @@ export function buildWavePlan(
   let speedMultiplier =
     1 +
     Math.min(0.18, Math.max(0, wave - 1) * 0.03) +
-    Math.min(0.16, Math.max(0, wave - 6) * 0.006);
+    Math.min(0.15, Math.max(0, wave - 6) * 0.0055);
 
   if (mutator === 'acid_rain') speedMultiplier *= 1.12;
   else if (mutator === 'hyper_dash') speedMultiplier *= 1.06;
   else if (mutator === 'volatile_horde') speedMultiplier *= 1.1;
   else if (mutator === 'blackout_surge') speedMultiplier *= 1.04;
+
+  if (weeklyMutator === 'hyper_speed_2x') speedMultiplier *= 2.0;
 
   const arenaSpawnMult = ARENA_SPECS[arena].spawnIntervalMultiplier;
   const mutatorSpawnMult =
@@ -347,7 +508,7 @@ export function buildWavePlan(
           : 1.0;
 
   const baseInterval = Math.max(
-    0.38,
+    0.37,
     1.35 - Math.min(4, Math.max(0, wave - 1)) * 0.1 - midWaves * 0.035 - lateWaves * 0.012,
   );
   const spawnInterval = Math.max(0.32, baseInterval * arenaSpawnMult * mutatorSpawnMult);
@@ -358,8 +519,8 @@ export function buildWavePlan(
     queue,
     spawnInterval,
     maxConcurrent: Math.min(
-      26,
-      Math.round(7 + Math.min(12, wave) * 1.4 + Math.max(0, wave - 12) * 0.25),
+      30,
+      Math.round(7 + Math.min(12, wave) * 1.4 + Math.max(0, wave - 12) * 0.35),
     ),
     speedMultiplier,
     hpMultiplier,
@@ -396,17 +557,38 @@ export function computeZombieHitDamage(
   zombieFacingX: number,
   zombieFacingZ: number,
   armorBypass = false,
+  juggernautArmorIntact = true,
+  lateGameArmorRatio = 0,
 ): { finalDamage: number; blockedByArmor: boolean } {
-  if (kind !== 'breacher' || armorBypass) {
-    return { finalDamage: Math.max(1, Math.round(rawDamage)), blockedByArmor: false };
-  }
   const dot = bulletDirX * zombieFacingX + bulletDirZ * zombieFacingZ;
-  if (dot < -0.25) {
+
+  if (kind === 'breacher' && !armorBypass && dot < -0.25) {
     return {
       finalDamage: Math.max(1, Math.round(rawDamage * 0.35)),
       blockedByArmor: true,
     };
   }
+
+  if (
+    kind === 'juggernaut' &&
+    juggernautArmorIntact &&
+    !armorBypass &&
+    dot < -0.15
+  ) {
+    return {
+      finalDamage: Math.max(1, Math.round(rawDamage * 0.4)),
+      blockedByArmor: true,
+    };
+  }
+
+  if (!armorBypass && lateGameArmorRatio > 0) {
+    const scaled = rawDamage * (1 - Math.min(0.3, lateGameArmorRatio));
+    return {
+      finalDamage: Math.max(1, Math.round(scaled)),
+      blockedByArmor: false,
+    };
+  }
+
   return { finalDamage: Math.max(1, Math.round(rawDamage)), blockedByArmor: false };
 }
 

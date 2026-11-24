@@ -80,7 +80,11 @@ export const Minimap: React.FC<MinimapProps> = ({
                 ? '#334155'
                 : obs.kind === 'crate'
                   ? '#5c4028'
-                  : '#475569';
+                  : obs.kind === 'pod'
+                    ? '#0891b2'
+                    : obs.kind === 'pillar_tech'
+                      ? '#1e293b'
+                      : '#475569';
             return (
               <rect
                 key={obs.id}
@@ -195,6 +199,159 @@ export const Minimap: React.FC<MinimapProps> = ({
                 />
               );
             }
+            if (hz.kind === 'cryo_canister') {
+              return (
+                <circle
+                  key={`hz-${idx}`}
+                  cx={pos.x}
+                  cy={pos.y}
+                  r={2.1}
+                  fill="#06b6d4"
+                  stroke="#cffafe"
+                  strokeWidth="0.5"
+                />
+              );
+            }
+            if (hz.kind === 'pylon') {
+              return (
+                <g key={`hz-${idx}`}>
+                  <circle
+                    cx={pos.x}
+                    cy={pos.y}
+                    r={4.2}
+                    fill="rgba(56, 189, 248, 0.25)"
+                    stroke="#38bdf8"
+                    strokeWidth="0.7"
+                  />
+                  <rect
+                    x={pos.x - 1.8}
+                    y={pos.y - 1.8}
+                    width="3.6"
+                    height="3.6"
+                    transform={`rotate(45 ${pos.x} ${pos.y})`}
+                    fill="#38bdf8"
+                  />
+                </g>
+              );
+            }
+            if (hz.kind === 'train_lane') {
+              return (
+                <line
+                  key={`hz-${idx}`}
+                  x1="6"
+                  y1={pos.y}
+                  x2="94"
+                  y2={pos.y}
+                  stroke="rgba(239, 68, 68, 0.55)"
+                  strokeWidth="3.5"
+                  strokeDasharray="4 2"
+                />
+              );
+            }
+            if (hz.kind === 'toxic_vent') {
+              return (
+                <circle
+                  key={`hz-${idx}`}
+                  cx={pos.x}
+                  cy={pos.y}
+                  r={3.5}
+                  fill="rgba(34, 197, 94, 0.28)"
+                  stroke="#22c55e"
+                  strokeWidth="0.6"
+                />
+              );
+            }
+            if (hz.kind === 'breaker_switch') {
+              return (
+                <g key={`hz-${idx}`}>
+                  <circle
+                    cx={pos.x}
+                    cy={pos.y}
+                    r={5.0}
+                    fill="rgba(34, 197, 94, 0.25)"
+                    stroke="#22c55e"
+                    strokeWidth="0.8"
+                  />
+                  <rect
+                    x={pos.x - 2.0}
+                    y={pos.y - 2.0}
+                    width="4.0"
+                    height="4.0"
+                    fill="#4ade80"
+                  />
+                </g>
+              );
+            }
+            if (hz.kind === 'pad_turret' || hz.kind === 'pad_overcharge') {
+              const c = hz.kind === 'pad_turret' ? '#f59e0b' : '#38bdf8';
+              return (
+                <circle
+                  key={`hz-${idx}`}
+                  cx={pos.x}
+                  cy={pos.y}
+                  r={3.1}
+                  fill="none"
+                  stroke={c}
+                  strokeWidth="0.85"
+                />
+              );
+            }
+            if (hz.kind === 'orbital_pod') {
+              return (
+                <g key={`hz-${idx}`}>
+                  <circle
+                    cx={pos.x}
+                    cy={pos.y}
+                    r={6.4}
+                    fill="rgba(56, 189, 248, 0.2)"
+                    stroke="#38bdf8"
+                    strokeWidth="0.8"
+                  />
+                  <circle cx={pos.x} cy={pos.y} r={2.2} fill="#bae6fd" />
+                </g>
+              );
+            }
+            if (hz.kind === 'reactor_core') {
+              return (
+                <g key={`hz-${idx}`}>
+                  <circle
+                    cx={pos.x}
+                    cy={pos.y}
+                    r={6.8}
+                    fill="rgba(34, 211, 238, 0.22)"
+                    stroke="#22d3ee"
+                    strokeWidth="0.95"
+                  />
+                  <rect
+                    x={pos.x - 2.6}
+                    y={pos.y - 2.6}
+                    width="5.2"
+                    height="5.2"
+                    rx="0.6"
+                    transform={`rotate(45 ${pos.x} ${pos.y})`}
+                    fill="#67e8f9"
+                    stroke="#ecfeff"
+                    strokeWidth="0.6"
+                  />
+                </g>
+              );
+            }
+            if (hz.kind === 'extraction_zone') {
+              return (
+                <g key={`hz-${idx}`}>
+                  <circle
+                    cx={pos.x}
+                    cy={pos.y}
+                    r={7.8}
+                    fill="rgba(34, 197, 94, 0.22)"
+                    stroke="#22c55e"
+                    strokeWidth="1.05"
+                    strokeDasharray="2.5 1.5"
+                  />
+                  <circle cx={pos.x} cy={pos.y} r={2.6} fill="#4ade80" />
+                </g>
+              );
+            }
             return (
               <rect
                 key={`hz-${idx}`}
@@ -257,6 +414,16 @@ export const Minimap: React.FC<MinimapProps> = ({
           {/* Zombies & Bosses */}
           {minimap.enemies.map((enemy, idx) => {
             const pos = worldToMinimap(enemy.x, enemy.z, MAP_SIZE, halfSize);
+            const eliteRing = enemy.isElite ? (
+              <circle
+                cx={pos.x}
+                cy={pos.y}
+                r={3.5}
+                fill="none"
+                stroke="#facc15"
+                strokeWidth="0.7"
+              />
+            ) : null;
             if (enemy.kind === 'boss') {
               return (
                 <g key={`e-${idx}`}>
@@ -272,107 +439,201 @@ export const Minimap: React.FC<MinimapProps> = ({
                 </g>
               );
             }
+            if (enemy.kind === 'juggernaut') {
+              return (
+                <g key={`e-${idx}`}>
+                  {eliteRing}
+                  <rect
+                    x={pos.x - 2.6}
+                    y={pos.y - 2.6}
+                    width="5.2"
+                    height="5.2"
+                    rx="0.8"
+                    fill="#d97706"
+                    stroke="#fef3c7"
+                    strokeWidth="0.85"
+                  />
+                </g>
+              );
+            }
+            if (enemy.kind === 'siege_breaker') {
+              return (
+                <g key={`e-${idx}`}>
+                  {eliteRing}
+                  <rect
+                    x={pos.x - 2.3}
+                    y={pos.y - 2.3}
+                    width="4.6"
+                    height="4.6"
+                    rx="0.4"
+                    fill="#0ea5e9"
+                    stroke="#bae6fd"
+                    strokeWidth="0.75"
+                    transform={`rotate(45 ${pos.x} ${pos.y})`}
+                  />
+                </g>
+              );
+            }
+            if (enemy.kind === 'necromancer') {
+              return (
+                <g key={`e-${idx}`}>
+                  {eliteRing}
+                  <circle
+                    cx={pos.x}
+                    cy={pos.y}
+                    r={2.5}
+                    fill="#8b5cf6"
+                    stroke="#ddd6fe"
+                    strokeWidth="0.7"
+                  />
+                </g>
+              );
+            }
+            if (enemy.kind === 'matriarch') {
+              return (
+                <g key={`e-${idx}`}>
+                  {eliteRing}
+                  <circle
+                    cx={pos.x}
+                    cy={pos.y}
+                    r={2.8}
+                    fill="#db2777"
+                    stroke="#fbcfe8"
+                    strokeWidth="0.7"
+                  />
+                </g>
+              );
+            }
+            if (enemy.kind === 'crawler') {
+              return (
+                <g key={`e-${idx}`}>
+                  {eliteRing}
+                  <circle cx={pos.x} cy={pos.y} r={1.45} fill="#65a30d" />
+                </g>
+              );
+            }
+            if (enemy.kind === 'ravager') {
+              return (
+                <g key={`e-${idx}`}>
+                  {eliteRing}
+                  <circle
+                    cx={pos.x}
+                    cy={pos.y}
+                    r={2.15}
+                    fill="#f43f5e"
+                    stroke="#fecdd3"
+                    strokeWidth="0.55"
+                  />
+                </g>
+              );
+            }
             if (enemy.kind === 'breacher') {
               return (
-                <rect
-                  key={`e-${idx}`}
-                  x={pos.x - 2.3}
-                  y={pos.y - 2.3}
-                  width="4.6"
-                  height="4.6"
-                  rx="0.7"
-                  fill="#0284c7"
-                  stroke="#e2e8f0"
-                  strokeWidth="0.8"
-                />
+                <g key={`e-${idx}`}>
+                  {eliteRing}
+                  <rect
+                    x={pos.x - 2.3}
+                    y={pos.y - 2.3}
+                    width="4.6"
+                    height="4.6"
+                    rx="0.7"
+                    fill="#0284c7"
+                    stroke="#e2e8f0"
+                    strokeWidth="0.8"
+                  />
+                </g>
               );
             }
             if (enemy.kind === 'brute') {
               return (
-                <rect
-                  key={`e-${idx}`}
-                  x={pos.x - 2.2}
-                  y={pos.y - 2.2}
-                  width="4.4"
-                  height="4.4"
-                  rx="0.8"
-                  fill="#fb923c"
-                />
+                <g key={`e-${idx}`}>
+                  {eliteRing}
+                  <rect
+                    x={pos.x - 2.2}
+                    y={pos.y - 2.2}
+                    width="4.4"
+                    height="4.4"
+                    rx="0.8"
+                    fill="#fb923c"
+                  />
+                </g>
               );
             }
             if (enemy.kind === 'bomber') {
               return (
-                <circle
-                  key={`e-${idx}`}
-                  cx={pos.x}
-                  cy={pos.y}
-                  r={2.2}
-                  fill="#fb923c"
-                  stroke="#fef08a"
-                  strokeWidth="0.6"
-                />
+                <g key={`e-${idx}`}>
+                  {eliteRing}
+                  <circle
+                    cx={pos.x}
+                    cy={pos.y}
+                    r={2.2}
+                    fill="#fb923c"
+                    stroke="#fef08a"
+                    strokeWidth="0.6"
+                  />
+                </g>
               );
             }
             if (enemy.kind === 'howler') {
               return (
-                <circle
-                  key={`e-${idx}`}
-                  cx={pos.x}
-                  cy={pos.y}
-                  r={2.2}
-                  fill="#fbbf24"
-                  stroke="#ffffff"
-                  strokeWidth="0.5"
-                />
+                <g key={`e-${idx}`}>
+                  {eliteRing}
+                  <circle
+                    cx={pos.x}
+                    cy={pos.y}
+                    r={2.2}
+                    fill="#fbbf24"
+                    stroke="#ffffff"
+                    strokeWidth="0.5"
+                  />
+                </g>
               );
             }
             if (enemy.kind === 'spitter') {
               return (
-                <rect
-                  key={`e-${idx}`}
-                  x={pos.x - 2.0}
-                  y={pos.y - 2.0}
-                  width="4.0"
-                  height="4.0"
-                  rx="0.4"
-                  fill="#a3e635"
-                  stroke="#fef08a"
-                  strokeWidth="0.55"
-                  transform={`rotate(45 ${pos.x} ${pos.y})`}
-                />
+                <g key={`e-${idx}`}>
+                  {eliteRing}
+                  <rect
+                    x={pos.x - 2.0}
+                    y={pos.y - 2.0}
+                    width="4.0"
+                    height="4.0"
+                    rx="0.4"
+                    fill="#a3e635"
+                    stroke="#fef08a"
+                    strokeWidth="0.55"
+                    transform={`rotate(45 ${pos.x} ${pos.y})`}
+                  />
+                </g>
               );
             }
             if (enemy.kind === 'stalker') {
               return (
-                <circle
-                  key={`e-${idx}`}
-                  cx={pos.x}
-                  cy={pos.y}
-                  r={enemy.revealed ? 2.2 : 1.7}
-                  fill="#c084fc"
-                  opacity={enemy.revealed ? 0.95 : 0.4}
-                />
+                <g key={`e-${idx}`}>
+                  {eliteRing}
+                  <circle
+                    cx={pos.x}
+                    cy={pos.y}
+                    r={enemy.revealed ? 2.2 : 1.7}
+                    fill="#c084fc"
+                    opacity={enemy.revealed ? 0.95 : 0.4}
+                  />
+                </g>
               );
             }
             if (enemy.kind === 'runner') {
               return (
-                <circle
-                  key={`e-${idx}`}
-                  cx={pos.x}
-                  cy={pos.y}
-                  r={2.1}
-                  fill="#ef4444"
-                />
+                <g key={`e-${idx}`}>
+                  {eliteRing}
+                  <circle cx={pos.x} cy={pos.y} r={2.1} fill="#ef4444" />
+                </g>
               );
             }
             return (
-              <circle
-                key={`e-${idx}`}
-                cx={pos.x}
-                cy={pos.y}
-                r={1.8}
-                fill="#84cc16"
-              />
+              <g key={`e-${idx}`}>
+                {eliteRing}
+                <circle cx={pos.x} cy={pos.y} r={1.8} fill="#84cc16" />
+              </g>
             );
           })}
 

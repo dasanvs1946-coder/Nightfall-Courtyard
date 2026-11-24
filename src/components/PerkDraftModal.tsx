@@ -1,5 +1,5 @@
 import React from 'react';
-import { Skull, Sparkles, Zap } from 'lucide-react';
+import { RefreshCw, Skull, Sparkles, Zap } from 'lucide-react';
 import { CURSED_PERK_SPECS, PERK_SPECS } from '../game/perks';
 import { CursedPerkId, PerkId } from '../game/types';
 
@@ -8,6 +8,8 @@ interface PerkDraftModalProps {
   choices: PerkId[] | null;
   cursedChoice: CursedPerkId | null;
   ownedCount: number;
+  perkRerollsRemaining?: number;
+  onRerollPerks?: () => void;
   onSelectPerk: (perkId: PerkId) => void;
   onSelectCursedPerk: (cursedId: CursedPerkId) => void;
 }
@@ -17,6 +19,8 @@ export const PerkDraftModal: React.FC<PerkDraftModalProps> = ({
   choices,
   cursedChoice,
   ownedCount,
+  perkRerollsRemaining = 0,
+  onRerollPerks,
   onSelectPerk,
   onSelectCursedPerk,
 }) => {
@@ -53,8 +57,24 @@ export const PerkDraftModal: React.FC<PerkDraftModalProps> = ({
               Choose 1 Tactical Perk
             </h2>
           </div>
-          <div className="font-mono-tabular rounded-lg border border-amber-500/40 bg-slate-900/90 px-2.5 py-1 text-xs font-bold text-amber-300 uppercase">
-            {ownedCount} Owned · {maxKeyLabel}
+          <div className="flex flex-wrap items-center gap-2">
+            {perkRerollsRemaining > 0 && onRerollPerks && (
+              <button
+                type="button"
+                data-testid="reroll-perks-btn"
+                onClick={(e) => {
+                  e.currentTarget.blur();
+                  onRerollPerks();
+                }}
+                className="font-mono-tabular flex min-h-[34px] cursor-pointer items-center gap-1.5 rounded-lg border border-cyan-400/75 bg-cyan-500/15 px-2.5 py-1 text-xs font-extrabold tracking-wider text-cyan-200 uppercase hover:bg-cyan-500/30"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                <span>Reroll [R] ({perkRerollsRemaining})</span>
+              </button>
+            )}
+            <div className="font-mono-tabular rounded-lg border border-amber-500/40 bg-slate-900/90 px-2.5 py-1 text-xs font-bold text-amber-300 uppercase">
+              {ownedCount} Owned · {maxKeyLabel}
+            </div>
           </div>
         </div>
 

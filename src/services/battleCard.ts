@@ -5,6 +5,7 @@ import { APP_VERSION } from '../game/version';
 
 export interface BattleCardInput {
   callsign: string;
+  clanTag?: string;
   skinId: SkinId;
   mode: GameModeId;
   arena: ArenaId;
@@ -130,9 +131,17 @@ export async function generateBattleCardBlob(
   ctx.font = '700 22px system-ui, -apple-system, sans-serif';
   ctx.fillText('SURVIVOR CALLSIGN', 120, 412);
 
+  const cleanClan = (input.clanTag ?? '').trim().toUpperCase();
+  const displayCallsign = cleanClan
+    ? `[${cleanClan}] ${input.callsign.toUpperCase()}`
+    : input.callsign.toUpperCase();
+
   ctx.fillStyle = '#FFFFFF';
-  ctx.font = '900 54px monospace';
-  ctx.fillText(input.callsign.toUpperCase(), 120, 466);
+  ctx.font =
+    displayCallsign.length > 18
+      ? '900 42px monospace'
+      : '900 52px monospace';
+  ctx.fillText(displayCallsign, 120, 466);
 
   ctx.fillStyle = accent;
   ctx.font = '800 26px system-ui, -apple-system, sans-serif';
@@ -229,7 +238,9 @@ export async function shareOrDownloadBattleCard(
   const blob = await generateBattleCardBlob(input);
   if (!blob) return 'failed';
 
-  const summaryText = `Nightfall Courtyard v${APP_VERSION.replace(/^v/i, '')} — ${input.callsign} survived to Wave ${input.wave} (${input.kills} kills, ${input.score.toLocaleString()} pts) on ${ARENA_SPECS[input.arena].name} [${GAME_MODE_SPECS[input.mode].shortLabel}]! Play at https://nightfallcourtyard.lovable.app`;
+  const cleanTag = (input.clanTag ?? '').trim().toUpperCase();
+  const shareName = cleanTag ? `[${cleanTag}] ${input.callsign}` : input.callsign;
+  const summaryText = `Nightfall Courtyard v${APP_VERSION.replace(/^v/i, '')} — ${shareName} survived to Wave ${input.wave} (${input.kills} kills, ${input.score.toLocaleString()} pts) on ${ARENA_SPECS[input.arena].name} [${GAME_MODE_SPECS[input.mode].shortLabel}]! Play at https://nightfallcourtyard.lovable.app`;
   const file = new File(
     [blob],
     `nightfall-battle-card-w${input.wave}.png`,

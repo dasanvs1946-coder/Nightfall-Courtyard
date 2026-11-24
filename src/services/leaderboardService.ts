@@ -22,12 +22,21 @@ import {
 import { SKIN_ORDER } from '../game/career';
 import { ARENA_ORDER, GAME_MODE_ORDER } from '../game/arenas';
 import { getDailyChallengeConfig, getUtcDateKey } from '../game/dailyChallenge';
-import { isValidCallsign, sanitizeCallsign } from '../game/storage';
+import {
+  isValidCallsign,
+  loadClanTag,
+  sanitizeCallsign,
+  sanitizeClanTag,
+  saveCachedTop20Rivals,
+} from '../game/storage';
 import { ArenaId, GameModeId, SkinId } from '../game/types';
+import { APP_VERSION } from '../game/version';
 
 export interface LeaderboardRecord {
   uid: string;
   callsign: string;
+  clanTag: string;
+  appVersion?: string;
   wave: number;
   kills: number;
   score: number;
@@ -81,11 +90,13 @@ export async function fetchGlobalTop20(): Promise<LeaderboardRecord[]> {
       limit(20),
     );
     const snap = await getDocs(q);
-    return snap.docs.map((d) => {
+    const rows: LeaderboardRecord[] = snap.docs.map((d) => {
       const data = d.data();
       return {
         uid: String(data.uid ?? d.id),
         callsign: String(data.callsign ?? 'SURVIVOR'),
+        clanTag: sanitizeClanTag(String(data.clanTag ?? '')),
+        appVersion: typeof data.appVersion === 'string' ? data.appVersion : undefined,
         wave: Number(data.wave ?? 1),
         kills: Number(data.kills ?? 0),
         score: Number(data.score ?? 0),
@@ -95,6 +106,15 @@ export async function fetchGlobalTop20(): Promise<LeaderboardRecord[]> {
         platform: data.platform === 'APK' ? 'APK' : 'Web',
       };
     });
+    saveCachedTop20Rivals(
+      rows.map((r) => ({
+        uid: r.uid,
+        callsign: r.callsign,
+        clanTag: r.clanTag,
+        score: r.score,
+      })),
+    );
+    return rows;
   } catch (error) {
     handleFirestoreError(error, OperationType.LIST, colPath);
     throw error;
@@ -118,6 +138,8 @@ export async function fetchDailyTop20(
       return {
         uid: String(data.uid ?? d.id),
         callsign: String(data.callsign ?? 'SURVIVOR'),
+        clanTag: sanitizeClanTag(String(data.clanTag ?? '')),
+        appVersion: typeof data.appVersion === 'string' ? data.appVersion : undefined,
         wave: Number(data.wave ?? 1),
         kills: Number(data.kills ?? 0),
         score: Number(data.score ?? 0),
@@ -137,6 +159,7 @@ export async function fetchDailyTop20(
 
 export interface SubmitRunParams {
   callsign: string;
+  clanTag?: string;
   wave: number;
   kills: number;
   score: number;
@@ -155,6 +178,13 @@ export interface SubmitRunResult {
 export async function submitLeaderboardRun(
   params: SubmitRunParams,
 ): Promise<SubmitRunResult> {
+  if (params.mode === 'sandbox') {
+    return {
+      submittedGlobal: false,
+      submittedDaily: false,
+      reason: 'not_personal_best',
+    };
+  }
   let user = auth.currentUser;
   if (!user) {
     const res = await ensureAnonymousAuth();
@@ -170,6 +200,8 @@ export async function submitLeaderboardRun(
 
   const uid = user.uid;
   const callsign = normalizeCallsign(params.callsign);
+  const rawClan = sanitizeClanTag(params.clanTag ?? loadClanTag());
+  const clanTag = rawClan.length >= 3 ? rawClan : '';
   const wave = clampInt(params.wave, 1, 200);
   const kills = clampInt(params.kills, 0, 1000000);
   const score = clampInt(params.score, 0, 100000000);
@@ -190,6 +222,8 @@ export async function submitLeaderboardRun(
       await setDoc(globalRef, {
         uid,
         callsign,
+        clanTag,
+        appVersion: APP_VERSION,
         wave,
         kills,
         score,
@@ -205,10 +239,15 @@ export async function submitLeaderboardRun(
     } else {
       const existingData = existingSnap.data();
       const existingScore = Number(existingData.score ?? 0);
-      if (score > existingScore || (score === existingScore && wave > Number(existingData.wave ?? 0))) {
+      if (
+        score > existingScore ||
+        (score === existingScore && wave > Number(existingData.wave ?? 0))
+      ) {
         await setDoc(globalRef, {
           uid,
           callsign,
+          clanTag,
+          appVersion: APP_VERSION,
           wave,
           kills,
           score,
@@ -239,6 +278,8 @@ export async function submitLeaderboardRun(
         await setDoc(dailyRef, {
           uid,
           callsign,
+          clanTag,
+          appVersion: APP_VERSION,
           dateKey,
           mutator: dailyCfg.mutator.name.slice(0, 48),
           wave,
@@ -260,6 +301,8 @@ export async function submitLeaderboardRun(
           await setDoc(dailyRef, {
             uid,
             callsign,
+            clanTag,
+            appVersion: APP_VERSION,
             dateKey,
             mutator: dailyCfg.mutator.name.slice(0, 48),
             wave,
@@ -289,8 +332,9 @@ export async function submitLeaderboardRun(
   };
 }
 
-export async function updateLeaderboardCallsign(
+export async function updateLeaderboardIdentity(
   rawCallsign: string,
+  rawClanTag?: string,
 ): Promise<boolean> {
   let user = auth.currentUser;
   if (!user) {
@@ -300,15 +344,22 @@ export async function updateLeaderboardCallsign(
   if (!user) return false;
 
   const callsign = normalizeCallsign(rawCallsign);
+  const cleanedTag = sanitizeClanTag(rawClanTag ?? loadClanTag());
+  const clanTag = cleanedTag.length >= 3 ? cleanedTag : '';
   const uid = user.uid;
   let updatedAny = false;
 
   const globalRef = doc(db, 'leaderboard', uid);
   try {
     const snap = await getDoc(globalRef);
-    if (snap.exists() && snap.data().callsign !== callsign) {
+    if (
+      snap.exists() &&
+      (snap.data().callsign !== callsign || (snap.data().clanTag ?? '') !== clanTag)
+    ) {
       await updateDoc(globalRef, {
         callsign,
+        clanTag,
+        appVersion: APP_VERSION,
         updatedAt: serverTimestamp(),
       });
       updatedAny = true;
@@ -321,9 +372,15 @@ export async function updateLeaderboardCallsign(
   const dailyRef = doc(db, 'daily_leaderboard', dateKey, 'entries', uid);
   try {
     const dailySnap = await getDoc(dailyRef);
-    if (dailySnap.exists() && dailySnap.data().callsign !== callsign) {
+    if (
+      dailySnap.exists() &&
+      (dailySnap.data().callsign !== callsign ||
+        (dailySnap.data().clanTag ?? '') !== clanTag)
+    ) {
       await updateDoc(dailyRef, {
         callsign,
+        clanTag,
+        appVersion: APP_VERSION,
         updatedAt: serverTimestamp(),
       });
       updatedAny = true;
@@ -335,3 +392,8 @@ export async function updateLeaderboardCallsign(
   return updatedAny;
 }
 
+export async function updateLeaderboardCallsign(
+  rawCallsign: string,
+): Promise<boolean> {
+  return updateLeaderboardIdentity(rawCallsign);
+}
